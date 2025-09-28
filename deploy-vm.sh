@@ -17,7 +17,7 @@ TEMPLATE_BOOT_IMAGE_TARGET_VOLUME=${TEMPLATE_BOOT_IMAGE_TARGET_VOLUME:-local-lvm
 BOOT_IMAGE_TARGET_VOLUME=${BOOT_IMAGE_TARGET_VOLUME:-local-lvm}
 SNIPPET_TARGET_VOLUME=${SNIPPET_TARGET_VOLUME:-local}              # content: snippets を有効に
 SNIPPET_TARGET_PATH=${SNIPPET_TARGET_PATH:-/var/lib/vz/snippets}
-UBUNTU_IMG="jammy-server-cloudimg-amd64.img"                       # Ubuntu 22.04
+UBUNTU_IMG="noble-server-cloudimg-amd64.img"                       # Ubuntu 24.04
 DISK_SIZE=${DISK_SIZE:-30G}
 
 # Network (Proxmox Cloud-Init 推奨パラメータ使用)
@@ -70,7 +70,7 @@ else
 fi
 
 # 外部到達性チェック（Ubuntu cloud image, node-setup script）
-CLOUD_IMG_BASE="https://cloud-images.ubuntu.com/jammy/current"
+CLOUD_IMG_BASE="https://cloud-images.ubuntu.com/noble/current"
 CLOUD_IMG_URL="${CLOUD_IMG_BASE}/${UBUNTU_IMG}"
 RAW_SCRIPT_URL="${REPOSITORY_RAW_SOURCE_URL}/scripts/k8s-node-setup.sh"
 curl -fsSI "$CLOUD_IMG_URL" >/dev/null || { echo "[ERROR] Cannot reach $CLOUD_IMG_URL"; exit 1; }
