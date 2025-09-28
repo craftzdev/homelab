@@ -19,6 +19,8 @@ SNIPPET_TARGET_VOLUME=${SNIPPET_TARGET_VOLUME:-local}              # content: sn
 SNIPPET_TARGET_PATH=${SNIPPET_TARGET_PATH:-/var/lib/vz/snippets}
 UBUNTU_IMG="noble-server-cloudimg-amd64.img"                       # Ubuntu 24.04
 DISK_SIZE=${DISK_SIZE:-30G}
+# Ceph プール名（rbd ストレージの pool と一致するものを優先選択）
+CEPH_POOL_NAME=${CEPH_POOL_NAME:-cephrdb_k8s}
 
 # Network (Proxmox Cloud-Init 推奨パラメータ使用)
 VLAN_ID=${VLAN_ID:-40}
@@ -75,6 +77,46 @@ CLOUD_IMG_URL="${CLOUD_IMG_BASE}/${UBUNTU_IMG}"
 RAW_SCRIPT_URL="${REPOSITORY_RAW_SOURCE_URL}/scripts/k8s-node-setup.sh"
 curl -fsSI "$CLOUD_IMG_URL" >/dev/null || { echo "[ERROR] Cannot reach $CLOUD_IMG_URL"; exit 1; }
 curl -fsSI "$RAW_SCRIPT_URL" >/dev/null || { echo "[ERROR] Cannot reach $RAW_SCRIPT_URL"; exit 1; }
+
+# 共有ストレージ優先設定（Ceph RBD が存在すれば VM ディスクは共有ストレージを使用）
+# 優先順位: 明示指定(CEPH_STORAGE) > 指定プール名一致(CEPH_POOL_NAME)
+# 環境変数で無効化したい場合は PREFER_SHARED_STORAGE=false を指定してください。
+if [[ "${PREFER_SHARED_STORAGE:-true}" == "true" ]]; then
+  # 明示指定があればそれを優先（見つからなければエラー）
+  if [[ -n "${CEPH_STORAGE:-}" ]]; then
+    if pvesm status | awk '{print $1}' | grep -qx "$CEPH_STORAGE"; then
+      CLOUDINIT_IMAGE_TARGET_VOLUME=${CLOUDINIT_IMAGE_TARGET_VOLUME:-$CEPH_STORAGE}
+      TEMPLATE_BOOT_IMAGE_TARGET_VOLUME=${TEMPLATE_BOOT_IMAGE_TARGET_VOLUME:-$CEPH_STORAGE}
+      BOOT_IMAGE_TARGET_VOLUME=${BOOT_IMAGE_TARGET_VOLUME:-$CEPH_STORAGE}
+      echo "[INFO] Using explicitly specified Ceph storage '$CEPH_STORAGE' for VM disks"
+    else
+      echo "[ERROR] Specified CEPH_STORAGE '$CEPH_STORAGE' not found in pvesm status"; exit 1
+    fi
+  fi
+
+  # まだ未決定の場合はプール名一致で自動選択（見つからなければエラー）
+  if [[ -z "${CLOUDINIT_IMAGE_TARGET_VOLUME}" || -z "${TEMPLATE_BOOT_IMAGE_TARGET_VOLUME}" || -z "${BOOT_IMAGE_TARGET_VOLUME}" || "${CLOUDINIT_IMAGE_TARGET_VOLUME}" == "local-lvm" ]]; then
+    # rbd ストレージ一覧を取得
+    mapfile -t RBD_STORES < <(pvesm status | awk '$2=="rbd"{print $1}')
+    if [[ ${#RBD_STORES[@]} -eq 0 ]]; then
+      echo "[ERROR] No Ceph RBD storage found in pvesm status (required for Kubernetes cluster VMs)"; exit 1
+    fi
+    selected=""
+    for s in "${RBD_STORES[@]}"; do
+      pool=$(pvesm config "$s" 2>/dev/null | awk -F": " '/^pool:/{print $2}')
+      if [[ "$pool" == "$CEPH_POOL_NAME" ]]; then
+        selected="$s"; echo "[INFO] Found Ceph storage '$s' with required pool '$pool'"; break
+      fi
+    done
+    if [[ -z "$selected" ]]; then
+      echo "[ERROR] No rbd storage with required pool '$CEPH_POOL_NAME' found"; exit 1
+    fi
+    CLOUDINIT_IMAGE_TARGET_VOLUME=${CLOUDINIT_IMAGE_TARGET_VOLUME:-$selected}
+    TEMPLATE_BOOT_IMAGE_TARGET_VOLUME=${TEMPLATE_BOOT_IMAGE_TARGET_VOLUME:-$selected}
+    BOOT_IMAGE_TARGET_VOLUME=${BOOT_IMAGE_TARGET_VOLUME:-$selected}
+    echo "[INFO] Using shared Ceph storage '$selected' for VM disks (cloud-init/template/boot)"
+  fi
+fi
 
 # Storage 存在チェック
 for s in "$CLOUDINIT_IMAGE_TARGET_VOLUME" "$TEMPLATE_BOOT_IMAGE_TARGET_VOLUME" "$BOOT_IMAGE_TARGET_VOLUME" "$SNIPPET_TARGET_VOLUME"; do
@@ -135,8 +177,21 @@ if ! qm status "$TEMPLATE_VMID" >/dev/null 2>&1; then
   if [[ -z "$SUM_LINE" ]]; then echo "[ERROR] SHA256SUM for ${UBUNTU_IMG} not found"; exit 1; fi
   echo "$SUM_LINE" | sha256sum -c - || { echo "[ERROR] checksum verification failed for ${UBUNTU_IMG}"; exit 1; }
 
+  # 画像に qemu-guest-agent を組み込み（可能なら virt-customize を使用）
+  echo "[INFO] Preparing cloud image with qemu-guest-agent"
+  if ! command -v virt-customize >/dev/null 2>&1; then
+    echo "[INFO] Installing libguestfs-tools (virt-customize)"
+    apt-get update -y && apt-get install -y libguestfs-tools || true
+  fi
+  if command -v virt-customize >/dev/null 2>&1; then
+    echo "[INFO] Injecting qemu-guest-agent into ${UBUNTU_IMG}"
+    virt-customize -a "$UBUNTU_IMG" --install qemu-guest-agent
+  else
+    echo "[WARN] virt-customize not available; qemu-guest-agent will be installed via cloud-init packages on first boot"
+  fi
+
   echo "[INFO] Creating template VM $TEMPLATE_VMID"
-  qm create "$TEMPLATE_VMID" --cores 2 --memory 4096 --name unc-k8s-template \
+  qm create "$TEMPLATE_VMID" --cores 2 --memory 4096 --name k8s-template \
     --net0 virtio,bridge=${VLAN_BRIDGE} \
     --agent enabled=1                        # QGA on
 
@@ -197,6 +252,8 @@ hostname: ${vmname}
 timezone: Asia/Tokyo
 manage_etc_hosts: true
 ssh_pwauth: false
+packages:
+  - qemu-guest-agent
 package_upgrade: true
 runcmd:
   - 'curl -fsSL ${REPOSITORY_RAW_SOURCE_URL}/scripts/k8s-node-setup.sh -o /root/k8s-node-setup.sh'
