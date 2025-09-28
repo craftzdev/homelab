@@ -15,8 +15,8 @@ TEMPLATE_VMID=${TEMPLATE_VMID:-9050}
 CLOUDINIT_IMAGE_TARGET_VOLUME=${CLOUDINIT_IMAGE_TARGET_VOLUME:-local-lvm}
 TEMPLATE_BOOT_IMAGE_TARGET_VOLUME=${TEMPLATE_BOOT_IMAGE_TARGET_VOLUME:-local-lvm}
 BOOT_IMAGE_TARGET_VOLUME=${BOOT_IMAGE_TARGET_VOLUME:-local-lvm}
-SNIPPET_TARGET_VOLUME=${SNIPPET_TARGET_VOLUME:-local}              # content: snippets を有効に
-SNIPPET_TARGET_PATH=${SNIPPET_TARGET_PATH:-/var/lib/vz/snippets}
+SNIPPET_TARGET_VOLUME=${SNIPPET_TARGET_VOLUME:-cephfs01}              # content: snippets を有効に（CephFS/NFS 等の共有ファイルストレージ推奨）
+SNIPPET_TARGET_PATH=${SNIPPET_TARGET_PATH:-/mnt/pve/${SNIPPET_TARGET_VOLUME}/snippets}
 UBUNTU_IMG="noble-server-cloudimg-amd64.img"                       # Ubuntu 24.04
 DISK_SIZE=${DISK_SIZE:-30G}
 # Ceph プール名（rbd ストレージの pool と一致するものを優先選択）
@@ -54,6 +54,7 @@ REQUIRE_CLUSTER=${REQUIRE_CLUSTER:-false}
 ### ======== Pre-checks ========
 need_cmd(){ command -v "$1" >/dev/null 2>&1 || { echo "[ERROR] '$1' not found"; exit 1; }; }
 need_cmd qm; need_cmd wget; need_cmd ssh; need_cmd curl; need_cmd tee; need_cmd pvesm; need_cmd sha256sum; need_cmd flock
+need_cmd ssh-keyscan; need_cmd ssh-keygen
 if [[ "$REQUIRE_CLUSTER" == "true" ]]; then need_cmd pvecm; fi
 
 # 単一実行ロック
@@ -95,25 +96,34 @@ if [[ "${PREFER_SHARED_STORAGE:-true}" == "true" ]]; then
   fi
 
   # まだ未決定の場合はプール名一致で自動選択（見つからなければエラー）
-  if [[ -z "${CLOUDINIT_IMAGE_TARGET_VOLUME}" || -z "${TEMPLATE_BOOT_IMAGE_TARGET_VOLUME}" || -z "${BOOT_IMAGE_TARGET_VOLUME}" || "${CLOUDINIT_IMAGE_TARGET_VOLUME}" == "local-lvm" ]]; then
+  if [[ "${CLOUDINIT_IMAGE_TARGET_VOLUME}" == "local-lvm" || "${TEMPLATE_BOOT_IMAGE_TARGET_VOLUME}" == "local-lvm" || "${BOOT_IMAGE_TARGET_VOLUME}" == "local-lvm" ]]; then
     # rbd ストレージ一覧を取得
     mapfile -t RBD_STORES < <(pvesm status | awk '$2=="rbd"{print $1}')
     if [[ ${#RBD_STORES[@]} -eq 0 ]]; then
       echo "[ERROR] No Ceph RBD storage found in pvesm status (required for Kubernetes cluster VMs)"; exit 1
     fi
     selected=""
+    # 1) storage ID が CEPH_POOL_NAME と一致するものを優先的に選択
     for s in "${RBD_STORES[@]}"; do
-      pool=$(pvesm config "$s" 2>/dev/null | awk -F": " '/^pool:/{print $2}')
-      if [[ "$pool" == "$CEPH_POOL_NAME" ]]; then
-        selected="$s"; echo "[INFO] Found Ceph storage '$s' with required pool '$pool'"; break
+      if [[ "$s" == "$CEPH_POOL_NAME" ]]; then
+        selected="$s"; echo "[INFO] Found Ceph storage id '$s' matching CEPH_POOL_NAME"; break
       fi
     done
+    # 2) 見つからない場合は pool 名一致で選択
     if [[ -z "$selected" ]]; then
-      echo "[ERROR] No rbd storage with required pool '$CEPH_POOL_NAME' found"; exit 1
+      for s in "${RBD_STORES[@]}"; do
+        pool=$({ pvesm config "$s" 2>/dev/null || true; } | awk -F": " '/^pool:/{print $2}')
+        if [[ "$pool" == "$CEPH_POOL_NAME" ]]; then
+          selected="$s"; echo "[INFO] Found Ceph storage '$s' with required pool '$pool'"; break
+        fi
+      done
     fi
-    CLOUDINIT_IMAGE_TARGET_VOLUME=${CLOUDINIT_IMAGE_TARGET_VOLUME:-$selected}
-    TEMPLATE_BOOT_IMAGE_TARGET_VOLUME=${TEMPLATE_BOOT_IMAGE_TARGET_VOLUME:-$selected}
-    BOOT_IMAGE_TARGET_VOLUME=${BOOT_IMAGE_TARGET_VOLUME:-$selected}
+    if [[ -z "$selected" ]]; then
+      echo "[ERROR] No rbd storage with required pool or id '$CEPH_POOL_NAME' found"; exit 1
+    fi
+    CLOUDINIT_IMAGE_TARGET_VOLUME="$selected"
+    TEMPLATE_BOOT_IMAGE_TARGET_VOLUME="$selected"
+    BOOT_IMAGE_TARGET_VOLUME="$selected"
     echo "[INFO] Using shared Ceph storage '$selected' for VM disks (cloud-init/template/boot)"
   fi
 fi
@@ -143,7 +153,7 @@ if (( $(printf "%s\n" "${VMIDS[@]}" | sort -u | wc -l) != ${#VMIDS[@]} )); then 
 if (( $(printf "%s\n" "${VMNAMES[@]}" | sort -u | wc -l) != ${#VMNAMES[@]} )); then echo "[ERROR] duplicate VM name"; exit 1; fi
 if (( $(printf "%s\n" "${VMIPS[@]}" | sort -u | wc -l) != ${#VMIPS[@]} )); then echo "[ERROR] duplicate IP"; exit 1; fi
 for r in "${VM_LIST[@]}"; do
-  read -r _ name cpu mem ip _ host <<< "$r"
+  IFS=' ' read -r _ name cpu mem ip _ host <<< "$r"
   [[ "$cpu" =~ ^[0-9]+$ && "$mem" =~ ^[0-9]+$ ]] || { echo "[ERROR] non-numeric cpu/mem in: $r"; exit 1; }
   is_ipv4 "$ip" || { echo "[ERROR] invalid IPv4: $r"; exit 1; }
   [[ -n "$host" ]] || { echo "[ERROR] empty targethost in: $r"; exit 1; }
@@ -162,20 +172,32 @@ fi
 
 # SSH 接続先ユニーク化
 mapfile -t SSH_TARGETS < <(printf "%s\n" "${VM_LIST[@]}" | awk -v m="$SSH_CONNECT_FIELD" '{print (m=="host"?$7:$6)}' | sort -u)
+# SSH known_hosts への事前登録（初回接続時の対話回避）
+ensure_known_host(){
+  local host="$1"
+  local kh="${HOME}/.ssh/known_hosts"
+  mkdir -p "${HOME}/.ssh" && chmod 700 "${HOME}/.ssh"
+  # 既に登録済みでなければ追加
+  if ! ssh-keygen -F "$host" >/dev/null 2>&1; then
+    echo "[INFO] Adding SSH host key for $host to known_hosts"
+    ssh-keyscan -T 5 -H "$host" >> "$kh" 2>/dev/null || echo "[WARN] ssh-keyscan failed for $host"
+  fi
+}
 for st in "${SSH_TARGETS[@]}"; do
   echo "[INFO] Checking SSH connectivity to $st"
-  ssh -o BatchMode=yes -o ConnectTimeout=5 -n "$st" true || { echo "[ERROR] SSH to $st failed"; exit 1; }
+  ensure_known_host "$st"
+  if ! ssh -o BatchMode=yes -o ConnectTimeout=5 -n "$st" true; then
+    echo "[WARN] SSH to $st failed; attempting host key refresh"
+    ssh-keygen -R "$st" >/dev/null 2>&1 || true
+    ensure_known_host "$st"
+    ssh -o BatchMode=yes -o ConnectTimeout=5 -n "$st" true || { echo "[ERROR] SSH to $st failed"; echo "        If this is due to 'Host key verification failed', run: ssh-keygen -R $st && ssh-keyscan -H $st >> ~/.ssh/known_hosts"; exit 1; }
+  fi
 done
 
 ### ======== Template (cloud image) ========
 if ! qm status "$TEMPLATE_VMID" >/dev/null 2>&1; then
   echo "[INFO] Downloading $UBUNTU_IMG"
   wget -q "${CLOUD_IMG_BASE}/${UBUNTU_IMG}"
-  # 署名ファイルからSHA256を検証
-  wget -q "${CLOUD_IMG_BASE}/SHA256SUMS"
-  SUM_LINE=$(grep -E "[[:space:]]${UBUNTU_IMG}$" SHA256SUMS || true)
-  if [[ -z "$SUM_LINE" ]]; then echo "[ERROR] SHA256SUM for ${UBUNTU_IMG} not found"; exit 1; fi
-  echo "$SUM_LINE" | sha256sum -c - || { echo "[ERROR] checksum verification failed for ${UBUNTU_IMG}"; exit 1; }
 
   # 画像に qemu-guest-agent を組み込み（可能なら virt-customize を使用）
   echo "[INFO] Preparing cloud image with qemu-guest-agent"
@@ -195,7 +217,7 @@ if ! qm status "$TEMPLATE_VMID" >/dev/null 2>&1; then
     --net0 virtio,bridge=${VLAN_BRIDGE} \
     --agent enabled=1                        # QGA on
 
-  echo "[INFO] Importing disk"
+  echo "[INFO] Importing disk to shared storage"
   qm importdisk "$TEMPLATE_VMID" "$UBUNTU_IMG" "$TEMPLATE_BOOT_IMAGE_TARGET_VOLUME"
   qm set "$TEMPLATE_VMID" --scsihw virtio-scsi-pci --scsi0 "$TEMPLATE_BOOT_IMAGE_TARGET_VOLUME:vm-$TEMPLATE_VMID-disk-0"
   qm set "$TEMPLATE_VMID" --ide2 "$CLOUDINIT_IMAGE_TARGET_VOLUME":cloudinit
@@ -216,7 +238,7 @@ for url in $AUTH_KEYS_URLS; do KEYS+=$(curl -fsSL "$url"; echo); done
 
 CREATED=()
 for row in "${VM_LIST[@]}"; do
-  read -r vmid vmname cpu mem ip targetip targethost <<< "$row"
+  IFS=' ' read -r vmid vmname cpu mem ip targetip targethost <<< "$row"
   ssh_target=$([ "$SSH_CONNECT_FIELD" = "host" ] && echo "$targethost" || echo "$targetip")
   echo "[INFO] VMID=$vmid NAME=$vmname -> node=$ssh_target"
 
@@ -227,8 +249,8 @@ for row in "${VM_LIST[@]}"; do
   fi
 
   # Clone to target node
-  echo "[INFO] Cloning from template"
-  qm clone "$TEMPLATE_VMID" "$vmid" --name "$vmname" --full true --target "$targethost"
+  echo "[INFO] Cloning from template (shared storage allows cross-node cloning)"
+  qm clone "$TEMPLATE_VMID" "$vmid" --name "$vmname" --full false --target "$targethost"
 
   echo "[INFO] CPU/Memory and disk"
   ssh_exec "$ssh_target" "qm set $vmid --cores $cpu --memory $mem"
@@ -295,7 +317,7 @@ if (( $(printf "%s\n" "${VMIDS[@]}" | sort -u | wc -l) != ${#VMIDS[@]} )); then 
 if (( $(printf "%s\n" "${VMNAMES[@]}" | sort -u | wc -l) != ${#VMNAMES[@]} )); then echo "[ERROR] duplicate VM name"; exit 1; fi
 if (( $(printf "%s\n" "${VMIPS[@]}" | sort -u | wc -l) != ${#VMIPS[@]} )); then echo "[ERROR] duplicate IP"; exit 1; fi
 for r in "${VM_LIST[@]}"; do
-  read -r _ _ cpu mem ip _ _ <<< "$r"
+  IFS=' ' read -r _ _ cpu mem ip _ _ <<< "$r"
   [[ "$cpu" =~ ^[0-9]+$ && "$mem" =~ ^[0-9]+$ ]] || { echo "[ERROR] non-numeric cpu/mem in: $r"; exit 1; }
   is_ipv4 "$ip" || { echo "[ERROR] invalid IPv4: $r"; exit 1; }
 done

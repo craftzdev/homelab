@@ -25,8 +25,8 @@ Homelab VM デプロイ手順
 - TARGET_BRANCH: リポジトリのブランチ。既定: main（引数でも指定可能）
 - TEMPLATE_VMID: テンプレート VMID（既定: 9050）。既存テンプレートがある場合はスキップします。
 - CLOUDINIT_IMAGE_TARGET_VOLUME, TEMPLATE_BOOT_IMAGE_TARGET_VOLUME, BOOT_IMAGE_TARGET_VOLUME: ストレージ名（既定: local-lvm）
-- SNIPPET_TARGET_VOLUME: snippets コンテンツを有効化したストレージ（既定: local）
-- SNIPPET_TARGET_PATH: スニペット配置パス（既定: /var/lib/vz/snippets）
+- SNIPPET_TARGET_VOLUME: snippets コンテンツを有効化したストレージ（既定: cephfs01。CephFS/NFS 等の共有ファイルストレージを推奨）
+- SNIPPET_TARGET_PATH: スニペット配置パス（既定: /mnt/pve/${SNIPPET_TARGET_VOLUME}/snippets）
 - UBUNTU_IMG: noble-server-cloudimg-amd64.img（Ubuntu 24.04）
 - DISK_SIZE: VM ディスクサイズのリサイズ量（既定: 30G）
 - VLAN_ID: ネットワークタグ（既定: 40）
