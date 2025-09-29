@@ -27,7 +27,7 @@ VLAN_ID=${VLAN_ID:-40}
 VLAN_BRIDGE=${VLAN_BRIDGE:-vmbr1}
 NODE_GATEWAY=${NODE_GATEWAY:-172.16.40.1}
 NODE_CIDR_SUFFIX=${NODE_CIDR_SUFFIX:-24}                           # xxx.xxx.xxx.xxx/24
-NAMESERVERS=${NAMESERVERS:-"172.16.40.1 1.1.1.1"}
+NAMESERVERS=${NAMESERVERS:-"172.16.40.1"}
 SEARCHDOMAIN=${SEARCHDOMAIN:-home.arpa}
 
 # VM inventory: vmid name vCPU mem(MiB) ip targetip targethost
@@ -285,7 +285,7 @@ for row in "${VM_LIST[@]}"; do
 
   echo "[INFO] Cloud-Init: ipconfig0 / DNS / user & ssh keys"
   ssh_exec "$ssh_target" "qm set $vmid --ipconfig0 ip=${ip}/${NODE_CIDR_SUFFIX},gw=${NODE_GATEWAY}"
-  ssh_exec "$ssh_target" "qm set $vmid --nameserver '$(echo $NAMESERVERS | tr ' ' ',')' --searchdomain ${SEARCHDOMAIN}"
+  ssh_exec "$ssh_target" "qm set $vmid --nameserver \"$(echo $NAMESERVERS | tr ' ' ',')\" --searchdomain ${SEARCHDOMAIN}"
   ssh_exec "$ssh_target" "qm set $vmid --ciuser ${CI_USER}"
 
   # user-data スニペット（runcmd だけを載せる。鍵は --sshkeys で投入）
@@ -297,6 +297,19 @@ hostname: ${vmname}
 timezone: Asia/Tokyo
 manage_etc_hosts: true
 ssh_pwauth: false
+# Network configuration with proper nameserver format
+network:
+  version: 2
+  ethernets:
+    eth0:
+      dhcp4: false
+      addresses:
+        - ${ip}/${NODE_CIDR_SUFFIX}
+      gateway4: ${NODE_GATEWAY}
+      nameservers:
+        addresses:$(printf '\n          - %s' $(echo ${NAMESERVERS}))
+        search:
+          - ${SEARCHDOMAIN}
 packages:
   - qemu-guest-agent
 package_upgrade: true
