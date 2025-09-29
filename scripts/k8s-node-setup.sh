@@ -487,18 +487,61 @@ EOF
 
 # ---
 
-# Optionally run external Ansible playbook (disabled by default)
-if [ "${RUN_ANSIBLE:-false}" = "true" ]; then
-  sudo apt-get install -y ansible git sshpass
+# Generate control plane certificate
+KUBEADM_UPLOADED_CERTS=$(kubeadm init phase upload-certs --upload-certs | tail -n 1)
 
-  git clone -b "${TARGET_BRANCH}" https://github.com/unchama/kube-cluster-on-proxmox.git "$HOME"/kube-cluster-on-proxmox
-  export ANSIBLE_CONFIG="$HOME"/kube-cluster-on-proxmox/ansible/ansible.cfg
+# Set join configuration for other control plane nodes
+cat > "$HOME"/join_kubeadm_cp.yaml <<EOF
+apiVersion: kubelet.config.k8s.io/v1beta1
+kind: KubeletConfiguration
+cgroupDriver: "systemd"
+protectKernelDefaults: true
+---
+apiVersion: kubeadm.k8s.io/v1beta3
+kind: JoinConfiguration
+nodeRegistration:
+  criSocket: "unix:///var/run/containerd/containerd.sock"
+discovery:
+  bootstrapToken:
+    apiServerEndpoint: "${KUBE_API_SERVER_VIP}:8443"
+    token: "$KUBEADM_BOOTSTRAP_TOKEN"
+    unsafeSkipCAVerification: true
+controlPlane:
+  certificateKey: "$KUBEADM_UPLOADED_CERTS"
+EOF
 
-  ansible-galaxy role install -r "$HOME"/kube-cluster-on-proxmox/ansible/roles/requirements.yaml || true
-  ansible-galaxy collection install -r "$HOME"/kube-cluster-on-proxmox/ansible/roles/requirements.yaml || true
-  ansible-playbook -i "$HOME"/kube-cluster-on-proxmox/ansible/hosts/k8s-servers/inventory "$HOME"/kube-cluster-on-proxmox/ansible/site.yaml
-else
-  echo "[INFO] Skipping external Ansible run (set RUN_ANSIBLE=true to enable)"
-fi
+# Set join configuration for worker nodes
+cat > "$HOME"/join_kubeadm_wk.yaml <<EOF
+apiVersion: kubelet.config.k8s.io/v1beta1
+kind: KubeletConfiguration
+cgroupDriver: "systemd"
+protectKernelDefaults: true
+---
+apiVersion: kubeadm.k8s.io/v1beta3
+kind: JoinConfiguration
+nodeRegistration:
+  criSocket: "unix:///var/run/containerd/containerd.sock"
+discovery:
+  bootstrapToken:
+    apiServerEndpoint: "${KUBE_API_SERVER_VIP}:8443"
+    token: "$KUBEADM_BOOTSTRAP_TOKEN"
+    unsafeSkipCAVerification: true
+EOF
+
+# ---
+
+# install ansible
+sudo apt-get install -y ansible git sshpass
+
+# clone repo
+git clone -b "${TARGET_BRANCH}" https://github.com/unchama/kube-cluster-on-proxmox.git "$HOME"/kube-cluster-on-proxmox
+
+# export ansible.cfg target
+export ANSIBLE_CONFIG="$HOME"/kube-cluster-on-proxmox/ansible/ansible.cfg
+
+# run ansible-playbook
+ansible-galaxy role install -r "$HOME"/kube-cluster-on-proxmox/ansible/roles/requirements.yaml
+ansible-galaxy collection install -r "$HOME"/kube-cluster-on-proxmox/ansible/roles/requirements.yaml
+ansible-playbook -i "$HOME"/kube-cluster-on-proxmox/ansible/hosts/k8s-servers/inventory "$HOME"/kube-cluster-on-proxmox/ansible/site.yaml
 
 # endregion
