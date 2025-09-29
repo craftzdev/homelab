@@ -1,8 +1,9 @@
----
-- name: Join worker node to cluster
-  ansible.builtin.command:
-    cmd: "kubeadm join --config {{ join_config_dir }}/join_kubeadm_wk.yaml"
-    chdir: "{{ join_config_dir }}"
-  become: true
-  args:
-    creates: /etc/kubernetes/kubelet.conf
+- name: Copy file
+  become: yes
+  ansible.builtin.copy:
+    src: /root/join_kubeadm_wk.yaml
+    dest: /root/join_kubeadm_wk.yaml
+
+- name: Execute kubeadm join command
+  become: yes
+  shell: "kubeadm join --config /root/join_kubeadm_wk.yaml"

@@ -1,3 +1,2 @@
 ---
-- name: Delegate to clusterwide playbook
-  import_playbook: clusterwide.yaml
+- import_playbook: clusterwide.yaml

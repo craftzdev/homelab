@@ -216,12 +216,8 @@ backend k8s-api
 EOF
 
 # Install Keepalived
-# Ensure nonlocal_bind is enabled (idempotent)
-KEEPALIVED_SYSCTL="/etc/sysctl.d/60-keepalived.conf"
-if ! grep -qs '^net.ipv4.ip_nonlocal_bind\s*=\s*1' "$KEEPALIVED_SYSCTL" 2>/dev/null; then
-  echo 'net.ipv4.ip_nonlocal_bind = 1' > "$KEEPALIVED_SYSCTL"
-fi
-sysctl --system
+echo "net.ipv4.ip_nonlocal_bind = 1" >> /etc/sysctl.conf
+sysctl -p
 
 apt-get update && apt-get -y install keepalived
 
@@ -445,49 +441,6 @@ stringData:
   fqdn: "${EXTERNAL_KUBE_API_SERVER}"
   port: "8443"
 EOF
-
-# Generate control plane certificate
-KUBEADM_UPLOADED_CERTS=$(kubeadm init phase upload-certs --upload-certs | tail -n 1)
-
-# Set join configuration for other control plane nodes
-cat > "$HOME"/join_kubeadm_cp.yaml <<EOF
-apiVersion: kubelet.config.k8s.io/v1beta1
-kind: KubeletConfiguration
-cgroupDriver: "systemd"
-protectKernelDefaults: true
----
-apiVersion: kubeadm.k8s.io/v1beta4
-kind: JoinConfiguration
-nodeRegistration:
-  criSocket: "unix:///var/run/containerd/containerd.sock"
-discovery:
-  bootstrapToken:
-    apiServerEndpoint: "${KUBE_API_SERVER_VIP}:8443"
-    token: "$KUBEADM_BOOTSTRAP_TOKEN"
-    unsafeSkipCAVerification: true
-controlPlane:
-  certificateKey: "$KUBEADM_UPLOADED_CERTS"
-EOF
-
-# Set join configuration for worker nodes
-cat > "$HOME"/join_kubeadm_wk.yaml <<EOF
-apiVersion: kubelet.config.k8s.io/v1beta1
-kind: KubeletConfiguration
-cgroupDriver: "systemd"
-protectKernelDefaults: true
----
-apiVersion: kubeadm.k8s.io/v1beta4
-kind: JoinConfiguration
-nodeRegistration:
-  criSocket: "unix:///var/run/containerd/containerd.sock"
-discovery:
-  bootstrapToken:
-    apiServerEndpoint: "${KUBE_API_SERVER_VIP}:8443"
-    token: "$KUBEADM_BOOTSTRAP_TOKEN"
-    unsafeSkipCAVerification: true
-EOF
-
-# ---
 
 # Generate control plane certificate
 KUBEADM_UPLOADED_CERTS=$(kubeadm init phase upload-certs --upload-certs | tail -n 1)

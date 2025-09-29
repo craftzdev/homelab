@@ -1,12 +1,9 @@
----
-- name: Join control plane to cluster
-  ansible.builtin.command:
-    cmd: "kubeadm join --config {{ join_config_dir }}/join_kubeadm_cp.yaml"
-  register: join_cp
-  changed_when: join_cp.rc == 0
-  failed_when: false
-  when: not ansible_facts['files'].get('/etc/kubernetes/manifests/kube-apiserver.yaml', False)
-    chdir: "{{ ansible_env.HOME }}"
-  become: true
-  args:
-    creates: /etc/kubernetes/manifests/kube-apiserver.yaml
+- name: Copy file
+  become: yes
+  ansible.builtin.copy:
+    src: /root/join_kubeadm_cp.yaml
+    dest: /root/join_kubeadm_cp.yaml
+
+- name: Execute kubeadm join command
+  become: yes
+  shell: "kubeadm join --config /root/join_kubeadm_cp.yaml"
