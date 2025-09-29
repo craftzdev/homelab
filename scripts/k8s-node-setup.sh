@@ -332,16 +332,21 @@ EOF
 kubeadm init --config "$HOME"/init_kubeadm.yaml --skip-phases=addon/kube-proxy --ignore-preflight-errors=NumCPU,Mem
 
 mkdir -p "$HOME"/.kube
-cp -i /etc/kubernetes/admin.conf "$HOME"/.kube/config
-chown "$(id -u)":"$(id -g)" "$HOME"/.kube/config
+if [ -f /etc/kubernetes/admin.conf ]; then
+  cp /etc/kubernetes/admin.conf "$HOME"/.kube/config
+  chown "$(id -u)":"$(id -g)" "$HOME"/.kube/config
+fi
 
 # Set up kubeconfig for cloudinit user as well
-sudo mkdir -p /home/cloudinit/.kube
-sudo cp -i /etc/kubernetes/admin.conf /home/cloudinit/.kube/config
-sudo chown cloudinit:cloudinit /home/cloudinit/.kube/config
+sudo -u cloudinit mkdir -p /home/cloudinit/.kube
+if [ -f /etc/kubernetes/admin.conf ]; then
+  sudo cp /etc/kubernetes/admin.conf /home/cloudinit/.kube/config
+  sudo chown cloudinit:cloudinit /home/cloudinit/.kube/config
+fi
 
-# Add KUBECONFIG to cloudinit user's bashrc
-echo 'export KUBECONFIG=$HOME/.kube/config' | sudo tee -a /home/cloudinit/.bashrc
+# Add KUBECONFIG to cloudinit user's bashrc if not present
+echo 'export KUBECONFIG=$HOME/.kube/config' | sudo tee -a /home/cloudinit/.bashrc > /dev/null || true
+sudo bash -c "grep -q 'export KUBECONFIG=\\$HOME/.kube/config' /home/cloudinit/.bashrc || echo 'export KUBECONFIG=\\$HOME/.kube/config' >> /home/cloudinit/.bashrc"
 
 # クラスタ初期セットアップ時に helm　を使用して CNI と ArgoCD をクラスタに導入する
 # それ以外のクラスタリソースは ArgoCD によって本リポジトリから自動で導入される
