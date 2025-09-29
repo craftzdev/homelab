@@ -334,12 +334,14 @@ runcmd:
   - su - cloudinit -c "sudo bash ~/k8s-node-setup.sh ${vmname} ${TARGET_BRANCH}"
   # change default shell to bash
   - chsh -s $(which bash) cloudinit
-EOF"
+EOF
+"
   # SSH 公開鍵を Cloud-Init の UI パラメータで投入
   # （スニペットに埋めても良いが、UI/CLI から差し替えやすい）
   ssh_exec "$ssh_target" "cat > /tmp/${vmname}.pub <<'KEYS'
 ${KEYS}
-KEYS"
+KEYS
+"
   ssh_exec "$ssh_target" "qm set $vmid --sshkeys /tmp/${vmname}.pub && rm -f /tmp/${vmname}.pub"
 
   # スニペットを user= で参照（network は ipconfig0 で行う）
