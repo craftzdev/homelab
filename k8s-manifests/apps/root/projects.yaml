@@ -16,7 +16,7 @@ spec:
       server: https://kubernetes.default.svc
     - namespace: 'metallb-system'
       server: https://kubernetes.default.svc
-    - namespace: 'snapscheduler'
+    - namespace: 'snapscheduler-system'
       server: https://kubernetes.default.svc
     - namespace: 'monitoring'
       server: https://kubernetes.default.svc
