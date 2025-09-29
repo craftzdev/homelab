@@ -260,11 +260,17 @@ vrrp_instance LB_VIP {
 }
 EOF
 
-# Create keepalived user
-groupadd -r keepalived_script
-useradd -r -s /sbin/nologin -g keepalived_script -M keepalived_script
+# Create keepalived user (idempotent)
+if ! getent group keepalived_script >/dev/null 2>&1; then
+  groupadd -r keepalived_script
+fi
+if ! id -u keepalived_script >/dev/null 2>&1; then
+  useradd -r -s /sbin/nologin -g keepalived_script -M keepalived_script
+fi
 
-echo "keepalived_script ALL=(ALL) NOPASSWD: /usr/bin/killall" >> /etc/sudoers
+if ! grep -qE '^keepalived_script\s+ALL=\(ALL\)\s+NOPASSWD:\s+/usr/bin/killall' /etc/sudoers 2>/dev/null; then
+  echo "keepalived_script ALL=(ALL) NOPASSWD: /usr/bin/killall" >> /etc/sudoers
+fi
 
 # Enable VIP services (失敗しても kubeadm init まで進める)
 set +e
