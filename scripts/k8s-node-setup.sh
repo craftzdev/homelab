@@ -266,25 +266,26 @@ useradd -r -s /sbin/nologin -g keepalived_script -M keepalived_script
 
 echo "keepalived_script ALL=(ALL) NOPASSWD: /usr/bin/killall" >> /etc/sudoers
 
-# Enable VIP services
-systemctl enable keepalived --now
-systemctl enable haproxy --now
+# Enable VIP services (失敗しても kubeadm init まで進める)
+set +e
+systemctl enable keepalived --now || echo "[WARN] keepalived enable/start failed"
+systemctl enable haproxy --now || echo "[WARN] haproxy enable/start failed"
 
-# Reload VIP services
-systemctl reload keepalived
-systemctl reload haproxy
+# Reload VIP services (reload 失敗は致命ではない)
+systemctl reload keepalived || systemctl restart keepalived || echo "[WARN] keepalived reload/restart failed"
+systemctl reload haproxy || systemctl restart haproxy || echo "[WARN] haproxy reload/restart failed"
+set -e
 
-# Pull images first
-kubeadm config images pull
+# Pull images first (失敗しても継続)
+kubeadm config images pull || echo "[WARN] kubeadm config images pull failed; continuing"
 
-# install k9s
-wget https://github.com/derailed/k9s/releases/download/v0.27.4/k9s_Linux_amd64.tar.gz -O - | tar -zxvf - k9s && sudo mv ./k9s /usr/local/bin/
+# install k9s (失敗しても継続)
+wget https://github.com/derailed/k9s/releases/download/v0.27.4/k9s_Linux_amd64.tar.gz -O - | tar -zxvf - k9s && sudo mv ./k9s /usr/local/bin/ || echo "[WARN] k9s install failed; continuing"
 
-# install velero client
+# install velero client (失敗しても継続)
 VELERO_VERSION="v1.10.3"
-wget https://github.com/vmware-tanzu/velero/releases/download/${VELERO_VERSION}/velero-${VELERO_VERSION}-linux-amd64.tar.gz
-tar -xvf velero-${VELERO_VERSION}-linux-amd64.tar.gz
-sudo mv velero-${VELERO_VERSION}-linux-amd64/velero /usr/local/bin/
+wget https://github.com/vmware-tanzu/velero/releases/download/${VELERO_VERSION}/velero-${VELERO_VERSION}-linux-amd64.tar.gz || true
+[ -f velero-${VELERO_VERSION}-linux-amd64.tar.gz ] && tar -xvf velero-${VELERO_VERSION}-linux-amd64.tar.gz && sudo mv velero-${VELERO_VERSION}-linux-amd64/velero /usr/local/bin/ || echo "[WARN] velero install skipped"
 
 # endregion
 
