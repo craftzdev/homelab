@@ -324,7 +324,7 @@ if [ -z "$K8S_VERSION" ]; then
   echo "[WARN] Failed to detect kubeadm version; proceeding without explicit kubernetesVersion"
 fi
 cat > "$HOME"/init_kubeadm.yaml <<EOF
-apiVersion: kubeadm.k8s.io/v1beta3
+apiVersion: kubeadm.k8s.io/v1beta4
 kind: InitConfiguration
 bootstrapTokens:
 - token: "$KUBEADM_BOOTSTRAP_TOKEN"
@@ -333,7 +333,7 @@ bootstrapTokens:
 nodeRegistration:
   criSocket: "unix:///var/run/containerd/containerd.sock"
 ---
-apiVersion: kubeadm.k8s.io/v1beta3
+apiVersion: kubeadm.k8s.io/v1beta4
 kind: ClusterConfiguration
 networking:
   serviceSubnet: "10.96.0.0/16"
@@ -420,11 +420,11 @@ helm upgrade --install argocd argo/argo-cd \
     --version 8.5.7 \
     --create-namespace \
     --namespace argocd \
-    --values https://raw.githubusercontent.com/unchama/kube-cluster-on-proxmox/"${TARGET_BRANCH}"/k8s-manifests/argocd-helm-chart-values.yaml
+    --values https://raw.githubusercontent.com/craftzdev/homelab/"${TARGET_BRANCH}"/k8s-manifests/argocd-helm-chart-values.yaml
 helm upgrade --install argocd-apps argo/argocd-apps \
     --version 2.0.2 \
     --namespace argocd \
-    --values https://raw.githubusercontent.com/unchama/kube-cluster-on-proxmox/"${TARGET_BRANCH}"/k8s-manifests/argocd-apps-helm-chart-values.yaml
+    --values https://raw.githubusercontent.com/craftzdev/homelab/"${TARGET_BRANCH}"/k8s-manifests/argocd-apps-helm-chart-values.yaml
 
 
 cat <<EOF | kubectl apply -f -
@@ -454,7 +454,7 @@ kind: KubeletConfiguration
 cgroupDriver: "systemd"
 protectKernelDefaults: true
 ---
-apiVersion: kubeadm.k8s.io/v1beta3
+apiVersion: kubeadm.k8s.io/v1beta4
 kind: JoinConfiguration
 nodeRegistration:
   criSocket: "unix:///var/run/containerd/containerd.sock"
@@ -474,7 +474,7 @@ kind: KubeletConfiguration
 cgroupDriver: "systemd"
 protectKernelDefaults: true
 ---
-apiVersion: kubeadm.k8s.io/v1beta3
+apiVersion: kubeadm.k8s.io/v1beta4
 kind: JoinConfiguration
 nodeRegistration:
   criSocket: "unix:///var/run/containerd/containerd.sock"
@@ -497,7 +497,7 @@ kind: KubeletConfiguration
 cgroupDriver: "systemd"
 protectKernelDefaults: true
 ---
-apiVersion: kubeadm.k8s.io/v1beta3
+apiVersion: kubeadm.k8s.io/v1beta4
 kind: JoinConfiguration
 nodeRegistration:
   criSocket: "unix:///var/run/containerd/containerd.sock"
@@ -517,7 +517,7 @@ kind: KubeletConfiguration
 cgroupDriver: "systemd"
 protectKernelDefaults: true
 ---
-apiVersion: kubeadm.k8s.io/v1beta3
+apiVersion: kubeadm.k8s.io/v1beta4
 kind: JoinConfiguration
 nodeRegistration:
   criSocket: "unix:///var/run/containerd/containerd.sock"
@@ -534,14 +534,14 @@ EOF
 sudo apt-get install -y ansible git sshpass
 
 # clone repo
-git clone -b "${TARGET_BRANCH}" https://github.com/unchama/kube-cluster-on-proxmox.git "$HOME"/kube-cluster-on-proxmox
+git clone -b "${TARGET_BRANCH}" https://github.com/craftzdev/homelab.git "$HOME"/homelab
 
 # export ansible.cfg target
-export ANSIBLE_CONFIG="$HOME"/kube-cluster-on-proxmox/ansible/ansible.cfg
+export ANSIBLE_CONFIG="$HOME"/homelab/ansible/ansible.cfg
 
 # run ansible-playbook
-ansible-galaxy role install -r "$HOME"/kube-cluster-on-proxmox/ansible/roles/requirements.yaml
-ansible-galaxy collection install -r "$HOME"/kube-cluster-on-proxmox/ansible/roles/requirements.yaml
-ansible-playbook -i "$HOME"/kube-cluster-on-proxmox/ansible/hosts/k8s-servers/inventory "$HOME"/kube-cluster-on-proxmox/ansible/site.yaml
+ansible-galaxy role install -r "$HOME"/homelab/ansible/roles/requirements.yaml
+ansible-galaxy collection install -r "$HOME"/homelab/ansible/roles/requirements.yaml
+ansible-playbook -i "$HOME"/homelab/ansible/hosts/k8s-servers/inventory "$HOME"/homelab/ansible/site.yaml
 
 # endregion
