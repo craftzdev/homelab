@@ -301,6 +301,7 @@ users:
   - name: cloudinit
     sudo: ALL=(ALL) NOPASSWD:ALL
     lock_passwd: false
+    shell: /bin/bash
     # mkpasswd --method=SHA-512 --rounds=4096
     # password is zaq12wsx
     passwd: \$6\$rounds=4096\$Xlyxul70asLm\$9tKm.0po4ZE7vgqc.grptZzUU9906z/.vjwcqz/WYVtTwc5i2DWfjVpXb8HBtoVfvSY61rvrs/iwHxREKl3f20
