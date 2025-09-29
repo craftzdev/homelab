@@ -296,7 +296,16 @@ for row in "${VM_LIST[@]}"; do
 hostname: ${vmname}
 timezone: Asia/Tokyo
 manage_etc_hosts: true
-ssh_pwauth: false
+users:
+  - default
+  - name: cloudinit
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    lock_passwd: false
+    # mkpasswd --method=SHA-512 --rounds=4096
+    # password is zaq12wsx
+    passwd: \$6\$rounds=4096\$Xlyxul70asLm\$9tKm.0po4ZE7vgqc.grptZzUU9906z/.vjwcqz/WYVtTwc5i2DWfjVpXb8HBtoVfvSY61rvrs/iwHxREKl3f20
+ssh_pwauth: true
+ssh_authorized_keys: []
 # Network configuration with proper nameserver format
 network:
   version: 2
