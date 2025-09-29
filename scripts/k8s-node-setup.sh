@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 
 set -eu
+export DEBIAN_FRONTEND=noninteractive
 
 # special thanks!: https://gist.github.com/inductor/32116c486095e5dde886b55ff6e568c8
 
@@ -168,18 +169,18 @@ esac
 
 # region : setup for all-control-plane node
 
-# Install HAProxy (PPA 優先、失敗時はディストリ版にフォールバック)
+# Install HAProxy (Ubuntu 24.04 noble では vbernat PPA が無いため、常にディストリ版を使用)
 set +e
-apt-get install -y --no-install-recommends software-properties-common
-add-apt-repository ppa:vbernat/haproxy-2.4 -y && \
-  apt-get update && apt-get install -y haproxy=2.4.*
-if [ $? -ne 0 ]; then
-  echo "[WARN] PPA haproxy 2.4 install failed. Removing PPA and falling back to distro haproxy."
-  # 失敗した PPA を無効化してから update（noble では Release が無い）
-  add-apt-repository -r ppa:vbernat/haproxy-2.4 -y || true
-  rm -f /etc/apt/sources.list.d/*haproxy* /etc/apt/sources.list.d/*vbernat* 2>/dev/null || true
-  apt-get update && apt-get install -y haproxy || { echo "[ERROR] Failed to install distro haproxy"; exit 1; }
-fi
+apt-get install -y --no-install-recommends software-properties-common || true
+# 既存の vbernat/haproxy-2.4 PPA をクリーンアップ（過去実行の残骸対策）
+add-apt-repository -r ppa:vbernat/haproxy-2.4 -y >/dev/null 2>&1 || true
+rm -f /etc/apt/sources.list.d/*vbernat* /etc/apt/sources.list.d/*haproxy* 2>/dev/null || true
+for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.list; do
+  [ -f "$f" ] || continue
+  sed -i.bak -e '/launchpadcontent.net\\/vbernat\\/haproxy-2.4/d' -e '/ppa.launchpad.net\\/vbernat\\/haproxy-2.4/d' "$f" || true
+done
+apt-get update
+apt-get install -y haproxy || { echo "[ERROR] Failed to install distro haproxy"; exit 1; }
 set -e
 
 cat > /etc/haproxy/haproxy.cfg <<EOF
