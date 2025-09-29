@@ -10,14 +10,14 @@ function usage() {
     echo "usage> k8s-node-setup.sh [COMMAND]"
     echo "[COMMAND]:"
     echo "  help        show command usage"
-    echo "  k8s-cp-1    run setup script for k8s-cp-1"
-    echo "  k8s-cp-2    run setup script for k8s-cp-2"
-    echo "  k8s-cp-3    run setup script for k8s-cp-3"
-    echo "  k8s-wk-*    run setup script for k8s-wk-*"
+    echo "  unc-k8s-cp-1    run setup script for unc-k8s-cp-1"
+    echo "  unc-k8s-cp-2    run setup script for unc-k8s-cp-2"
+    echo "  unc-k8s-cp-3    run setup script for unc-k8s-cp-3"
+    echo "  unc-k8s-wk-*    run setup script for unc-k8s-wk-*"
 }
 
 case $1 in
-    k8s-cp-1|k8s-cp-2|k8s-cp-3|k8s-wk-*)
+    unc-k8s-cp-1|unc-k8s-cp-2|unc-k8s-cp-3|unc-k8s-wk-*)
         ;;
     help)
         usage
@@ -35,43 +35,32 @@ esac
 
 # Set global variables
 TARGET_BRANCH=$2
-KUBE_API_SERVER_VIP=172.16.40.100
-VIP_INTERFACE=ens18
-NODE_IPS=( 172.16.40.11 172.16.40.12 172.16.40.13 )
-EXTERNAL_KUBE_API_SERVER="$(tr -dc '[:lower:]' </dev/urandom | head -c 1)$(tr -dc '[:lower:]0-9' </dev/urandom | head -c 7)-k8s-api.homelab.local"
-
-# Auto-detect NIC if the specified interface does not exist
-if ! ip -o link show "$VIP_INTERFACE" >/dev/null 2>&1; then
-    DETECT_IF=$(ip route get 1.1.1.1 2>/dev/null | awk '{print $5; exit}')
-    if [ -n "$DETECT_IF" ]; then
-        echo "[WARN] Interface '$VIP_INTERFACE' not found. Using detected interface '$DETECT_IF'"
-        VIP_INTERFACE="$DETECT_IF"
-    else
-        echo "[WARN] Could not auto-detect default interface; keepalived may fail to bind VIP"
-    fi
-fi
+KUBE_API_SERVER_VIP=172.16.3.100
+VIP_INTERFACE=ens19
+NODE_IPS=( 172.16.3.11 172.16.3.12 172.16.3.13 )
+EXTERNAL_KUBE_API_SERVER="$(tr -dc '[:lower:]' </dev/urandom | head -c 1)$(tr -dc '[:lower:]0-9' </dev/urandom | head -c 7)-unc-k8s-api.unchama.com"
 
 # set per-node variables
 case $1 in
-    k8s-cp-1)
+    unc-k8s-cp-1)
         KEEPALIVED_STATE=MASTER
         KEEPALIVED_PRIORITY=101
         KEEPALIVED_UNICAST_SRC_IP=${NODE_IPS[0]}
         KEEPALIVED_UNICAST_PEERS=( "${NODE_IPS[1]}" "${NODE_IPS[2]}" )
         ;;
-    k8s-cp-2)
+    unc-k8s-cp-2)
         KEEPALIVED_STATE=BACKUP
-        KEEPALIVED_PRIORITY=100
+        KEEPALIVED_PRIORITY=99
         KEEPALIVED_UNICAST_SRC_IP=${NODE_IPS[1]}
         KEEPALIVED_UNICAST_PEERS=( "${NODE_IPS[0]}" "${NODE_IPS[2]}" )
         ;;
-    k8s-cp-3)
+    unc-k8s-cp-3)
         KEEPALIVED_STATE=BACKUP
-        KEEPALIVED_PRIORITY=100
+        KEEPALIVED_PRIORITY=97
         KEEPALIVED_UNICAST_SRC_IP=${NODE_IPS[2]}
         KEEPALIVED_UNICAST_PEERS=( "${NODE_IPS[0]}" "${NODE_IPS[1]}" )
         ;;
-    k8s-wk-*)
+    unc-k8s-wk-*)
         ;;
     *)
         exit 1
@@ -137,10 +126,10 @@ EOF
 sysctl --system
 
 # Install kubeadm
-curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.32/deb/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
-echo "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.32/deb/ /" | sudo tee /etc/apt/sources.list.d/kubernetes.list
+curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-archive-keyring.gpg
+echo "deb [signed-by=/etc/apt/keyrings/kubernetes-archive-keyring.gpg] https://apt.kubernetes.io/ kubernetes-xenial main" | sudo tee /etc/apt/sources.list.d/kubernetes.list
 apt-get update
-apt-get install -y kubelet kubeadm kubectl
+apt-get install -y kubelet=1.27.1-00 kubeadm=1.27.1-00 kubectl=1.27.1-00
 apt-mark hold kubelet kubeadm kubectl
 
 # Disable swap
@@ -156,10 +145,10 @@ EOF
 
 # Ends except worker-plane
 case $1 in
-    k8s-wk-*)
+    unc-k8s-wk-*)
         exit 0
         ;;
-    k8s-cp-1|k8s-cp-2|k8s-cp-3)
+    unc-k8s-cp-1|unc-k8s-cp-2|unc-k8s-cp-3)
         ;;
     *)
         exit 1
@@ -168,16 +157,10 @@ esac
 
 # region : setup for all-control-plane node
 
-# Install HAProxy (PPA 優先、失敗時はディストリ版にフォールバック)
-set +e
+# Install HAProxy
 apt-get install -y --no-install-recommends software-properties-common
-add-apt-repository ppa:vbernat/haproxy-2.4 -y && \
-  apt-get update && apt-get install -y haproxy=2.4.*
-if [ $? -ne 0 ]; then
-  echo "[WARN] PPA haproxy 2.4 install failed. Falling back to distro haproxy."
-  apt-get update && apt-get install -y haproxy || { echo "[ERROR] Failed to install haproxy"; exit 1; }
-fi
-set -e
+add-apt-repository ppa:vbernat/haproxy-2.4 -y
+sudo apt-get install -y haproxy=2.4.\*
 
 cat > /etc/haproxy/haproxy.cfg <<EOF
 global
@@ -272,15 +255,13 @@ useradd -r -s /sbin/nologin -g keepalived_script -M keepalived_script
 
 echo "keepalived_script ALL=(ALL) NOPASSWD: /usr/bin/killall" >> /etc/sudoers
 
-# Enable VIP services (失敗しても kubeadm init までは進める)
-set +e
-systemctl enable keepalived --now || echo "[WARN] keepalived enable/start failed"
-systemctl enable haproxy --now || echo "[WARN] haproxy enable/start failed"
+# Enable VIP services
+systemctl enable keepalived --now
+systemctl enable haproxy --now
 
-# Reload VIP services (reload 失敗は致命ではない)
-systemctl reload keepalived || systemctl restart keepalived || echo "[WARN] keepalived reload/restart failed"
-systemctl reload haproxy || systemctl restart haproxy || echo "[WARN] haproxy reload/restart failed"
-set -e
+# Reload VIP services
+systemctl reload keepalived
+systemctl reload haproxy
 
 # Pull images first
 kubeadm config images pull
@@ -298,9 +279,9 @@ sudo mv velero-${VELERO_VERSION}-linux-amd64/velero /usr/local/bin/
 
 # Ends except first-control-plane
 case $1 in
-    k8s-cp-1)
+    unc-k8s-cp-1)
         ;;
-    k8s-cp-2|k8s-cp-3)
+    unc-k8s-cp-2|unc-k8s-cp-3)
         exit 0
         ;;
     *)
@@ -314,11 +295,6 @@ esac
 KUBEADM_BOOTSTRAP_TOKEN=$(openssl rand -hex 3).$(openssl rand -hex 8)
 
 # Set init configuration for the first control plane
-# Detect the kubeadm version so ClusterConfiguration matches installed binaries
-K8S_VERSION="$(kubeadm version -o short 2>/dev/null || true)"
-if [ -z "$K8S_VERSION" ]; then
-  echo "[WARN] Failed to detect kubeadm version; proceeding without explicit kubernetesVersion"
-fi
 cat > "$HOME"/init_kubeadm.yaml <<EOF
 apiVersion: kubeadm.k8s.io/v1beta3
 kind: InitConfiguration
@@ -334,7 +310,7 @@ kind: ClusterConfiguration
 networking:
   serviceSubnet: "10.96.0.0/16"
   podSubnet: "10.128.0.0/16"
-$( [ -n "$K8S_VERSION" ] && echo "kubernetesVersion: \"$K8S_VERSION\"" )
+kubernetesVersion: "v1.27.1"
 controlPlaneEndpoint: "${KUBE_API_SERVER_VIP}:8443"
 apiServer:
   certSANs:
@@ -353,40 +329,11 @@ protectKernelDefaults: true
 EOF
 
 # Install Kubernetes without kube-proxy
-set +e
-kubeadm init --config "$HOME"/init_kubeadm.yaml --skip-phases=addon/kube-proxy --ignore-preflight-errors=NumCPU,Mem | tee /root/kubeadm-init.log
-INIT_STATUS=${PIPESTATUS[0]}
-set -e
-if [ $INIT_STATUS -ne 0 ]; then
-  echo "[ERROR] kubeadm init failed. See /root/kubeadm-init.log"
-  exit $INIT_STATUS
-fi
+kubeadm init --config "$HOME"/init_kubeadm.yaml --skip-phases=addon/kube-proxy --ignore-preflight-errors=NumCPU,Mem
 
 mkdir -p "$HOME"/.kube
-if [ -f /etc/kubernetes/admin.conf ]; then
-  cp /etc/kubernetes/admin.conf "$HOME"/.kube/config
-  chown "$(id -u)":"$(id -g)" "$HOME"/.kube/config
-fi
-
-# Set up kubeconfig for cloudinit user as well
-sudo -u cloudinit mkdir -p /home/cloudinit/.kube
-if [ -f /etc/kubernetes/admin.conf ]; then
-  sudo cp /etc/kubernetes/admin.conf /home/cloudinit/.kube/config
-  sudo chown cloudinit:cloudinit /home/cloudinit/.kube/config
-fi
-
-# Persist KUBECONFIG for cloudinit user
-sudo bash -c "grep -q 'export KUBECONFIG=\\$HOME/.kube/config' /home/cloudinit/.bashrc || echo 'export KUBECONFIG=\\$HOME/.kube/config' >> /home/cloudinit/.bashrc"
-
-# Provide a system-wide default for interactive shells when admin.conf exists
-if [ -f /etc/kubernetes/admin.conf ]; then
-  cat <<'EOP' | sudo tee /etc/profile.d/kubeconfig.sh >/dev/null
-if [ -z "${KUBECONFIG:-}" ] && [ -f "$HOME/.kube/config" ]; then
-  export KUBECONFIG="$HOME/.kube/config"
-fi
-EOP
-  sudo chmod 0644 /etc/profile.d/kubeconfig.sh
-fi
+cp -i /etc/kubernetes/admin.conf "$HOME"/.kube/config
+chown "$(id -u)":"$(id -g)" "$HOME"/.kube/config
 
 # クラスタ初期セットアップ時に helm　を使用して CNI と ArgoCD をクラスタに導入する
 # それ以外のクラスタリソースは ArgoCD によって本リポジトリから自動で導入される
