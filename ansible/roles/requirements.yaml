@@ -1,0 +1,10 @@
+---
+roles:
+  - name: geerlingguy.haproxy
+  - name: 0x0i.keepalived
+collections:
+  - name: community.general
+  - name: ansible.posix
+  - name: community.kubernetes
+  - name: community.proxmox
+  - name: community.crypto

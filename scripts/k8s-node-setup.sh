@@ -478,18 +478,18 @@ EOF
 
 # ---
 
-# install ansible
-sudo apt-get install -y ansible git sshpass
+# Optionally run external Ansible playbook (disabled by default)
+if [ "${RUN_ANSIBLE:-false}" = "true" ]; then
+  sudo apt-get install -y ansible git sshpass
 
-# clone repo
-git clone -b "${TARGET_BRANCH}" https://github.com/unchama/kube-cluster-on-proxmox.git "$HOME"/kube-cluster-on-proxmox
+  git clone -b "${TARGET_BRANCH}" https://github.com/unchama/kube-cluster-on-proxmox.git "$HOME"/kube-cluster-on-proxmox
+  export ANSIBLE_CONFIG="$HOME"/kube-cluster-on-proxmox/ansible/ansible.cfg
 
-# export ansible.cfg target
-export ANSIBLE_CONFIG="$HOME"/kube-cluster-on-proxmox/ansible/ansible.cfg
-
-# run ansible-playbook
-ansible-galaxy role install -r "$HOME"/kube-cluster-on-proxmox/ansible/roles/requirements.yaml
-ansible-galaxy collection install -r "$HOME"/kube-cluster-on-proxmox/ansible/roles/requirements.yaml
-ansible-playbook -i "$HOME"/kube-cluster-on-proxmox/ansible/hosts/k8s-servers/inventory "$HOME"/kube-cluster-on-proxmox/ansible/site.yaml
+  ansible-galaxy role install -r "$HOME"/kube-cluster-on-proxmox/ansible/roles/requirements.yaml || true
+  ansible-galaxy collection install -r "$HOME"/kube-cluster-on-proxmox/ansible/roles/requirements.yaml || true
+  ansible-playbook -i "$HOME"/kube-cluster-on-proxmox/ansible/hosts/k8s-servers/inventory "$HOME"/kube-cluster-on-proxmox/ansible/site.yaml
+else
+  echo "[INFO] Skipping external Ansible run (set RUN_ANSIBLE=true to enable)"
+fi
 
 # endregion

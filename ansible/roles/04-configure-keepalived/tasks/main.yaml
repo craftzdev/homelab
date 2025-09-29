@@ -1,0 +1,33 @@
+---
+- name: Ensure Keepalived is installed
+  ansible.builtin.package:
+    name: keepalived
+    state: present
+
+- name: Ensure psmisc (killall) is installed
+  ansible.builtin.package:
+    name: psmisc
+    state: present
+
+- name: Ensure ip_nonlocal_bind is enabled
+  ansible.posix.sysctl:
+    name: net.ipv4.ip_nonlocal_bind
+    value: '1'
+    sysctl_set: true
+    state: present
+    reload: true
+
+- name: Deploy Keepalived configuration
+  ansible.builtin.template:
+    src: keepalived.conf.j2
+    dest: /etc/keepalived/keepalived.conf
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Restart Keepalived
+
+- name: Ensure Keepalived service is enabled and running
+  ansible.builtin.service:
+    name: keepalived
+    enabled: true
+    state: started

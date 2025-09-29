@@ -1,0 +1,23 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: metallb
+  namespace: argocd
+  annotations:
+    # Install MetalLB (CRDs and controller) before its configuration CRs
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  project: cluster-wide-apps
+  source:
+    repoURL: https://github.com/metallb/metallb.git
+    targetRevision: v0.15.2
+    path: config/native
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: metallb-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio-for-velero-lb
+  namespace: minio-for-velero
+  labels:
+    app: minio-for-velero
+  annotations:
+    # metallb.universe.tf/address-pool: default
+spec:
+  type: LoadBalancer
+  selector:
+    app: minio-for-velero
+  ports:
+    - name: s3
+      port: 9000
+      targetPort: 9000
+    - name: console
+      port: 9001
+      targetPort: 9001
+  externalTrafficPolicy: Cluster

@@ -1,0 +1,20 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: snapscheduler
+  namespace: argocd
+spec:
+  project: cluster-wide-apps
+  source:
+    repoURL: https://github.com/backube/snapscheduler
+    targetRevision: master
+    path: config/default
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: snapscheduler-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

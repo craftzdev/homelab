@@ -1,0 +1,15 @@
+[all:vars]
+ansible_user=cloudinit
+ansible_ssh_private_key_file=~/.ssh/id_ed25519
+# Bastion/ProxyCommand を使う場合の例（必要に応じて有効化してください）
+# ansible_ssh_common_args='-o ProxyCommand="ssh -W %h:%p <bastion-host>"'
+
+[kube_server]
+k8s-cp-1 ansible_host=172.16.40.11
+k8s-cp-2 ansible_host=172.16.40.12
+k8s-cp-3 ansible_host=172.16.40.13
+
+[kube_agents]
+k8s-wk-1 ansible_host=172.16.40.21
+k8s-wk-2 ansible_host=172.16.40.22
+k8s-wk-3 ansible_host=172.16.40.23

@@ -1,0 +1,95 @@
+# Config values for the ArgoCD Helm Chart.
+# For default values, see ( ver 5.36.10 )
+# https://github.com/argoproj/argo-helm/blob/argo-cd-5.36.10/charts/argo-cd/values.yaml
+server:
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 5
+    # -- Average CPU utilization percentage (to the requested resource) for the Argo CD server [HPA]
+    targetCPUUtilizationPercentage: 90
+    # -- Average memory utilization percentage (to the requested resource) for the Argo CD server [HPA]
+    targetMemoryUtilizationPercentage: 175
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 192Mi
+  pdb:
+    enabled: true
+    minAvailable: 1
+    maxUnavailable: 0
+
+configs:
+  cm:
+    create: true
+    application.instanceLabelKey: argocd.argoproj.io/instance
+    kustomize.buildOptions: --load-restrictor LoadRestrictionsNone
+    resource.exclusions: |
+      - apiGroups:
+        - "velero.io"
+        kinds:
+        - Backup
+        clusters:
+        - "*"
+
+controller:
+  enableStatefulSet: true
+  resources:
+    limits:
+      cpu: 500m
+      memory: 1024Mi
+    requests:
+      cpu: 250m
+      memory: 768Mi
+  pdb:
+    enabled: true
+    minAvailable: 1
+    maxUnavailable: 0
+
+dex:
+  resources:
+    limits:
+      cpu: 100m
+      memory: 192Mi
+    requests:
+      cpu: 50m
+      memory: 128Mi
+  pdb:
+    enabled: true
+    minAvailable: 1
+    maxUnavailable: 0
+
+redis:
+  resources:
+    limits:
+      cpu: 200m
+      memory: 256Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+
+repoServer:
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: 500m
+      memory: 128Mi
+
+applicationSet:
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: 500m
+      memory: 128Mi
+
+notifications:
+  resources:
+    limits:
+      cpu: 100m
+      memory: 64Mi
+    requests:
+      cpu: 100m
+      memory: 64Mi

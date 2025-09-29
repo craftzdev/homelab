@@ -1,0 +1,19 @@
+---
+- name: Ensure .kube dir exists
+  ansible.builtin.file:
+    path: "{{ kubeconfig_home | default('/home/cloudinit') }}/.kube"
+    state: directory
+    owner: "{{ kubeconfig_user | default('cloudinit') }}"
+    group: "{{ kubeconfig_user | default('cloudinit') }}"
+    mode: "0700"
+
+- name: Copy admin kubeconfig to user
+  ansible.builtin.copy:
+    src: /etc/kubernetes/admin.conf
+    dest: "{{ kubeconfig_home | default('/home/cloudinit') }}/.kube/config"
+    owner: "{{ kubeconfig_user | default('cloudinit') }}"
+    group: "{{ kubeconfig_user | default('cloudinit') }}"
+    remote_src: true
+    mode: "0600"
+  become: true
+  when: ansible_user_dir is defined

@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana-lb
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: grafana-lb
+spec:
+  type: LoadBalancer
+  selector:
+    app.kubernetes.io/name: grafana
+    app.kubernetes.io/instance: monitoring
+  ports:
+    - name: http
+      port: 80
+      targetPort: 3000
+  externalTrafficPolicy: Cluster
