@@ -335,6 +335,14 @@ mkdir -p "$HOME"/.kube
 cp -i /etc/kubernetes/admin.conf "$HOME"/.kube/config
 chown "$(id -u)":"$(id -g)" "$HOME"/.kube/config
 
+# Set up kubeconfig for cloudinit user as well
+sudo mkdir -p /home/cloudinit/.kube
+sudo cp -i /etc/kubernetes/admin.conf /home/cloudinit/.kube/config
+sudo chown cloudinit:cloudinit /home/cloudinit/.kube/config
+
+# Add KUBECONFIG to cloudinit user's bashrc
+echo 'export KUBECONFIG=$HOME/.kube/config' | sudo tee -a /home/cloudinit/.bashrc
+
 # クラスタ初期セットアップ時に helm　を使用して CNI と ArgoCD をクラスタに導入する
 # それ以外のクラスタリソースは ArgoCD によって本リポジトリから自動で導入される
 
