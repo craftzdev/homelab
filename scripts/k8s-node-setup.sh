@@ -10,14 +10,14 @@ function usage() {
     echo "usage> k8s-node-setup.sh [COMMAND]"
     echo "[COMMAND]:"
     echo "  help        show command usage"
-    echo "  unc-k8s-cp-1    run setup script for unc-k8s-cp-1"
-    echo "  unc-k8s-cp-2    run setup script for unc-k8s-cp-2"
-    echo "  unc-k8s-cp-3    run setup script for unc-k8s-cp-3"
-    echo "  unc-k8s-wk-*    run setup script for unc-k8s-wk-*"
+    echo "  k8s-cp-1    run setup script for k8s-cp-1"
+    echo "  k8s-cp-2    run setup script for k8s-cp-2"
+    echo "  k8s-cp-3    run setup script for k8s-cp-3"
+    echo "  k8s-wk-*    run setup script for k8s-wk-*"
 }
 
 case $1 in
-    unc-k8s-cp-1|unc-k8s-cp-2|unc-k8s-cp-3|unc-k8s-wk-*)
+    k8s-cp-1|k8s-cp-2|k8s-cp-3|k8s-wk-*)
         ;;
     help)
         usage
@@ -35,32 +35,32 @@ esac
 
 # Set global variables
 TARGET_BRANCH=$2
-KUBE_API_SERVER_VIP=172.16.3.100
-VIP_INTERFACE=ens19
-NODE_IPS=( 172.16.3.11 172.16.3.12 172.16.3.13 )
-EXTERNAL_KUBE_API_SERVER="$(tr -dc '[:lower:]' </dev/urandom | head -c 1)$(tr -dc '[:lower:]0-9' </dev/urandom | head -c 7)-unc-k8s-api.unchama.com"
+KUBE_API_SERVER_VIP=172.16.40.100
+VIP_INTERFACE=ens18
+NODE_IPS=( 172.16.40.11 172.16.40.12 172.16.40.13 )
+EXTERNAL_KUBE_API_SERVER="$(tr -dc '[:lower:]' </dev/urandom | head -c 1)$(tr -dc '[:lower:]0-9' </dev/urandom | head -c 7)-k8s-api.homelab.local"
 
 # set per-node variables
 case $1 in
-    unc-k8s-cp-1)
+    k8s-cp-1)
         KEEPALIVED_STATE=MASTER
         KEEPALIVED_PRIORITY=101
         KEEPALIVED_UNICAST_SRC_IP=${NODE_IPS[0]}
         KEEPALIVED_UNICAST_PEERS=( "${NODE_IPS[1]}" "${NODE_IPS[2]}" )
         ;;
-    unc-k8s-cp-2)
+    k8s-cp-2)
         KEEPALIVED_STATE=BACKUP
-        KEEPALIVED_PRIORITY=99
+        KEEPALIVED_PRIORITY=100
         KEEPALIVED_UNICAST_SRC_IP=${NODE_IPS[1]}
         KEEPALIVED_UNICAST_PEERS=( "${NODE_IPS[0]}" "${NODE_IPS[2]}" )
         ;;
-    unc-k8s-cp-3)
+    k8s-cp-3)
         KEEPALIVED_STATE=BACKUP
-        KEEPALIVED_PRIORITY=97
+        KEEPALIVED_PRIORITY=100
         KEEPALIVED_UNICAST_SRC_IP=${NODE_IPS[2]}
         KEEPALIVED_UNICAST_PEERS=( "${NODE_IPS[0]}" "${NODE_IPS[1]}" )
         ;;
-    unc-k8s-wk-*)
+    k8s-wk-*)
         ;;
     *)
         exit 1
@@ -145,10 +145,10 @@ EOF
 
 # Ends except worker-plane
 case $1 in
-    unc-k8s-wk-*)
+    k8s-wk-*)
         exit 0
         ;;
-    unc-k8s-cp-1|unc-k8s-cp-2|unc-k8s-cp-3)
+    k8s-cp-1|k8s-cp-2|k8s-cp-3)
         ;;
     *)
         exit 1
@@ -279,9 +279,9 @@ sudo mv velero-${VELERO_VERSION}-linux-amd64/velero /usr/local/bin/
 
 # Ends except first-control-plane
 case $1 in
-    unc-k8s-cp-1)
+    k8s-cp-1)
         ;;
-    unc-k8s-cp-2|unc-k8s-cp-3)
+    k8s-cp-2|k8s-cp-3)
         exit 0
         ;;
     *)
