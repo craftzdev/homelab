@@ -332,6 +332,8 @@ runcmd:
   # run install scripts
   - su - cloudinit -c "curl -s ${REPOSITORY_RAW_SOURCE_URL}/scripts/k8s-node-setup.sh > ~/k8s-node-setup.sh"
   - su - cloudinit -c "sudo bash ~/k8s-node-setup.sh ${vmname} ${TARGET_BRANCH}"
+  # change default shell to bash
+  - chsh -s $(which bash) cloudinit
 EOF"
   # SSH 公開鍵を Cloud-Init の UI パラメータで投入
   # （スニペットに埋めても良いが、UI/CLI から差し替えやすい）
