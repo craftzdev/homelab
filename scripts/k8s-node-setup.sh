@@ -83,29 +83,6 @@ esac
 
 # region : setup for all-node
 
-cleanup_bad_haproxy_ppa() {
-  set +e
-  # 既知の PPA を抹消
-  add-apt-repository -r ppa:vbernat/haproxy-2.4 -y >/dev/null 2>&1 || true
-  # 参照ファイルを削除（.list/.sources の両方）
-  find /etc/apt/sources.list.d -type f \( -name "*.list" -o -name "*.sources" \) -print0 2>/dev/null \
-    | xargs -0r grep -lE 'vbernat|haproxy-2\.4|launchpadcontent\.net' \
-    | xargs -r rm -f
-  # メインの sources.list から該当行をコメントアウト
-  if [ -f /etc/apt/sources.list ]; then
-    if grep -qE 'vbernat|haproxy-2\.4|launchpadcontent\.net' /etc/apt/sources.list; then
-      sed -i.bak -E 's/^(.*(vbernat|haproxy-2\.4|launchpadcontent\.net).*)$/# disabled by k8s-node-setup: \1/' /etc/apt/sources.list
-    fi
-  fi
-  # APT キャッシュをクリアしてから update（古い lists を参照しないように）
-  apt-get clean
-  rm -rf /var/lib/apt/lists/*
-  apt-get update || true
-  set -e
-}
-
-cleanup_bad_haproxy_ppa
-
 # Install Containerd
 cat <<EOF | sudo tee /etc/modules-load.d/containerd.conf
 overlay
@@ -192,19 +169,9 @@ esac
 
 # region : setup for all-control-plane node
 
-# Install HAProxy (Ubuntu 24.04 noble では vbernat PPA が無いため、常にディストリ版を使用)
-set +e
-apt-get install -y --no-install-recommends software-properties-common || true
-# 既存の vbernat/haproxy-2.4 PPA をクリーンアップ（過去実行の残骸対策）
-add-apt-repository -r ppa:vbernat/haproxy-2.4 -y >/dev/null 2>&1 || true
-rm -f /etc/apt/sources.list.d/*vbernat* /etc/apt/sources.list.d/*haproxy* 2>/dev/null || true
-for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.list; do
-  [ -f "$f" ] || continue
-  sed -i.bak -e '/launchpadcontent.net\\/vbernat\\/haproxy-2.4/d' -e '/ppa.launchpad.net\\/vbernat\\/haproxy-2.4/d' "$f" || true
-done
+# Install HAProxy（ディストリ版をインストール）
 apt-get update
-apt-get install -y haproxy || { echo "[ERROR] Failed to install distro haproxy"; exit 1; }
-set -e
+apt-get install -y --no-install-recommends haproxy
 
 cat > /etc/haproxy/haproxy.cfg <<EOF
 global
@@ -299,15 +266,13 @@ useradd -r -s /sbin/nologin -g keepalived_script -M keepalived_script
 
 echo "keepalived_script ALL=(ALL) NOPASSWD: /usr/bin/killall" >> /etc/sudoers
 
-# Enable VIP services (失敗しても kubeadm init までは進める)
-set +e
-systemctl enable keepalived --now || echo "[WARN] keepalived enable/start failed"
-systemctl enable haproxy --now || echo "[WARN] haproxy enable/start failed"
+# Enable VIP services
+systemctl enable keepalived --now
+systemctl enable haproxy --now
 
-# Reload VIP services (reload 失敗は致命ではない)
-systemctl reload keepalived || systemctl restart keepalived || echo "[WARN] keepalived reload/restart failed"
-systemctl reload haproxy || systemctl restart haproxy || echo "[WARN] haproxy reload/restart failed"
-set -e
+# Reload VIP services
+systemctl reload keepalived
+systemctl reload haproxy
 
 # Pull images first
 kubeadm config images pull
