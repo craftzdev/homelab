@@ -79,6 +79,7 @@ repoServer:
       memory: 128Mi
 
 applicationSet:
+  enabled: true
   replicaCount: 1
   resources:
     requests:
