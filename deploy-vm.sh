@@ -32,12 +32,12 @@ SEARCHDOMAIN=${SEARCHDOMAIN:-home.arpa}
 
 # VM inventory: vmid name vCPU mem(MiB) ip targetip targethost
 VM_LIST=(
-  "1001 k8s-cp-1 4 8192 172.16.40.11 - sv-proxmox-02"
-  "1002 k8s-cp-2 4 8192 172.16.40.12 - sv-proxmox-02"
-  "1003 k8s-cp-3 4 8192 172.16.40.13 - sv-proxmox-02"
-  "1101 k8s-wk-1 4 8192 172.16.40.21 - sv-proxmox-02"
-  "1102 k8s-wk-2 4 8192 172.16.40.22 - sv-proxmox-02"
-  "1103 k8s-wk-3 4 8192 172.16.40.23 - sv-proxmox-02"
+  "1001 k8s-cp-1 4 8192 172.16.40.11 - sv-proxmox-01"
+  "1002 k8s-cp-2 4 8192 172.16.40.12 - sv-proxmox-01"
+  "1003 k8s-cp-3 4 8192 172.16.40.13 - sv-proxmox-01"
+  "1101 k8s-wk-1 4 8192 172.16.40.21 - sv-proxmox-01"
+  "1102 k8s-wk-2 4 8192 172.16.40.22 - sv-proxmox-01"
+  "1103 k8s-wk-3 4 8192 172.16.40.23 - sv-proxmox-01"
 )
 
 # Cloud-Init: ユーザと SSH 公開鍵（改行区切りで列挙）
@@ -170,8 +170,21 @@ else
   echo "[INFO] Cluster node membership check skipped (REQUIRE_CLUSTER=false)"
 fi
 
-# SSH 接続先ユニーク化
+# SSH 接続先ユニーク化（移行先ノードも含める）
 mapfile -t SSH_TARGETS < <(printf "%s\n" "${VM_LIST[@]}" | awk -v m="$SSH_CONNECT_FIELD" '{print (m=="host"?$7:$6)}' | sort -u)
+
+# VM移行先ノードも追加
+declare -A VM_MIGRATIONS_TEMP=(
+  ["k8s-cp-2"]="sv-proxmox-02"
+  ["k8s-wk-2"]="sv-proxmox-02"
+  ["k8s-cp-3"]="sv-proxmox-03"
+  ["k8s-wk-3"]="sv-proxmox-03"
+)
+for target_node in "${VM_MIGRATIONS_TEMP[@]}"; do
+  if ! printf "%s\n" "${SSH_TARGETS[@]}" | grep -qx "$target_node"; then
+    SSH_TARGETS+=("$target_node")
+  fi
+done
 # SSH known_hosts への事前登録（初回接続時の対話回避）
 ensure_known_host(){
   local host="$1"
@@ -254,7 +267,17 @@ for row in "${VM_LIST[@]}"; do
 
   echo "[INFO] CPU/Memory and disk"
   ssh_exec "$ssh_target" "qm set $vmid --cores $cpu --memory $mem"
-  ssh_exec "$ssh_target" "qm move-disk $vmid scsi0 $BOOT_IMAGE_TARGET_VOLUME --delete true"
+  
+  # Check if disk is already on target storage before moving
+  current_storage=$(ssh_exec "$ssh_target" "qm config $vmid | grep '^scsi0:' | cut -d: -f2 | cut -d, -f1 | xargs")
+  echo "[DEBUG] Current storage: '$current_storage', Target storage: '$BOOT_IMAGE_TARGET_VOLUME'"
+  if [[ "$current_storage" != "$BOOT_IMAGE_TARGET_VOLUME" ]]; then
+    echo "[INFO] Moving disk from $current_storage to $BOOT_IMAGE_TARGET_VOLUME"
+    ssh_exec "$ssh_target" "qm move-disk $vmid scsi0 $BOOT_IMAGE_TARGET_VOLUME --delete true"
+  else
+    echo "[INFO] Disk already on target storage $BOOT_IMAGE_TARGET_VOLUME, skipping move"
+  fi
+  
   ssh_exec "$ssh_target" "qm resize $vmid scsi0 ${DISK_SIZE}"
 
   echo "[INFO] Networking (bridge ${VLAN_BRIDGE}, tag ${VLAN_ID})"
@@ -300,10 +323,81 @@ KEYS"
   CREATED+=("$vmid $vmname $ip on $targethost")
 done
 
+### ======== Post-creation VM migration ========
+echo "[INFO] Starting post-creation VM migrations"
+
+# VM migration mapping: vmname -> target_node
+declare -A VM_MIGRATIONS=(
+  ["k8s-cp-2"]="sv-proxmox-02"
+  ["k8s-wk-2"]="sv-proxmox-02"
+  ["k8s-cp-3"]="sv-proxmox-03"
+  ["k8s-wk-3"]="sv-proxmox-03"
+)
+
+for row in "${VM_LIST[@]}"; do
+  IFS=' ' read -r vmid vmname cpu mem ip targetip targethost <<< "$row"
+  
+  # Check if this VM needs to be migrated
+  if [[ -n "${VM_MIGRATIONS[$vmname]:-}" ]]; then
+    target_node="${VM_MIGRATIONS[$vmname]}"
+    current_node="$targethost"
+    
+    # Get current hostname to avoid migrating to local node
+    local_hostname=$(hostname)
+    
+    # Check if VM already exists on target node (idempotency)
+    if ssh_exec "$target_node" "qm status $vmid" >/dev/null 2>&1; then
+      echo "[INFO] VM $vmid ($vmname) already exists on target node $target_node, skipping migration"
+      continue
+    fi
+    
+    if [[ "$current_node" != "$target_node" ]]; then
+      # Check if target node is the local node (avoid "target is local node" error)
+      if [[ "$target_node" == "$local_hostname" ]]; then
+        echo "[WARN] Cannot migrate VM $vmid ($vmname) to local node $target_node, skipping migration"
+        continue
+      fi
+      
+      # Check if VM exists on current node before attempting migration
+      if ! ssh_exec "$current_node" "qm status $vmid" >/dev/null 2>&1; then
+        echo "[WARN] VM $vmid ($vmname) not found on current node $current_node, skipping migration"
+        continue
+      fi
+      
+      echo "[INFO] Migrating VM $vmid ($vmname) from $current_node to $target_node"
+      
+      # Stop VM before migration
+      ssh_exec "$current_node" "qm stop $vmid"
+      echo "[INFO] Stopped VM $vmid on $current_node"
+      
+      # Wait for VM to stop completely
+      sleep 5
+      
+      # Migrate VM to target node (execute from current node where VM exists)
+      if ssh_exec "$current_node" "qm migrate $vmid $target_node --online false"; then
+        echo "[INFO] Successfully migrated VM $vmid ($vmname) to $target_node"
+        
+        # Start VM on new node
+        ssh_exec "$target_node" "qm start $vmid"
+        echo "[INFO] Started VM $vmid on $target_node"
+      else
+        echo "[ERROR] Failed to migrate VM $vmid ($vmname) to $target_node"
+        # Try to start VM on original node if migration failed
+        ssh_exec "$current_node" "qm start $vmid"
+        echo "[INFO] Restarted VM $vmid on original node $current_node"
+      fi
+      
+    else
+      echo "[INFO] VM $vmid ($vmname) already on target node $target_node, skipping migration"
+    fi
+  fi
+done
+
+echo "[INFO] Completed VM migrations"
 echo "[INFO] Completed. Log: $LOG_FILE"
 
 # Summary
-if ((${#CREATED[@]:-0} > 0)); then
+if [[ ${#CREATED[@]} -gt 0 ]]; then
   echo "[INFO] Created/Started VMs:"
   printf '  - %s\n' "${CREATED[@]}"
 fi
