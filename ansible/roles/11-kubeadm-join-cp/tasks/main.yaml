@@ -1,12 +1,23 @@
 ---
+- name: Check if node is already joined as control plane
+  ansible.builtin.stat:
+    path: /etc/kubernetes/manifests/kube-apiserver.yaml
+  register: kube_apiserver_manifest
+
+- name: Wait for first control plane to be ready
+  ansible.builtin.uri:
+    url: "https://{{ api_vip | default('172.16.40.100') }}:8443/healthz"
+    method: GET
+    validate_certs: false
+  register: api_health_check
+  until: api_health_check.status == 200
+  retries: 30
+  delay: 10
+  when: not kube_apiserver_manifest.stat.exists and inventory_hostname != groups['kube_server'][0]
+
 - name: Join control plane to cluster
   ansible.builtin.command:
     cmd: "kubeadm join --config {{ join_config_dir }}/join_kubeadm_cp.yaml"
   register: join_cp
   changed_when: join_cp.rc == 0
-  failed_when: false
-  when: not ansible_facts['files'].get('/etc/kubernetes/manifests/kube-apiserver.yaml', False)
-    chdir: "{{ ansible_env.HOME }}"
-  become: true
-  args:
-    creates: /etc/kubernetes/manifests/kube-apiserver.yaml
+  when: not kube_apiserver_manifest.stat.exists and inventory_hostname != groups['kube_server'][0]

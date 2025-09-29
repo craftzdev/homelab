@@ -1,0 +1,131 @@
+---
+- name: Check if cluster is already initialized
+  ansible.builtin.stat:
+    path: /etc/kubernetes/admin.conf
+  register: kubeconfig_exists
+
+- name: Generate kubeadm bootstrap token
+  ansible.builtin.shell: |
+    echo "$(openssl rand -hex 3).$(openssl rand -hex 8)"
+  register: bootstrap_token
+  when: not kubeconfig_exists.stat.exists
+
+- name: Get kubeadm version
+  ansible.builtin.shell: kubeadm version -o short 2>/dev/null || echo ""
+  register: k8s_version
+  when: not kubeconfig_exists.stat.exists
+
+- name: Create kubeadm init configuration
+  ansible.builtin.template:
+    src: init_kubeadm.yaml.j2
+    dest: /root/init_kubeadm.yaml
+    mode: '0600'
+  when: not kubeconfig_exists.stat.exists
+
+- name: Initialize Kubernetes cluster
+  ansible.builtin.command:
+    cmd: kubeadm init --config /root/init_kubeadm.yaml --upload-certs
+  register: kubeadm_init_result
+  when: not kubeconfig_exists.stat.exists
+
+- name: Create .kube directory for root
+  ansible.builtin.file:
+    path: /root/.kube
+    state: directory
+    mode: '0755'
+
+- name: Copy admin.conf to root's kubeconfig
+  ansible.builtin.copy:
+    src: /etc/kubernetes/admin.conf
+    dest: /root/.kube/config
+    remote_src: true
+    owner: root
+    group: root
+    mode: '0600'
+
+- name: Create .kube directory for cloudinit user
+  ansible.builtin.file:
+    path: /home/cloudinit/.kube
+    state: directory
+    owner: cloudinit
+    group: cloudinit
+    mode: '0755'
+
+- name: Copy admin.conf to cloudinit's kubeconfig
+  ansible.builtin.copy:
+    src: /etc/kubernetes/admin.conf
+    dest: /home/cloudinit/.kube/config
+    remote_src: true
+    owner: cloudinit
+    group: cloudinit
+    mode: '0600'
+
+- name: Add KUBECONFIG to cloudinit's bashrc
+  ansible.builtin.lineinfile:
+    path: /home/cloudinit/.bashrc
+    line: 'export KUBECONFIG=$HOME/.kube/config'
+    create: true
+    owner: cloudinit
+    group: cloudinit
+
+- name: Create system-wide kubeconfig profile
+  ansible.builtin.copy:
+    content: |
+      if [ -z "${KUBECONFIG:-}" ] && [ -f "$HOME/.kube/config" ]; then
+        export KUBECONFIG="$HOME/.kube/config"
+      fi
+    dest: /etc/profile.d/kubeconfig.sh
+    mode: '0644'
+
+- name: Generate join configuration for control plane nodes
+  ansible.builtin.shell: |
+    kubeadm token create --print-join-command > /tmp/join_command.txt
+    CERT_KEY=$(kubeadm init phase upload-certs --upload-certs 2>/dev/null | tail -1)
+    JOIN_CMD=$(cat /tmp/join_command.txt)
+    
+    cat > /root/join_kubeadm_cp.yaml <<EOF
+    apiVersion: kubeadm.k8s.io/v1beta4
+    kind: JoinConfiguration
+    discovery:
+      bootstrapToken:
+        token: $(echo $JOIN_CMD | grep -o 'token [^ ]*' | cut -d' ' -f2)
+        apiServerEndpoint: "{{ api_vip | default('172.16.40.100') }}:8443"
+        caCertHashes:
+        - $(echo $JOIN_CMD | grep -o 'sha256:[^ ]*')
+    nodeRegistration:
+      criSocket: "unix:///var/run/containerd/containerd.sock"
+    controlPlane:
+      certificateKey: $CERT_KEY
+    EOF
+  when: not kubeconfig_exists.stat.exists
+
+- name: Generate join configuration for worker nodes
+  ansible.builtin.shell: |
+    JOIN_CMD=$(cat /tmp/join_command.txt)
+    
+    cat > /root/join_kubeadm_wk.yaml <<EOF
+    apiVersion: kubeadm.k8s.io/v1beta4
+    kind: JoinConfiguration
+    discovery:
+      bootstrapToken:
+        token: $(echo $JOIN_CMD | grep -o 'token [^ ]*' | cut -d' ' -f2)
+        apiServerEndpoint: "{{ api_vip | default('172.16.40.100') }}:8443"
+        caCertHashes:
+        - $(echo $JOIN_CMD | grep -o 'sha256:[^ ]*')
+    nodeRegistration:
+      criSocket: "unix:///var/run/containerd/containerd.sock"
+    EOF
+  when: not kubeconfig_exists.stat.exists
+
+- name: Copy join configurations to cloudinit home
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "/home/cloudinit/{{ item | basename }}"
+    remote_src: true
+    owner: cloudinit
+    group: cloudinit
+    mode: '0600'
+  loop:
+    - /root/join_kubeadm_cp.yaml
+    - /root/join_kubeadm_wk.yaml
+  when: not kubeconfig_exists.stat.exists
