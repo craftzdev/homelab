@@ -83,19 +83,28 @@ esac
 
 # region : setup for all-node
 
-# Ubuntu 24.04 (noble) で存在しない PPA が残っていると apt update が失敗するため、
-# vbernat/haproxy-2.4 PPA の痕跡を先にクリーンアップする
-set +e
-add-apt-repository -r ppa:vbernat/haproxy-2.4 -y >/dev/null 2>&1 || true
-rm -f /etc/apt/sources.list.d/*vbernat* /etc/apt/sources.list.d/*haproxy* /etc/apt/sources.list.d/*haproxy-2* 2>/dev/null || true
-for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
-  [ -f "$f" ] || continue
-  sed -i.bak \
-    -e '/ppa\.launchpadcontent\.net\/vbernat\/haproxy-2\.4/d' \
-    -e '/launchpadcontent\.net\/vbernat\/haproxy-2\.4/d' \
-    -e '/vbernat.*haproxy-2\.4/d' "$f" || true
-done
-set -e
+cleanup_bad_haproxy_ppa() {
+  set +e
+  # 既知の PPA を抹消
+  add-apt-repository -r ppa:vbernat/haproxy-2.4 -y >/dev/null 2>&1 || true
+  # 参照ファイルを削除（.list/.sources の両方）
+  find /etc/apt/sources.list.d -type f \( -name "*.list" -o -name "*.sources" \) -print0 2>/dev/null \
+    | xargs -0r grep -lE 'vbernat|haproxy-2\.4|launchpadcontent\.net' \
+    | xargs -r rm -f
+  # メインの sources.list から該当行をコメントアウト
+  if [ -f /etc/apt/sources.list ]; then
+    if grep -qE 'vbernat|haproxy-2\.4|launchpadcontent\.net' /etc/apt/sources.list; then
+      sed -i.bak -E 's/^(.*(vbernat|haproxy-2\.4|launchpadcontent\.net).*)$/# disabled by k8s-node-setup: \1/' /etc/apt/sources.list
+    fi
+  fi
+  # APT キャッシュをクリアしてから update（古い lists を参照しないように）
+  apt-get clean
+  rm -rf /var/lib/apt/lists/*
+  apt-get update || true
+  set -e
+}
+
+cleanup_bad_haproxy_ppa
 
 # Install Containerd
 cat <<EOF | sudo tee /etc/modules-load.d/containerd.conf
