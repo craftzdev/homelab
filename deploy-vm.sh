@@ -287,6 +287,7 @@ for row in "${VM_LIST[@]}"; do
   ssh_exec "$ssh_target" "qm set $vmid --ipconfig0 ip=${ip}/${NODE_CIDR_SUFFIX},gw=${NODE_GATEWAY}"
   ssh_exec "$ssh_target" "qm set $vmid --nameserver \"$(echo $NAMESERVERS | tr ' ' ',')\" --searchdomain ${SEARCHDOMAIN}"
   ssh_exec "$ssh_target" "qm set $vmid --ciuser ${CI_USER}"
+  # 注意: CI_USER は Cloud-Init が作成するユーザ名。下の user-data でも cloudinit ユーザを作成しているため、ここで指定した CI_USER が鍵認証対象になります。README の例で CI_USER=ubuntu とした場合は user-data の users セクションも合わせる必要があります。
 
   # user-data スニペット（runcmd だけを載せる。鍵は --sshkeys で投入）
   REMOTE_SNIPPET="${SNIPPET_TARGET_PATH}/${vmname}-user.yaml"
@@ -324,8 +325,13 @@ packages:
   - qemu-guest-agent
 package_upgrade: true
 runcmd:
-  - 'curl -fsSL ${REPOSITORY_RAW_SOURCE_URL}/scripts/k8s-node-setup.sh -o /root/k8s-node-setup.sh'
-  - 'bash /root/k8s-node-setup.sh ${vmname} ${TARGET_BRANCH}'
+  # set ssh_authorized_keys
+  - su - cloudinit -c "mkdir -p ~/.ssh && chmod 700 ~/.ssh"
+  - su - cloudinit -c "curl -sS https://github.com/craftz.keys >> ~/.ssh/authorized_keys"
+  - su - cloudinit -c "chmod 600 ~/.ssh/authorized_keys"
+  # run install scripts
+  - su - cloudinit -c "curl -s ${REPOSITORY_RAW_SOURCE_URL}/scripts/k8s-node-setup.sh > ~/k8s-node-setup.sh"
+  - su - cloudinit -c "sudo bash ~/k8s-node-setup.sh ${vmname} ${TARGET_BRANCH}"
 EOF"
   # SSH 公開鍵を Cloud-Init の UI パラメータで投入
   # （スニペットに埋めても良いが、UI/CLI から差し替えやすい）
