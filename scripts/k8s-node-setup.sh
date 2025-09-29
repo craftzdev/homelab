@@ -295,6 +295,11 @@ esac
 KUBEADM_BOOTSTRAP_TOKEN=$(openssl rand -hex 3).$(openssl rand -hex 8)
 
 # Set init configuration for the first control plane
+# Detect the kubeadm version so ClusterConfiguration matches installed binaries
+K8S_VERSION="$(kubeadm version -o short 2>/dev/null || true)"
+if [ -z "$K8S_VERSION" ]; then
+  echo "[WARN] Failed to detect kubeadm version; proceeding without explicit kubernetesVersion"
+fi
 cat > "$HOME"/init_kubeadm.yaml <<EOF
 apiVersion: kubeadm.k8s.io/v1beta3
 kind: InitConfiguration
@@ -310,7 +315,7 @@ kind: ClusterConfiguration
 networking:
   serviceSubnet: "10.96.0.0/16"
   podSubnet: "10.128.0.0/16"
-kubernetesVersion: "v1.27.1"
+$( [ -n "$K8S_VERSION" ] && echo "kubernetesVersion: \"$K8S_VERSION\"" )
 controlPlaneEndpoint: "${KUBE_API_SERVER_VIP}:8443"
 apiServer:
   certSANs:
@@ -344,9 +349,18 @@ if [ -f /etc/kubernetes/admin.conf ]; then
   sudo chown cloudinit:cloudinit /home/cloudinit/.kube/config
 fi
 
-# Add KUBECONFIG to cloudinit user's bashrc if not present
-echo 'export KUBECONFIG=$HOME/.kube/config' | sudo tee -a /home/cloudinit/.bashrc > /dev/null || true
+# Persist KUBECONFIG for cloudinit user
 sudo bash -c "grep -q 'export KUBECONFIG=\\$HOME/.kube/config' /home/cloudinit/.bashrc || echo 'export KUBECONFIG=\\$HOME/.kube/config' >> /home/cloudinit/.bashrc"
+
+# Provide a system-wide default for interactive shells when admin.conf exists
+if [ -f /etc/kubernetes/admin.conf ]; then
+  cat <<'EOP' | sudo tee /etc/profile.d/kubeconfig.sh >/dev/null
+if [ -z "${KUBECONFIG:-}" ] && [ -f "$HOME/.kube/config" ]; then
+  export KUBECONFIG="$HOME/.kube/config"
+fi
+EOP
+  sudo chmod 0644 /etc/profile.d/kubeconfig.sh
+fi
 
 # クラスタ初期セットアップ時に helm　を使用して CNI と ArgoCD をクラスタに導入する
 # それ以外のクラスタリソースは ArgoCD によって本リポジトリから自動で導入される

@@ -15,14 +15,26 @@ fi
 
 echo "✅ kubectl is available"
 
-# kubeconfig の確認
+# kubeconfig の確認（KUBECONFIG が不正なら解除し、制御プレーンなら自動修復）
+if [[ -n "${KUBECONFIG:-}" && ! -f "${KUBECONFIG}" ]]; then
+    echo "⚠️ KUBECONFIG points to missing file: ${KUBECONFIG} — unsetting"
+    unset KUBECONFIG
+fi
+
 if [[ ! -f ~/.kube/config ]]; then
-    echo "❌ kubeconfig not found at ~/.kube/config"
-    echo "If you are on a control plane node, run:"
-    echo "mkdir -p ~/.kube"
-    echo "sudo cp -i /etc/kubernetes/admin.conf ~/.kube/config"
-    echo "sudo chown \$(id -u):\$(id -g) ~/.kube/config"
-    exit 1
+    if [[ -f /etc/kubernetes/admin.conf ]]; then
+        echo "ℹ️ ~/.kube/config not found; attempting to copy from /etc/kubernetes/admin.conf (control plane)"
+        mkdir -p ~/.kube
+        sudo cp -i /etc/kubernetes/admin.conf ~/.kube/config
+        sudo chown $(id -u):$(id -g) ~/.kube/config
+    else
+        echo "❌ kubeconfig not found at ~/.kube/config"
+        echo "If you are on a control plane node, run:"
+        echo "mkdir -p ~/.kube"
+        echo "sudo cp -i /etc/kubernetes/admin.conf ~/.kube/config"
+        echo "sudo chown \$(id -u):\$(id -g) ~/.kube/config"
+        exit 1
+    fi
 fi
 
 echo "✅ kubeconfig found"
