@@ -384,7 +384,10 @@ if [ -f /etc/kubernetes/admin.conf ]; then
 fi
 
 # Persist KUBECONFIG for cloudinit user
-sudo bash -c "grep -q 'export KUBECONFIG=\\$HOME/.kube/config' /home/cloudinit/.bashrc || echo 'export KUBECONFIG=\\$HOME/.kube/config' >> /home/cloudinit/.bashrc"
+sudo bash -c "grep -q 'export KUBECONFIG=\$HOME/.kube/config' /home/cloudinit/.bashrc || echo 'export KUBECONFIG=\$HOME/.kube/config' >> /home/cloudinit/.bashrc"
+
+# Also set KUBECONFIG immediately for the current session
+sudo -u cloudinit bash -c 'export KUBECONFIG=/home/cloudinit/.kube/config'
 
 # Provide a system-wide default for interactive shells when admin.conf exists
 if [ -f /etc/kubernetes/admin.conf ]; then

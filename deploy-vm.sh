@@ -161,7 +161,7 @@ $(printf '  - su - cloudinit -c "curl -sS %s >> ~/.ssh/authorized_keys"\n' $(ech
   - su - cloudinit -c "curl -s ${REPOSITORY_RAW_SOURCE_URL}/scripts/k8s-node-setup.sh > ~/k8s-node-setup.sh"
   - su - cloudinit -c "sudo bash ~/k8s-node-setup.sh ${vmname} ${TARGET_BRANCH}"
   # change default shell to bash
-  - chsh -s \$(which bash) cloudinit
+  - chsh -s $(which bash) cloudinit
 EOF
 )
   ssh_exec "$ssh_target" "cat > ${SNIPPET_TARGET_PATH}/${vmname}-user.yaml <<'EOF'
