@@ -6,7 +6,7 @@ applications:
     namespace: argocd
     project: argocd-root
     source:
-      repoURL: https://github.com/craftz/homelab
+      repoURL: https://github.com/craftzdev/homelab
       targetRevision: main
       path: k8s-manifests/apps/root
     destination:
