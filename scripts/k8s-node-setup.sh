@@ -83,6 +83,20 @@ esac
 
 # region : setup for all-node
 
+# Ubuntu 24.04 (noble) で存在しない PPA が残っていると apt update が失敗するため、
+# vbernat/haproxy-2.4 PPA の痕跡を先にクリーンアップする
+set +e
+add-apt-repository -r ppa:vbernat/haproxy-2.4 -y >/dev/null 2>&1 || true
+rm -f /etc/apt/sources.list.d/*vbernat* /etc/apt/sources.list.d/*haproxy* /etc/apt/sources.list.d/*haproxy-2* 2>/dev/null || true
+for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
+  [ -f "$f" ] || continue
+  sed -i.bak \
+    -e '/ppa\.launchpadcontent\.net\/vbernat\/haproxy-2\.4/d' \
+    -e '/launchpadcontent\.net\/vbernat\/haproxy-2\.4/d' \
+    -e '/vbernat.*haproxy-2\.4/d' "$f" || true
+done
+set -e
+
 # Install Containerd
 cat <<EOF | sudo tee /etc/modules-load.d/containerd.conf
 overlay
