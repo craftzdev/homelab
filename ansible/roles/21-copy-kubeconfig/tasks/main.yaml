@@ -1,5 +1,36 @@
-- name: Copy kubeconfig file
+- name: Check if kubeconfig already exists
+  stat:
+    path: ~/.kube/config
+  register: kubeconfig_exists
+
+- name: Create .kube directory
+  file:
+    path: ~/.kube
+    state: directory
+    mode: '0755'
+  when: not kubeconfig_exists.stat.exists
+
+- name: Copy kubeconfig file for cloudinit user
+  become: yes
   shell: |
-    mkdir -p ~/.kube
-    sudo cp /etc/kubernetes/admin.conf ~/.kube/config
-    sudo chown cloudinit:cloudinit ~/.kube/config
+    cp /etc/kubernetes/admin.conf /home/cloudinit/.kube/config
+    chown cloudinit:cloudinit /home/cloudinit/.kube/config
+    chmod 600 /home/cloudinit/.kube/config
+  when: not kubeconfig_exists.stat.exists
+
+- name: Set KUBECONFIG environment variable in .bashrc
+  lineinfile:
+    path: ~/.bashrc
+    line: 'export KUBECONFIG=$HOME/.kube/config'
+    create: yes
+    state: present
+
+- name: Create system-wide kubeconfig profile
+  become: yes
+  copy:
+    content: |
+      if [ -z "${KUBECONFIG:-}" ] && [ -f "$HOME/.kube/config" ]; then
+        export KUBECONFIG="$HOME/.kube/config"
+      fi
+    dest: /etc/profile.d/kubeconfig.sh
+    mode: '0644'

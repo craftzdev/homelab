@@ -1,9 +1,29 @@
-- name: Copy file
+- name: Check if node is already joined as control plane
+  stat:
+    path: /etc/kubernetes/manifests/kube-apiserver.yaml
+  register: apiserver_manifest
+
+- name: Wait for first control plane node to be ready
+  uri:
+    url: "https://172.16.40.100:8443/healthz"
+    method: GET
+    validate_certs: no
+    timeout: 10
+  register: api_health
+  until: api_health.status == 200
+  retries: 30
+  delay: 10
+  when: not apiserver_manifest.stat.exists
+
+- name: Copy join configuration file
   become: yes
   ansible.builtin.copy:
     src: /root/join_kubeadm_cp.yaml
     dest: /root/join_kubeadm_cp.yaml
+    remote_src: yes
+  when: not apiserver_manifest.stat.exists
 
-- name: Execute kubeadm join command
+- name: Execute kubeadm join command for control plane
   become: yes
   shell: "kubeadm join --config /root/join_kubeadm_cp.yaml"
+  when: not apiserver_manifest.stat.exists
