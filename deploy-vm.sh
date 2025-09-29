@@ -308,7 +308,6 @@ users:
     # password is zaq12wsx
     passwd: \$6\$rounds=4096\$Xlyxul70asLm\$9tKm.0po4ZE7vgqc.grptZzUU9906z/.vjwcqz/WYVtTwc5i2DWfjVpXb8HBtoVfvSY61rvrs/iwHxREKl3f20
 ssh_pwauth: true
-ssh_authorized_keys: []
 # Network configuration with proper nameserver format
 network:
   version: 2
@@ -328,7 +327,6 @@ package_upgrade: true
 runcmd:
   # set ssh_authorized_keys
   - su - cloudinit -c "mkdir -p ~/.ssh && chmod 700 ~/.ssh"
-  - su - cloudinit -c "curl -sS https://github.com/craftz.keys >> ~/.ssh/authorized_keys"
   - su - cloudinit -c "chmod 600 ~/.ssh/authorized_keys"
   # run install scripts
   - su - cloudinit -c "curl -s ${REPOSITORY_RAW_SOURCE_URL}/scripts/k8s-node-setup.sh > ~/k8s-node-setup.sh"
