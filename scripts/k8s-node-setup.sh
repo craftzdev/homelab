@@ -216,8 +216,12 @@ backend k8s-api
 EOF
 
 # Install Keepalived
-echo "net.ipv4.ip_nonlocal_bind = 1" >> /etc/sysctl.conf
-sysctl -p
+# Ensure nonlocal_bind is enabled (idempotent)
+KEEPALIVED_SYSCTL="/etc/sysctl.d/60-keepalived.conf"
+if ! grep -qs '^net.ipv4.ip_nonlocal_bind\s*=\s*1' "$KEEPALIVED_SYSCTL" 2>/dev/null; then
+  echo 'net.ipv4.ip_nonlocal_bind = 1' > "$KEEPALIVED_SYSCTL"
+fi
+sysctl --system
 
 apt-get update && apt-get -y install keepalived
 
