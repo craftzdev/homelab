@@ -104,7 +104,7 @@ sudo sysctl --system
 ## Install containerd
 apt-get update && apt-get install -y apt-transport-https curl gnupg2
 sudo mkdir -p /etc/apt/keyrings
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --yes --dearmor -o /etc/apt/keyrings/docker.gpg
  echo \
   "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
   $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
@@ -137,7 +137,7 @@ EOF
 sysctl --system
 
 # Install kubeadm
-curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.32/deb/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.32/deb/Release.key | sudo gpg --yes --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
 echo "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.32/deb/ /" | sudo tee /etc/apt/sources.list.d/kubernetes.list
 apt-get update
 apt-get install -y kubelet kubeadm kubectl
@@ -174,8 +174,11 @@ apt-get install -y --no-install-recommends software-properties-common
 add-apt-repository ppa:vbernat/haproxy-2.4 -y && \
   apt-get update && apt-get install -y haproxy=2.4.*
 if [ $? -ne 0 ]; then
-  echo "[WARN] PPA haproxy 2.4 install failed. Falling back to distro haproxy."
-  apt-get update && apt-get install -y haproxy || { echo "[ERROR] Failed to install haproxy"; exit 1; }
+  echo "[WARN] PPA haproxy 2.4 install failed. Removing PPA and falling back to distro haproxy."
+  # 失敗した PPA を無効化してから update（noble では Release が無い）
+  add-apt-repository -r ppa:vbernat/haproxy-2.4 -y || true
+  rm -f /etc/apt/sources.list.d/*haproxy* /etc/apt/sources.list.d/*vbernat* 2>/dev/null || true
+  apt-get update && apt-get install -y haproxy || { echo "[ERROR] Failed to install distro haproxy"; exit 1; }
 fi
 set -e
 
