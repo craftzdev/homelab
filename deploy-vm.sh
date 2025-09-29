@@ -292,7 +292,8 @@ for row in "${VM_LIST[@]}"; do
   # user-data スニペット（runcmd だけを載せる。鍵は --sshkeys で投入）
   REMOTE_SNIPPET="${SNIPPET_TARGET_PATH}/${vmname}-user.yaml"
   ssh_exec "$ssh_target" "mkdir -p ${SNIPPET_TARGET_PATH}"
-  ssh_exec "$ssh_target" "REPOSITORY_RAW_SOURCE_URL='${REPOSITORY_RAW_SOURCE_URL}' TARGET_BRANCH='${TARGET_BRANCH}' vmname='${vmname}' NAMESERVERS='${NAMESERVERS}' NODE_CIDR_SUFFIX='${NODE_CIDR_SUFFIX}' NODE_GATEWAY='${NODE_GATEWAY}' SEARCHDOMAIN='${SEARCHDOMAIN}' cat > ${REMOTE_SNIPPET} << EOF
+  # Build cloud-init user-data content locally to avoid remote heredoc quoting issues
+  SNIPPET_CONTENT=$(cat <<EOF
 #cloud-config
 hostname: ${vmname}
 timezone: Asia/Tokyo
@@ -334,6 +335,10 @@ runcmd:
   - su - cloudinit -c "sudo bash ~/k8s-node-setup.sh ${vmname} ${TARGET_BRANCH}"
   # change default shell to bash
   - chsh -s $(which bash) cloudinit
+EOF
+)
+  ssh_exec "$ssh_target" "cat > ${REMOTE_SNIPPET} <<'EOF'
+${SNIPPET_CONTENT}
 EOF
 "
   # SSH 公開鍵を Cloud-Init の UI パラメータで投入
