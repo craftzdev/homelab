@@ -1,132 +1,310 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
-# k8s-node-setup.sh - Kubernetes cluster setup script using Ansible
-# This script sets up a Kubernetes cluster using Ansible playbooks
+set -eu
+export DEBIAN_FRONTEND=noninteractive
 
-set -euo pipefail
+# special thanks!: https://gist.github.com/inductor/32116c486095e5dde886b55ff6e568c8
 
-# Configuration
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-ANSIBLE_DIR="$PROJECT_ROOT/ansible"
+# region : script-usage
 
-# Node configuration
-declare -A NODE_IPS=(
-    [0]="172.16.40.11"  # k8s-cp-1
-    [1]="172.16.40.12"  # k8s-cp-2
-    [2]="172.16.40.13"  # k8s-cp-3
-    [3]="172.16.40.21"  # k8s-wk-1
-    [4]="172.16.40.22"  # k8s-wk-2
-    [5]="172.16.40.23"  # k8s-wk-3
-)
-
-KUBE_API_SERVER_VIP="172.16.40.100"
-EXTERNAL_KUBE_API_SERVER="k8s-api-$(date +%s).local"
-
-# Function to log messages
-log() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
+function usage() {
+    echo "usage> k8s-node-setup.sh [COMMAND]"
+    echo "[COMMAND]:"
+    echo "  help        show command usage"
+    echo "  k8s-cp-1    run setup script for k8s-cp-1"
+    echo "  k8s-cp-2    run setup script for k8s-cp-2"
+    echo "  k8s-cp-3    run setup script for k8s-cp-3"
+    echo "  k8s-wk-*    run setup script for k8s-wk-*"
 }
 
-# Function to check if running on first control plane
-is_first_control_plane() {
-    local hostname=$(hostname)
-    [[ "$hostname" == "k8s-cp-1" ]]
-}
+case $1 in
+    k8s-cp-1|k8s-cp-2|k8s-cp-3|k8s-wk-*)
+        ;;
+    help)
+        usage
+        exit 255
+        ;;
+    *)
+        usage
+        exit 255
+        ;;
+esac
 
-# Function to run Ansible playbook
-run_ansible_playbook() {
-    log "Running Ansible playbook..."
-    cd "$ANSIBLE_DIR"
-    
-    # Check if ansible-playbook is available
-    if ! command -v ansible-playbook &> /dev/null; then
-        log "Installing Ansible..."
-        apt-get update
-        apt-get install -y ansible
-    fi
-    
-    # Install Ansible collections if needed
-    if [[ -f requirements.yaml ]]; then
-        ansible-galaxy install -r requirements.yaml
-    fi
-    
-    # Run the playbook
-    ansible-playbook -i hosts/k8s-servers/inventory site.yaml
-}
+# endregion
 
-# Main execution
-main() {
-    log "Starting Kubernetes cluster setup..."
-    log "Hostname: $(hostname)"
-    log "IP Address: $(hostname -I | awk '{print $1}')"
-    
-    # Only run on first control plane node
-    if is_first_control_plane; then
-        log "Running on first control plane node - executing Ansible playbook"
-        run_ansible_playbook
-        log "Kubernetes cluster setup completed successfully"
+# region : set variables
+
+# Set global variables
+TARGET_BRANCH=$2
+KUBE_API_SERVER_VIP=172.16.40.100
+VIP_INTERFACE=ens18
+NODE_IPS=( 172.16.40.11 172.16.40.12 172.16.40.13 )
+EXTERNAL_KUBE_API_SERVER="$(tr -dc '[:lower:]' </dev/urandom | head -c 1)$(tr -dc '[:lower:]0-9' </dev/urandom | head -c 7)-k8s-api.homelab.local"
+
+# Auto-detect NIC if the specified interface does not exist
+if ! ip -o link show "$VIP_INTERFACE" >/dev/null 2>&1; then
+    DETECT_IF=$(ip route get 1.1.1.1 2>/dev/null | awk '{print $5; exit}')
+    if [ -n "$DETECT_IF" ]; then
+        echo "[WARN] Interface '$VIP_INTERFACE' not found. Using detected interface '$DETECT_IF'"
+        VIP_INTERFACE="$DETECT_IF"
     else
-        log "This script should only be run on the first control plane node (k8s-cp-1)"
-        log "Other nodes will be configured automatically via Ansible"
-        exit 1
+        echo "[WARN] Could not auto-detect default interface; keepalived may fail to bind VIP"
     fi
+fi
+
+# set per-node variables
+case $1 in
+    k8s-cp-1)
+        KEEPALIVED_STATE=MASTER
+        KEEPALIVED_PRIORITY=101
+        KEEPALIVED_UNICAST_SRC_IP=${NODE_IPS[0]}
+        KEEPALIVED_UNICAST_PEERS=( "${NODE_IPS[1]}" "${NODE_IPS[2]}" )
+        ;;
+    k8s-cp-2)
+        KEEPALIVED_STATE=BACKUP
+        KEEPALIVED_PRIORITY=100
+        KEEPALIVED_UNICAST_SRC_IP=${NODE_IPS[1]}
+        KEEPALIVED_UNICAST_PEERS=( "${NODE_IPS[0]}" "${NODE_IPS[2]}" )
+        ;;
+    k8s-cp-3)
+        KEEPALIVED_STATE=BACKUP
+        KEEPALIVED_PRIORITY=100
+        KEEPALIVED_UNICAST_SRC_IP=${NODE_IPS[2]}
+        KEEPALIVED_UNICAST_PEERS=( "${NODE_IPS[0]}" "${NODE_IPS[1]}" )
+        ;;
+    k8s-wk-*)
+        ;;
+    *)
+        exit 1
+        ;;
+esac
+
+# endregion
+
+# region : setup for all-node
+
+# Install Containerd
+cat <<EOF | sudo tee /etc/modules-load.d/containerd.conf
+overlay
+br_netfilter
+EOF
+
+sudo modprobe overlay
+sudo modprobe br_netfilter
+
+# Setup required sysctl params, these persist across reboots.
+cat <<EOF | sudo tee /etc/sysctl.d/99-kubernetes-cri.conf
+net.bridge.bridge-nf-call-iptables  = 1
+net.ipv4.ip_forward                 = 1
+net.bridge.bridge-nf-call-ip6tables = 1
+EOF
+
+# Apply sysctl params without reboot
+sudo sysctl --system
+
+## Install containerd
+apt-get update && apt-get install -y apt-transport-https curl gnupg2
+sudo mkdir -p /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --yes --dearmor -o /etc/apt/keyrings/docker.gpg
+ echo \
+  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
+  $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+sudo apt-get update && sudo apt-get install -y containerd.io
+
+# Configure containerd
+sudo mkdir -p /etc/containerd
+sudo containerd config default | sudo tee /etc/containerd/config.toml > /dev/null
+
+if grep -q "SystemdCgroup = true" "/etc/containerd/config.toml"; then
+echo "Config found, skip rewriting..."
+else
+sed -i -e "s/SystemdCgroup \= false/SystemdCgroup \= true/g" /etc/containerd/config.toml
+fi
+
+sudo systemctl restart containerd
+
+# Modify kernel parameters for Kubernetes
+cat <<EOF | tee /etc/sysctl.d/k8s.conf
+net.bridge.bridge-nf-call-ip6tables = 1
+net.bridge.bridge-nf-call-iptables = 1
+vm.overcommit_memory = 1
+vm.panic_on_oom = 0
+kernel.panic = 10
+kernel.panic_on_oops = 1
+kernel.keys.root_maxkeys = 1000000
+kernel.keys.root_maxbytes = 25000000
+net.ipv4.conf.*.rp_filter = 0
+EOF
+sysctl --system
+
+# Install kubeadm
+curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.34/deb/Release.key | sudo gpg --yes --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+echo "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.34/deb/ /" | sudo tee /etc/apt/sources.list.d/kubernetes.list
+apt-get update
+apt-get install -y kubelet kubeadm kubectl
+apt-mark hold kubelet kubeadm kubectl
+
+# Disable swap
+swapoff -a
+
+cat > /etc/crictl.yaml <<EOF
+runtime-endpoint: unix:///var/run/containerd/containerd.sock
+image-endpoint: unix:///var/run/containerd/containerd.sock
+timeout: 10
+EOF
+
+# endregion
+
+# Ends except worker-plane
+case $1 in
+    k8s-wk-*)
+        exit 0
+        ;;
+    k8s-cp-1|k8s-cp-2|k8s-cp-3)
+        ;;
+    *)
+        exit 1
+        ;;
+esac
+
+# region : setup for all-control-plane node
+
+# Install HAProxy（ディストリ版をインストール）
+apt-get update
+apt-get install -y --no-install-recommends haproxy
+
+cat > /etc/haproxy/haproxy.cfg <<EOF
+global
+    log /dev/log    local0
+    log /dev/log    local1 notice
+    chroot /var/lib/haproxy
+    stats socket /run/haproxy/admin.sock mode 660 level admin expose-fd listeners
+    stats timeout 30s
+    user haproxy
+    group haproxy
+    daemon
+defaults
+    log     global
+    mode    http
+    option  httplog
+    option  dontlognull
+    timeout connect 5000
+    timeout client  50000
+    timeout server  50000
+    errorfile 400 /etc/haproxy/errors/400.http
+    errorfile 403 /etc/haproxy/errors/403.http
+    errorfile 408 /etc/haproxy/errors/408.http
+    errorfile 500 /etc/haproxy/errors/500.http
+    errorfile 502 /etc/haproxy/errors/502.http
+    errorfile 503 /etc/haproxy/errors/503.http
+    errorfile 504 /etc/haproxy/errors/504.http
+frontend k8s-api
+    bind ${KUBE_API_SERVER_VIP}:8443
+    mode tcp
+    option tcplog
+    default_backend k8s-api
+
+backend k8s-api
+    mode tcp
+    option tcplog
+    option tcp-check
+    balance roundrobin
+    default-server inter 10s downinter 5s rise 2 fall 2 slowstart 60s maxconn 250 maxqueue 256 weight 100
+    server k8s-api-1 ${NODE_IPS[0]}:6443 check
+    server k8s-api-2 ${NODE_IPS[1]}:6443 check
+    server k8s-api-3 ${NODE_IPS[2]}:6443 check
+EOF
+
+# Install Keepalived
+# Ensure nonlocal_bind is enabled (idempotent)
+KEEPALIVED_SYSCTL="/etc/sysctl.d/60-keepalived.conf"
+if ! grep -qs '^net.ipv4.ip_nonlocal_bind\s*=\s*1' "$KEEPALIVED_SYSCTL" 2>/dev/null; then
+  echo 'net.ipv4.ip_nonlocal_bind = 1' > "$KEEPALIVED_SYSCTL"
+fi
+sysctl --system
+
+apt-get update && apt-get -y install keepalived
+
+cat > /etc/keepalived/keepalived.conf <<EOF
+# Define the script used to check if haproxy is still working
+vrrp_script chk_haproxy { 
+    script "sudo /usr/bin/killall -0 haproxy"
+    interval 2 
+    weight 2 
 }
 
-# Execute main function
-main "$@"
+# Configuration for Virtual Interface
+vrrp_instance LB_VIP {
+    interface ${VIP_INTERFACE}
+    state ${KEEPALIVED_STATE}
+    priority ${KEEPALIVED_PRIORITY}
+    virtual_router_id 51
+
+    smtp_alert          # Enable Notifications Via Email
+
+    authentication {
+        auth_type AH
+        auth_pass zaq12wsx	# Password for accessing vrrpd. Same on all devices
+    }
+    unicast_src_ip ${KEEPALIVED_UNICAST_SRC_IP} # Private IP address of master
+    unicast_peer {
+        ${KEEPALIVED_UNICAST_PEERS[0]}		# Private IP address of the backup haproxy
+        ${KEEPALIVED_UNICAST_PEERS[1]}		# Private IP address of the backup haproxy
+    }
+
+    # The virtual ip address shared between the two loadbalancers
+    virtual_ipaddress {
+        ${KUBE_API_SERVER_VIP}
+    }
+
+    # Use the Defined Script to Check whether to initiate a fail over
+    track_script {
+        chk_haproxy
+    }
+}
+EOF
+
+# Create keepalived user (idempotent)
+if ! getent group keepalived_script >/dev/null 2>&1; then
+  groupadd -r keepalived_script
+fi
+if ! id -u keepalived_script >/dev/null 2>&1; then
+  useradd -r -s /sbin/nologin -g keepalived_script -M keepalived_script
+fi
+
+if ! grep -qE '^keepalived_script\s+ALL=\(ALL\)\s+NOPASSWD:\s+/usr/bin/killall' /etc/sudoers 2>/dev/null; then
+  echo "keepalived_script ALL=(ALL) NOPASSWD: /usr/bin/killall" >> /etc/sudoers
+fi
+
+# Enable VIP services (失敗しても kubeadm init まで進める)
+set +e
+systemctl enable keepalived --now || echo "[WARN] keepalived enable/start failed"
+systemctl enable haproxy --now || echo "[WARN] haproxy enable/start failed"
+
+# Reload VIP services (reload 失敗は致命ではない)
+systemctl reload keepalived || systemctl restart keepalived || echo "[WARN] keepalived reload/restart failed"
+systemctl reload haproxy || systemctl restart haproxy || echo "[WARN] haproxy reload/restart failed"
+set -e
+
+# Pull images first (失敗しても継続)
+kubeadm config images pull || echo "[WARN] kubeadm config images pull failed; continuing"
+
+# install k9s (最新安定版; 失敗しても継続)
+K9S_VERSION="v0.50.13"
+wget -qO- "https://github.com/derailed/k9s/releases/download/${K9S_VERSION}/k9s_Linux_amd64.tar.gz" | tar -zxvf - k9s && sudo mv -f ./k9s /usr/local/bin/ || echo "[WARN] k9s install failed; continuing"
+
+# install velero client (失敗しても継続)
+VELERO_VERSION="v1.17.0"
+wget https://github.com/vmware-tanzu/velero/releases/download/${VELERO_VERSION}/velero-${VELERO_VERSION}-linux-amd64.tar.gz || true
+[ -f velero-${VELERO_VERSION}-linux-amd64.tar.gz ] && tar -xvf velero-${VELERO_VERSION}-linux-amd64.tar.gz && sudo mv velero-${VELERO_VERSION}-linux-amd64/velero /usr/local/bin/ || echo "[WARN] velero install skipped"
+
+# endregion
 
 # Ends except first-control-plane
 case $1 in
     k8s-cp-1)
         ;;
     k8s-cp-2|k8s-cp-3)
-        # Wait for first control plane to be ready and join configuration to be available
-        echo "[INFO] Waiting for first control plane to be ready..."
-        while ! curl -k https://${KUBE_API_SERVER_VIP}:8443/healthz >/dev/null 2>&1; do
-            echo "[INFO] Waiting for API server to be available..."
-            sleep 10
-        done
-        
-        # Download join configuration from first control plane
-        echo "[INFO] Downloading join configuration from k8s-cp-1..."
-        scp -o StrictHostKeyChecking=no cloudinit@${NODE_IPS[0]}:/root/join_kubeadm_cp.yaml /root/join_kubeadm_cp.yaml || {
-            echo "[ERROR] Failed to download join configuration"
-            exit 1
-        }
-        
-        # Join the cluster as control plane
-        echo "[INFO] Joining cluster as control plane node..."
-        kubeadm join --config /root/join_kubeadm_cp.yaml
-        
-        # Set up kubeconfig for root user
-        mkdir -p "$HOME"/.kube
-        if [ -f /etc/kubernetes/admin.conf ]; then
-            cp /etc/kubernetes/admin.conf "$HOME"/.kube/config
-            chown "$(id -u)":"$(id -g)" "$HOME"/.kube/config
-        fi
-        
-        # Set up kubeconfig for cloudinit user
-        sudo -u cloudinit mkdir -p /home/cloudinit/.kube
-        if [ -f /etc/kubernetes/admin.conf ]; then
-            sudo cp /etc/kubernetes/admin.conf /home/cloudinit/.kube/config
-            sudo chown cloudinit:cloudinit /home/cloudinit/.kube/config
-        fi
-        
-        # Persist KUBECONFIG for cloudinit user
-        sudo bash -c "grep -q 'export KUBECONFIG=\$HOME/.kube/config' /home/cloudinit/.bashrc || echo 'export KUBECONFIG=\$HOME/.kube/config' >> /home/cloudinit/.bashrc"
-        
-        # Provide a system-wide default for interactive shells when admin.conf exists
-        if [ -f /etc/kubernetes/admin.conf ]; then
-            cat <<'EOP' | sudo tee /etc/profile.d/kubeconfig.sh >/dev/null
-if [ -z "${KUBECONFIG:-}" ] && [ -f "$HOME/.kube/config" ]; then
-  export KUBECONFIG="$HOME/.kube/config"
-fi
-EOP
-            sudo chmod 0644 /etc/profile.d/kubeconfig.sh
-        fi
-        
-        echo "[INFO] Control plane node setup completed successfully"
         exit 0
         ;;
     *)

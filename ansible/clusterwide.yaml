@@ -7,12 +7,6 @@
     - name: Ping
       ansible.builtin.ping:
 
-- name: Install packages on all nodes
-  hosts: all
-  become: true
-  roles:
-    - 00-install-packages
-
 - name: Prepare control plane nodes (HAProxy + Keepalived)
   hosts: kube_server
   become: true
@@ -41,28 +35,11 @@
     - 01-ssh-keygen
     - 02-setup-sshd-config
 
-- name: Initialize Kubernetes cluster (first control plane only)
-  hosts: kube_server[0]
-  become: true
-  vars:
-    api_vip: "172.16.40.100"
-  roles:
-    - 10-kubeadm-init
-
-- name: Install CNI (first control plane only)
-  hosts: kube_server[0]
-  become: true
-  vars:
-    api_vip: "172.16.40.100"
-  roles:
-    - 13-install-cni
-
 - name: Kubernetes join (control plane)
   hosts: kube_server
   become: true
   vars:
     join_config_dir: "/home/cloudinit"
-    api_vip: "172.16.40.100"
   roles:
     - 11-kubeadm-join-cp
 
@@ -82,9 +59,3 @@
     kubeconfig_home: "/home/cloudinit"
   roles:
     - 21-copy-kubeconfig
-
-- name: Install ArgoCD (first control plane only)
-  hosts: kube_server[0]
-  become: true
-  roles:
-    - 14-install-argocd
