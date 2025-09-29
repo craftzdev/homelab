@@ -289,11 +289,12 @@ set -e
 # Pull images first (失敗しても継続)
 kubeadm config images pull || echo "[WARN] kubeadm config images pull failed; continuing"
 
-# install k9s (失敗しても継続)
-wget https://github.com/derailed/k9s/releases/download/v0.27.4/k9s_Linux_amd64.tar.gz -O - | tar -zxvf - k9s && sudo mv ./k9s /usr/local/bin/ || echo "[WARN] k9s install failed; continuing"
+# install k9s (最新安定版; 失敗しても継続)
+K9S_VERSION="v0.50.13"
+wget -qO- "https://github.com/derailed/k9s/releases/download/${K9S_VERSION}/k9s_Linux_amd64.tar.gz" | tar -zxvf - k9s && sudo mv -f ./k9s /usr/local/bin/ || echo "[WARN] k9s install failed; continuing"
 
 # install velero client (失敗しても継続)
-VELERO_VERSION="v1.10.3"
+VELERO_VERSION="v1.17.0"
 wget https://github.com/vmware-tanzu/velero/releases/download/${VELERO_VERSION}/velero-${VELERO_VERSION}-linux-amd64.tar.gz || true
 [ -f velero-${VELERO_VERSION}-linux-amd64.tar.gz ] && tar -xvf velero-${VELERO_VERSION}-linux-amd64.tar.gz && sudo mv velero-${VELERO_VERSION}-linux-amd64/velero /usr/local/bin/ || echo "[WARN] velero install skipped"
 
@@ -355,14 +356,18 @@ cgroupDriver: "systemd"
 protectKernelDefaults: true
 EOF
 
-# Install Kubernetes without kube-proxy
-set +e
-kubeadm init --config "$HOME"/init_kubeadm.yaml --skip-phases=addon/kube-proxy --ignore-preflight-errors=NumCPU,Mem | tee /root/kubeadm-init.log
-INIT_STATUS=${PIPESTATUS[0]}
-set -e
-if [ $INIT_STATUS -ne 0 ]; then
-  echo "[ERROR] kubeadm init failed. See /root/kubeadm-init.log"
-  exit $INIT_STATUS
+# Install Kubernetes without kube-proxy (idempotent)
+if [ -f /etc/kubernetes/manifests/kube-apiserver.yaml ]; then
+  echo "[INFO] kubeadm already initialized; skipping kubeadm init"
+else
+  set +e
+  kubeadm init --config "$HOME"/init_kubeadm.yaml --skip-phases=addon/kube-proxy --ignore-preflight-errors=NumCPU,Mem | tee /root/kubeadm-init.log
+  INIT_STATUS=${PIPESTATUS[0]}
+  set -e
+  if [ $INIT_STATUS -ne 0 ]; then
+    echo "[ERROR] kubeadm init failed. See /root/kubeadm-init.log"
+    exit $INIT_STATUS
+  fi
 fi
 
 mkdir -p "$HOME"/.kube
@@ -408,13 +413,14 @@ helm upgrade --install cilium cilium/cilium \
 
 # Install ArgoCD Helm chart
 helm repo add argo https://argoproj.github.io/argo-helm
-helm install argocd argo/argo-cd \
-    --version 5.36.10 \
+helm upgrade --install argocd argo/argo-cd \
+    --version 8.5.7 \
     --create-namespace \
     --namespace argocd \
     --values https://raw.githubusercontent.com/unchama/kube-cluster-on-proxmox/"${TARGET_BRANCH}"/k8s-manifests/argocd-helm-chart-values.yaml
-helm install argocd argo/argocd-apps \
-    --version 0.0.1 \
+helm upgrade --install argocd-apps argo/argocd-apps \
+    --version 2.0.2 \
+    --namespace argocd \
     --values https://raw.githubusercontent.com/unchama/kube-cluster-on-proxmox/"${TARGET_BRANCH}"/k8s-manifests/argocd-apps-helm-chart-values.yaml
 
 
