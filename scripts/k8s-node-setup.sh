@@ -397,6 +397,15 @@ EOP
   sudo chmod 0644 /etc/profile.d/kubeconfig.sh
 fi
 
+# Ensure local homelab repo exists for Helm values
+if [ ! -d "$HOME/homelab" ]; then
+  git clone -b "${TARGET_BRANCH}" https://github.com/craftzdev/homelab.git "$HOME/homelab"
+fi
+
+# Temporarily remove control-plane taints to allow scheduling until workers join
+kubectl taint nodes "$(hostname)" node-role.kubernetes.io/control-plane- || true
+kubectl taint nodes "$(hostname)" node-role.kubernetes.io/master- || true
+
 # クラスタ初期セットアップ時に helm　を使用して CNI と ArgoCD をクラスタに導入する
 # それ以外のクラスタリソースは ArgoCD によって本リポジトリから自動で導入される
 
@@ -414,6 +423,7 @@ helm upgrade --install cilium cilium/cilium \
 
 # Install ArgoCD Helm chart
 helm repo add argo https://argoproj.github.io/argo-helm
+helm repo update
 helm upgrade --install argocd argo/argo-cd \
     --version 8.5.7 \
     --create-namespace \
@@ -490,8 +500,10 @@ EOF
 # install ansible
 sudo apt-get install -y ansible git sshpass
 
-# clone repo
-git clone -b "${TARGET_BRANCH}" https://github.com/craftzdev/homelab.git "$HOME"/homelab
+# clone repo (if not present)
+if [ ! -d "$HOME/homelab" ]; then
+  git clone -b "${TARGET_BRANCH}" https://github.com/craftzdev/homelab.git "$HOME/homelab"
+fi
 
 # export ansible.cfg target
 export ANSIBLE_CONFIG="$HOME"/homelab/ansible/ansible.cfg
