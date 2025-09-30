@@ -60,6 +60,10 @@ ssh_exec(){ local host=$1; shift; ssh -o BatchMode=yes -n "$host" "$@"; }
 # download the image(ubuntu 24.04 LTS)
 wget https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img
 
+# install qemu-guest-agent to image using libguestfs-tools
+apt-get update && apt-get install libguestfs-tools -y
+virt-customize -a noble-server-cloudimg-amd64.img --install liburing2 --install qemu-guest-agent
+
 qm create "$TEMPLATE_VMID" --cores 2 --memory 4096 --name k8s-template \
   --net0 virtio,bridge=${VLAN_BRIDGE} \
   --agent enabled=1,fstrim_cloned_disks=1
@@ -68,27 +72,10 @@ qm importdisk $TEMPLATE_VMID noble-server-cloudimg-amd64.img $TEMPLATE_BOOT_IMAG
 qm set "$TEMPLATE_VMID" --scsihw virtio-scsi-pci --scsi0 "$TEMPLATE_BOOT_IMAGE_TARGET_VOLUME:vm-$TEMPLATE_VMID-disk-0"
 qm set "$TEMPLATE_VMID" --ide2 "$CLOUDINIT_IMAGE_TARGET_VOLUME":cloudinit
 qm set "$TEMPLATE_VMID" --boot order=scsi0 --serial0 socket --vga serial0
-
-echo "[INFO] Converting to template"
 qm template "$TEMPLATE_VMID"
-rm -f "$UBUNTU_IMG" SHA256SUMS
-
-### ======== Per-VM provisioning ========
-# finally attach the new disk to the VM as scsi drive
-qm set $TEMPLATE_VMID --scsihw virtio-scsi-pci --scsi0 $TEMPLATE_BOOT_IMAGE_TARGET_VOLUME:vm-$TEMPLATE_VMID-disk-0
-
-# add Cloud-Init CD-ROM drive
-qm set $TEMPLATE_VMID --ide2 $CLOUDINIT_IMAGE_TARGET_VOLUME:cloudinit
-
-# set the bootdisk parameter to scsi0
-qm set "$TEMPLATE_VMID" --boot order=scsi0 --serial0 socket --vga serial0
-
-# migrate to template
-qm template $TEMPLATE_VMID
-
-# cleanup
 rm noble-server-cloudimg-amd64.img
 
+### ======== Per-VM provisioning ========
 # Create snippet for cloud-init (user-config)
 # START irregular indent because heredoc
 for array in "${VM_LIST[@]}"
