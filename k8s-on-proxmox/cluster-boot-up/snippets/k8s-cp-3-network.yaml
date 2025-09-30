@@ -1,7 +1,7 @@
 network:
   version: 2
   ethernets:
-    ens18:
+    enp6s18:
       addresses: [172.16.40.13/24]
       gateway4: 172.16.40.1
       nameservers:
