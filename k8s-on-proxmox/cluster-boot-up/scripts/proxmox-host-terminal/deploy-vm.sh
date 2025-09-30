@@ -72,16 +72,13 @@ do
     do
         # clone from template
         # in clone phase, can't create vm-disk to local volume
-        qm clone "${TEMPLATE_VMID}" "${vmid}" --name "${vmname}" --full true --target "${targethost}"
+        qm clone "${TEMPLATE_VMID}" "${vmid}" --name "${vmname}" --full true --target "${targethost}" --storage "${BOOT_IMAGE_TARGET_VOLUME}"
         
         # set compute resources
-        ssh -n "${targetip}" qm set "${vmid}" --cores "${cpu}" --memory "${mem}"
-
-        # move vm-disk to ceph storage
-        ssh -n "${targetip}" qm move-disk "${vmid}" scsi0 "${BOOT_IMAGE_TARGET_VOLUME}" --delete true
+        ssh -n "${targethost}" qm set "${vmid}" --cores "${cpu}" --memory "${mem}"
 
         # resize disk (Resize after cloning, because it takes time to clone a large disk)
-        ssh -n "${targetip}" qm resize "${vmid}" scsi0 100G
+        ssh -n "${targethost}" qm resize "${vmid}" scsi0 100G
 
         # create snippet for cloud-init(user-config)
         # START irregular indent because heredoc
@@ -123,10 +120,10 @@ EOF
         curl -s "${REPOSITORY_RAW_SOURCE_URL}/k8s-on-proxmox/cluster-boot-up/snippets/${vmname}-network.yaml" > "${SNIPPET_TARGET_PATH}"/"${vmname}"-network.yaml
 
         # set snippet to vm
-        ssh -n "${targetip}" qm set "${vmid}" --cicustom "user=${SNIPPET_TARGET_VOLUME}:snippets/${vmname}-user.yaml,network=${SNIPPET_TARGET_VOLUME}:snippets/${vmname}-network.yaml"
+        ssh -n "${targethost}" qm set "${vmid}" --cicustom "user=${SNIPPET_TARGET_VOLUME}:snippets/${vmname}-user.yaml,network=${SNIPPET_TARGET_VOLUME}:snippets/${vmname}-network.yaml"
 
         # start vm
-        ssh -n "${targetip}" qm start "${vmid}"
+        ssh -n "${targethost}" qm start "${vmid}"
 
     done
 done
