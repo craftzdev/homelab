@@ -41,14 +41,15 @@ qm set $TEMPLATE_VMID --agent enabled=1,fstrim_cloned_disks=1
 
 # set UEFI (OVMF) BIOS and machine type q35
 qm set $TEMPLATE_VMID --bios ovmf --machine q35
-# add EFI disk on shared Ceph storage
-qm set $TEMPLATE_VMID --efidisk0 $CLOUDINIT_IMAGE_TARGET_VOLUME:0
 
 # import the downloaded disk to $TEMPLATE_BOOT_IMAGE_TARGET_VOLUME storage
 qm importdisk $TEMPLATE_VMID noble-server-cloudimg-amd64.img $TEMPLATE_BOOT_IMAGE_TARGET_VOLUME
 
 # finally attach the new disk to the VM as scsi drive
 qm set $TEMPLATE_VMID --scsihw virtio-scsi-pci --scsi0 $TEMPLATE_BOOT_IMAGE_TARGET_VOLUME:vm-$TEMPLATE_VMID-disk-0
+
+# add EFI disk on shared Ceph storage AFTER attaching main disk to avoid name collision
+qm set $TEMPLATE_VMID --efidisk0 $BOOT_IMAGE_TARGET_VOLUME:0
 
 # add Cloud-Init CD-ROM drive
 qm set $TEMPLATE_VMID --ide2 $CLOUDINIT_IMAGE_TARGET_VOLUME:cloudinit
