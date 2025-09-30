@@ -419,13 +419,11 @@ helm upgrade --install argocd argo/argo-cd \
     --create-namespace \
     --namespace argocd \
     --timeout 15m \
-    --wait \
     --values https://raw.githubusercontent.com/craftzdev/homelab/"${TARGET_BRANCH}"/k8s-manifests/argocd-helm-chart-values.yaml
 helm upgrade --install argocd-apps argo/argocd-apps \
     --version 2.0.2 \
     --namespace argocd \
     --timeout 15m \
-    --wait \
     --values https://raw.githubusercontent.com/craftzdev/homelab/"${TARGET_BRANCH}"/k8s-manifests/argocd-apps-helm-chart-values.yaml
 
 

@@ -21,6 +21,13 @@ server:
     enabled: true
     minAvailable: 1
     maxUnavailable: 0
+  tolerations:
+    - key: node-role.kubernetes.io/control-plane
+      operator: Exists
+      effect: NoSchedule
+    - key: node-role.kubernetes.io/master
+      operator: Exists
+      effect: NoSchedule
 
 configs:
   cm:
@@ -48,6 +55,13 @@ controller:
     enabled: true
     minAvailable: 1
     maxUnavailable: 0
+  tolerations:
+    - key: node-role.kubernetes.io/control-plane
+      operator: Exists
+      effect: NoSchedule
+    - key: node-role.kubernetes.io/master
+      operator: Exists
+      effect: NoSchedule
 
 dex:
   resources:
@@ -61,6 +75,13 @@ dex:
     enabled: true
     minAvailable: 1
     maxUnavailable: 0
+  tolerations:
+    - key: node-role.kubernetes.io/control-plane
+      operator: Exists
+      effect: NoSchedule
+    - key: node-role.kubernetes.io/master
+      operator: Exists
+      effect: NoSchedule
 
 redis:
   resources:
@@ -70,6 +91,13 @@ redis:
     requests:
       cpu: 100m
       memory: 128Mi
+  tolerations:
+    - key: node-role.kubernetes.io/control-plane
+      operator: Exists
+      effect: NoSchedule
+    - key: node-role.kubernetes.io/master
+      operator: Exists
+      effect: NoSchedule
 
 repoServer:
   replicaCount: 1
@@ -77,6 +105,13 @@ repoServer:
     requests:
       cpu: 500m
       memory: 128Mi
+  tolerations:
+    - key: node-role.kubernetes.io/control-plane
+      operator: Exists
+      effect: NoSchedule
+    - key: node-role.kubernetes.io/master
+      operator: Exists
+      effect: NoSchedule
 
 applicationSet:
   enabled: true
@@ -85,6 +120,13 @@ applicationSet:
     requests:
       cpu: 500m
       memory: 128Mi
+  tolerations:
+    - key: node-role.kubernetes.io/control-plane
+      operator: Exists
+      effect: NoSchedule
+    - key: node-role.kubernetes.io/master
+      operator: Exists
+      effect: NoSchedule
 
 notifications:
   resources:
