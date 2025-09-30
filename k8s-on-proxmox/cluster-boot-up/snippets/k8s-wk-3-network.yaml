@@ -1,14 +1,9 @@
-version: 1
-config:
-  - type: physical
-    name: ens18
-    subnets:
-    - type: static
-      address: '172.16.40.23'
-      netmask: '255.255.255.0'
-      gateway: '172.16.40.1'
-  - type: nameserver
-    address:
-    - '172.16.40.1'
-    search:
-    - 'home.arpa'
+network:
+  version: 2
+  ethernets:
+    ens18:
+      addresses: [172.16.40.23/24]
+      gateway4: 172.16.40.1
+      nameservers:
+        addresses: [172.16.40.1]
+        search: [home.arpa]
