@@ -1,0 +1,97 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kube-prometheus-stack
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  project: cluster-wide-apps
+  source:
+    repoURL: https://prometheus-community.github.io/helm-charts
+    chart: kube-prometheus-stack
+    targetRevision: 77.12.0
+    helm:
+      releaseName: monitoring
+      values: |
+        crds:
+          enabled: true
+          upgradeJob:
+            enabled: true
+        defaultRules:
+          create: true
+          rules:
+            kubeProxy: false
+            alertmanager: true
+            windows: false
+        prometheus:
+          prometheusSpec:
+            retention: 15d
+            storageSpec:
+              volumeClaimTemplate:
+                spec:
+                  accessModes: ["ReadWriteOnce"]
+                  resources:
+                    requests:
+                      storage: 50Gi
+        alertmanager:
+          enabled: true
+          alertmanagerSpec:
+            storage:
+              volumeClaimTemplate:
+                spec:
+                  accessModes: ["ReadWriteOnce"]
+                  resources:
+                    requests:
+                      storage: 5Gi
+          config:
+            global:
+              resolve_timeout: 5m
+            route:
+              group_by: ["job", "alertname"]
+              group_wait: 30s
+              group_interval: 5m
+              repeat_interval: 12h
+              receiver: "null"
+            receivers:
+              - name: "null"
+        grafana:
+          grafana.ini:
+            auth:
+              disable_login_form: false
+            auth.anonymous:
+              enabled: false
+          sidecar:
+            dashboards:
+              enabled: true
+              label: grafana_dashboard
+              labelValue: "1"
+              searchNamespace: ALL
+            datasources:
+              enabled: true
+              defaultDatasourceEnabled: true
+              isDefaultDatasource: true
+          datasources:
+            datasources.yaml:
+              apiVersion: 1
+              datasources:
+                - name: Prometheus
+                  type: prometheus
+                  access: proxy
+                  url: http://monitoring-kube-prometheus-prometheus:9090
+                  isDefault: true
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+    retry:
+      limit: -1
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 2m

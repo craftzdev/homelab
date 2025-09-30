@@ -1,0 +1,14 @@
+version: 1
+config:
+  - type: physical
+    name: ens18
+    subnets:
+    - type: static
+      address: '172.16.40.13'
+      netmask: '255.255.255.0'
+      gateway: '172.16.40.1'
+  - type: nameserver
+    address:
+    - '172.16.40.1'
+    search:
+    - 'home.arpa'
