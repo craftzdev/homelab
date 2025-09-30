@@ -34,7 +34,7 @@ apt-get update && apt-get install libguestfs-tools -y
 virt-customize -a noble-server-cloudimg-amd64.img --install liburing2 --install qemu-guest-agent
 
 # create a new VM and attach Network Adaptor
-qm create $TEMPLATE_VMID --cores 2 --memory 4096 --net0 virtio,bridge=vmbr1--agent enabled=1,fstrim_cloned_disks=1 --name k8s-template
+qm create $TEMPLATE_VMID --cores 2 --memory 4096 --net0 virtio,bridge=vmbr1 --agent enabled=1,fstrim_cloned_disks=1 --name k8s-template
 
 # import the downloaded disk to $TEMPLATE_BOOT_IMAGE_TARGET_VOLUME storage
 qm importdisk $TEMPLATE_VMID noble-server-cloudimg-amd64.img $TEMPLATE_BOOT_IMAGE_TARGET_VOLUME
