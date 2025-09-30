@@ -18,14 +18,14 @@ NODE_CIDR_SUFFIX=${NODE_CIDR_SUFFIX:-24}                           # xxx.xxx.xxx
 NAMESERVERS=${NAMESERVERS:-"172.16.40.1"}
 SEARCHDOMAIN=${SEARCHDOMAIN:-home.arpa}
 
-# VM inventory: vmid name vCPU mem(MiB) ip targetip targethost
+# VM inventory: vmid name vCPU mem(MiB) targetip targethost
 VM_LIST=(
-  "1001 k8s-cp-1 4 8192 172.16.40.11 - sv-proxmox-01"
-  "1002 k8s-cp-2 4 8192 172.16.40.12 - sv-proxmox-02"
-  "1003 k8s-cp-3 4 8192 172.16.40.13 - sv-proxmox-03"
-  "1101 k8s-wk-1 4 8192 172.16.40.21 - sv-proxmox-01"
-  "1102 k8s-wk-2 4 8192 172.16.40.22 - sv-proxmox-02"
-  "1103 k8s-wk-3 4 8192 172.16.40.23 - sv-proxmox-03"
+  "1001 k8s-cp-1  4 8192  172.16.40.11  sv-proxmox-01"
+  "1002 k8s-cp-2  4 8192  172.16.40.12  sv-proxmox-02"
+  "1003 k8s-cp-3  4 8192  172.16.40.13  sv-proxmox-03"
+  "1101 k8s-wk-1  4 8192  172.16.40.21  sv-proxmox-01"
+  "1102 k8s-wk-2  4 8192  172.16.40.22  sv-proxmox-02"
+  "1103 k8s-wk-3  4 8192  172.16.40.23  sv-proxmox-03"
 )
 
 REPOSITORY_RAW_SOURCE_URL="https://raw.githubusercontent.com/craftzdev/homelab/${TARGET_BRANCH}"
@@ -81,10 +81,7 @@ qm set $TEMPLATE_VMID --scsihw virtio-scsi-pci --scsi0 $TEMPLATE_BOOT_IMAGE_TARG
 qm set $TEMPLATE_VMID --ide2 $CLOUDINIT_IMAGE_TARGET_VOLUME:cloudinit
 
 # set the bootdisk parameter to scsi0
-qm set $TEMPLATE_VMID --boot c --bootdisk scsi0
-
-# set serial console
-qm set $TEMPLATE_VMID --serial0 socket --vga serial0
+qm set "$TEMPLATE_VMID" --boot order=scsi0 --serial0 socket --vga serial0
 
 # migrate to template
 qm template $TEMPLATE_VMID
