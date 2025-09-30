@@ -130,6 +130,9 @@ EOF
 
         # set snippet to vm
         ssh -n "${targetip}" qm set "${vmid}" --cicustom "user=${SNIPPET_TARGET_VOLUME}:snippets/${vmname}-user.yaml,network=${SNIPPET_TARGET_VOLUME}:snippets/${vmname}-network.yaml"
+        
+        # update cloud init iso
+        ssh -n "${targetip}" qm cloudinit update "${vmid}"
 
         # start vm
         ssh -n "${targetip}" qm start "${vmid}"
