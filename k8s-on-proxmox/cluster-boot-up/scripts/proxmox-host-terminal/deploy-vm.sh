@@ -12,12 +12,12 @@ SNIPPET_TARGET_PATH=/mnt/pve/${SNIPPET_TARGET_VOLUME}/snippets
 REPOSITORY_RAW_SOURCE_URL="https://raw.githubusercontent.com/craftzdev/homelab/${TARGET_BRANCH}"
 VM_LIST=(
     #vmid #vmname             #cpu #mem  #targetip      #targethost
-    "1001 k8s-cp-1 4    8192  192.168.40.11 sv-proxmox-01"
-    "1002 k8s-cp-2 4    8192  192.168.40.12 sv-proxmox-02"
-    "1003 k8s-cp-3 4    8192  192.168.40.13 sv-proxmox-03"
-    "1101 k8s-wk-1 6    24576 192.168.40.21 sv-proxmox-01"
-    "1102 k8s-wk-2 6    18432 192.168.40.22 sv-proxmox-02"
-    "1103 k8s-wk-3 6    24576 192.168.40.23 sv-proxmox-03"
+    "1001 k8s-cp-1 4    8192  172.16.40.11 sv-proxmox-01"
+    "1002 k8s-cp-2 4    8192  172.16.40.12 sv-proxmox-02"
+    "1003 k8s-cp-3 4    8192  172.16.40.13 sv-proxmox-03"
+    "1101 k8s-wk-1 6    24576 172.16.40.21 sv-proxmox-01"
+    "1102 k8s-wk-2 6    24576 172.16.40.22 sv-proxmox-02"
+    "1103 k8s-wk-3 6    24576 172.16.40.23 sv-proxmox-03"
 )
 
 #endregion
