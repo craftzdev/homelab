@@ -4,9 +4,10 @@
 
 TARGET_BRANCH=$1
 TEMPLATE_VMID=9050
-CLOUDINIT_IMAGE_TARGET_VOLUME=local-lvm
-TEMPLATE_BOOT_IMAGE_TARGET_VOLUME=local-lvm
-BOOT_IMAGE_TARGET_VOLUME=local-lvm
+CEPH_POOL_NAME=cephrdb_k8s
+CLOUDINIT_IMAGE_TARGET_VOLUME=$CEPH_POOL_NAME
+TEMPLATE_BOOT_IMAGE_TARGET_VOLUME=$CEPH_POOL_NAME
+BOOT_IMAGE_TARGET_VOLUME=$CEPH_POOL_NAME
 SNIPPET_TARGET_VOLUME=cephfs01
 SNIPPET_TARGET_PATH=/mnt/pve/${SNIPPET_TARGET_VOLUME}/snippets
 REPOSITORY_RAW_SOURCE_URL="https://raw.githubusercontent.com/craftzdev/homelab/${TARGET_BRANCH}"
@@ -34,7 +35,9 @@ apt-get update && apt-get install libguestfs-tools -y
 virt-customize -a noble-server-cloudimg-amd64.img --install liburing2 --install qemu-guest-agent
 
 # create a new VM and attach Network Adaptor
-qm create $TEMPLATE_VMID --cores 2 --memory 4096 --net0 virtio,bridge=vmbr1 --agent enabled=1,fstrim_cloned_disks=1 --name k8s-template
+qm create $TEMPLATE_VMID --cores 2 --memory 4096 --net0 virtio,bridge=vmbr1 --name k8s-template
+# enable qemu-guest-agent (set separately from create)
+qm set $TEMPLATE_VMID --agent enabled=1,fstrim_cloned_disks=1
 
 # import the downloaded disk to $TEMPLATE_BOOT_IMAGE_TARGET_VOLUME storage
 qm importdisk $TEMPLATE_VMID noble-server-cloudimg-amd64.img $TEMPLATE_BOOT_IMAGE_TARGET_VOLUME
@@ -74,7 +77,7 @@ do
         # set compute resources
         ssh -n "${targetip}" qm set "${vmid}" --cores "${cpu}" --memory "${mem}"
 
-        # move vm-disk to local
+        # move vm-disk to ceph storage
         ssh -n "${targetip}" qm move-disk "${vmid}" scsi0 "${BOOT_IMAGE_TARGET_VOLUME}" --delete true
 
         # resize disk (Resize after cloning, because it takes time to clone a large disk)
