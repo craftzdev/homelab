@@ -1,62 +1,31 @@
 #!/usr/bin/env bash
 
 #region set variables
-TARGET_BRANCH="${1:-${TARGET_BRANCH:-main}}"
-TEMPLATE_VMID=${TEMPLATE_VMID:-9050}
-CLOUDINIT_IMAGE_TARGET_VOLUME=${CLOUDINIT_IMAGE_TARGET_VOLUME:-local-lvm}
-TEMPLATE_BOOT_IMAGE_TARGET_VOLUME=${TEMPLATE_BOOT_IMAGE_TARGET_VOLUME:-local-lvm}
-BOOT_IMAGE_TARGET_VOLUME=${BOOT_IMAGE_TARGET_VOLUME:-local-lvm}
-SNIPPET_TARGET_VOLUME=${SNIPPET_TARGET_VOLUME:-cephfs01}              # content: snippets を有効に（CephFS/NFS 等の共有ファイルストレージ推奨）
-SNIPPET_TARGET_PATH=${SNIPPET_TARGET_PATH:-/mnt/pve/${SNIPPET_TARGET_VOLUME}/snippets}                     # Ubuntu 24.04
-CEPH_POOL_NAME=${CEPH_POOL_NAME:-cephrdb_k8s}
 
-# Network (Proxmox Cloud-Init 推奨パラメータ使用)
-VLAN_ID=${VLAN_ID:-40}
-VLAN_BRIDGE=${VLAN_BRIDGE:-vmbr1}
-NODE_GATEWAY=${NODE_GATEWAY:-172.16.40.1}
-NODE_CIDR_SUFFIX=${NODE_CIDR_SUFFIX:-24}                           # xxx.xxx.xxx.xxx/24
-NAMESERVERS=${NAMESERVERS:-"172.16.40.1"}
-SEARCHDOMAIN=${SEARCHDOMAIN:-home.arpa}
-
-# VM inventory: vmid name vCPU mem(MiB) targetip targethost
+TARGET_BRANCH=$1
+TEMPLATE_VMID=9050
+CLOUDINIT_IMAGE_TARGET_VOLUME=local-lvm
+TEMPLATE_BOOT_IMAGE_TARGET_VOLUME=local-lvm
+BOOT_IMAGE_TARGET_VOLUME=local-lvm
+SNIPPET_TARGET_VOLUME=cephfs01
+SNIPPET_TARGET_PATH=/mnt/pve/${SNIPPET_TARGET_VOLUME}/snippets
+REPOSITORY_RAW_SOURCE_URL="https://raw.githubusercontent.com/craftzdev/homelab/${TARGET_BRANCH}"
 VM_LIST=(
-  "1001 k8s-cp-1  4 8192  172.16.40.11  sv-proxmox-01"
-  "1002 k8s-cp-2  4 8192  172.16.40.12  sv-proxmox-02"
-  "1003 k8s-cp-3  4 8192  172.16.40.13  sv-proxmox-03"
-  "1101 k8s-wk-1  4 8192  172.16.40.21  sv-proxmox-01"
-  "1102 k8s-wk-2  4 8192  172.16.40.22  sv-proxmox-02"
-  "1103 k8s-wk-3  4 8192  172.16.40.23  sv-proxmox-03"
+    #vmid #vmname             #cpu #mem  #targetip      #targethost
+    "1001 k8s-cp-1 4    8192  192.168.40.11 sv-proxmox-01"
+    "1002 k8s-cp-2 4    8192  192.168.40.12 sv-proxmox-02"
+    "1003 k8s-cp-3 4    8192  192.168.40.13 sv-proxmox-03"
+    "1101 k8s-wk-1 6    24576 192.168.40.21 sv-proxmox-01"
+    "1102 k8s-wk-2 6    18432 192.168.40.22 sv-proxmox-02"
+    "1103 k8s-wk-3 6    24576 192.168.40.23 sv-proxmox-03"
 )
 
-REPOSITORY_RAW_SOURCE_URL="https://raw.githubusercontent.com/craftzdev/homelab/${TARGET_BRANCH}"
+#endregion
 
-# SSH 接続先の識別（host か ip）
-SSH_CONNECT_FIELD=${SSH_CONNECT_FIELD:-host}
-RETRY_DELAY=${RETRY_DELAY:-2}
-# クラスタ関連の厳格チェックを要求する場合に true（単一ノードでは false 推奨）
-REQUIRE_CLUSTER=${REQUIRE_CLUSTER:-false}
+# ---
 
-### ======== Pre-checks（簡潔化） ========
-# 共有ストレージ優先設定（Ceph RBD が存在すれば VM ディスクは共有ストレージを使用）
-# 優先順位: 明示指定(CEPH_STORAGE) > 指定プール名一致(CEPH_POOL_NAME)
-# 環境変数で無効化したい場合は PREFER_SHARED_STORAGE=false を指定してください。
-# ストレージ選択の自動化は廃止。既定値や環境変数の明示指定に委ねます。
+#region create-template
 
-# Storage 存在チェック
-[ -d "$SNIPPET_TARGET_PATH" ] || mkdir -p "$SNIPPET_TARGET_PATH"
-
-ssh_exec(){ local host=$1; shift; ssh -o BatchMode=yes -n "$host" "$@"; }
-
-# VM_LIST 事前検証（重複/形式チェック）
-# 事前検証は簡略化し、Proxmox/Cloud-Init のエラーに委ねます。
-
-# targethost がクラスタに存在するか（任意）
-# クラスタノード存在確認は省略。
-
-# SSH 接続先ユニーク化（移行先ノードも含める）
-# SSH 事前登録や到達性チェックは省略。
-
-### ======== Template (cloud image) ========
 # download the image(ubuntu 24.04 LTS)
 wget https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img
 
@@ -64,20 +33,36 @@ wget https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.i
 apt-get update && apt-get install libguestfs-tools -y
 virt-customize -a noble-server-cloudimg-amd64.img --install liburing2 --install qemu-guest-agent
 
-qm create "$TEMPLATE_VMID" --cores 2 --memory 4096 --name k8s-template \
-  --net0 virtio,bridge=${VLAN_BRIDGE} \
-  --agent enabled=1,fstrim_cloned_disks=1
+# create a new VM and attach Network Adaptor
+qm create $TEMPLATE_VMID --cores 2 --memory 4096 --net0 virtio,bridge=vmbr1--agent enabled=1,fstrim_cloned_disks=1 --name k8s-template
 
+# import the downloaded disk to $TEMPLATE_BOOT_IMAGE_TARGET_VOLUME storage
 qm importdisk $TEMPLATE_VMID noble-server-cloudimg-amd64.img $TEMPLATE_BOOT_IMAGE_TARGET_VOLUME
-qm set "$TEMPLATE_VMID" --scsihw virtio-scsi-pci --scsi0 "$TEMPLATE_BOOT_IMAGE_TARGET_VOLUME:vm-$TEMPLATE_VMID-disk-0"
-qm set "$TEMPLATE_VMID" --ide2 "$CLOUDINIT_IMAGE_TARGET_VOLUME":cloudinit
-qm set "$TEMPLATE_VMID" --boot order=scsi0 --serial0 socket --vga serial0
-qm template "$TEMPLATE_VMID"
+
+# finally attach the new disk to the VM as scsi drive
+qm set $TEMPLATE_VMID --scsihw virtio-scsi-pci --scsi0 $TEMPLATE_BOOT_IMAGE_TARGET_VOLUME:vm-$TEMPLATE_VMID-disk-0
+
+# add Cloud-Init CD-ROM drive
+qm set $TEMPLATE_VMID --ide2 $CLOUDINIT_IMAGE_TARGET_VOLUME:cloudinit
+
+# set the bootdisk parameter to scsi0
+qm set $TEMPLATE_VMID --boot c --bootdisk scsi0
+
+# set serial console
+qm set $TEMPLATE_VMID --serial0 socket --vga serial0
+
+# migrate to template
+qm template $TEMPLATE_VMID
+
+# cleanup
 rm noble-server-cloudimg-amd64.img
 
-### ======== Per-VM provisioning ========
-# Create snippet for cloud-init (user-config)
-# START irregular indent because heredoc
+#endregion
+
+# ---
+
+# region create vm from template
+
 for array in "${VM_LIST[@]}"
 do
     echo "${array}" | while read -r vmid vmname cpu mem targetip targethost
@@ -94,6 +79,9 @@ do
 
         # resize disk (Resize after cloning, because it takes time to clone a large disk)
         ssh -n "${targetip}" qm resize "${vmid}" scsi0 100G
+
+        # create snippet for cloud-init(user-config)
+        # START irregular indent because heredoc
 # ----- #
 cat > "$SNIPPET_TARGET_PATH"/"$vmname"-user.yaml << EOF
 #cloud-config
@@ -110,6 +98,7 @@ users:
     # mkpasswd --method=SHA-512 --rounds=4096
     # password is zaq12wsx
     passwd: \$6\$rounds=4096\$Xlyxul70asLm\$9tKm.0po4ZE7vgqc.grptZzUU9906z/.vjwcqz/WYVtTwc5i2DWfjVpXb8HBtoVfvSY61rvrs/iwHxREKl3f20
+# ssh_pwauth will be changed to false during cluster-bootup-phase in ansible
 ssh_pwauth: true
 ssh_authorized_keys: []
 package_upgrade: true
