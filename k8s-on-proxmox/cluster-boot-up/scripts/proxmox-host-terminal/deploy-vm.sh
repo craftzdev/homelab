@@ -16,9 +16,9 @@ VM_LIST=(
     "1001 k8s-cp-1 4    8192  172.16.10.11 sv-proxmox-01"
     "1002 k8s-cp-2 4    8192  172.16.10.12 sv-proxmox-02"
     "1003 k8s-cp-3 4    8192  172.16.10.13 sv-proxmox-03"
-    "1101 k8s-wk-1 6    24576 172.16.10.21 sv-proxmox-01"
-    "1102 k8s-wk-2 6    24576 172.16.10.22 sv-proxmox-02"
-    "1103 k8s-wk-3 6    24576 172.16.10.23 sv-proxmox-03"
+    "1101 k8s-wk-1 6    24576 172.16.10.11 sv-proxmox-01"
+    "1102 k8s-wk-2 6    24576 172.16.10.12 sv-proxmox-02"
+    "1103 k8s-wk-3 6    24576 172.16.10.13 sv-proxmox-03"
 )
 
 #endregion
@@ -38,6 +38,11 @@ virt-customize -a noble-server-cloudimg-amd64.img --install liburing2 --install 
 qm create $TEMPLATE_VMID --cores 2 --memory 4096 --net0 virtio,bridge=vmbr1 --name k8s-template
 # enable qemu-guest-agent (set separately from create)
 qm set $TEMPLATE_VMID --agent enabled=1,fstrim_cloned_disks=1
+
+# set UEFI (OVMF) BIOS and machine type q35
+qm set $TEMPLATE_VMID --bios ovmf --machine q35
+# add EFI disk on shared Ceph storage
+qm set $TEMPLATE_VMID --efidisk0 $CLOUDINIT_IMAGE_TARGET_VOLUME:0
 
 # import the downloaded disk to $TEMPLATE_BOOT_IMAGE_TARGET_VOLUME storage
 qm importdisk $TEMPLATE_VMID noble-server-cloudimg-amd64.img $TEMPLATE_BOOT_IMAGE_TARGET_VOLUME
