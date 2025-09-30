@@ -13,12 +13,12 @@ SNIPPET_TARGET_PATH=/mnt/pve/${SNIPPET_TARGET_VOLUME}/snippets
 REPOSITORY_RAW_SOURCE_URL="https://raw.githubusercontent.com/craftzdev/homelab/${TARGET_BRANCH}"
 VM_LIST=(
     #vmid #vmname             #cpu #mem  #targetip      #targethost
-    "1001 k8s-cp-1 4    8192  172.16.40.11 sv-proxmox-01"
-    "1002 k8s-cp-2 4    8192  172.16.40.12 sv-proxmox-02"
-    "1003 k8s-cp-3 4    8192  172.16.40.13 sv-proxmox-03"
-    "1101 k8s-wk-1 6    24576 172.16.40.21 sv-proxmox-01"
-    "1102 k8s-wk-2 6    24576 172.16.40.22 sv-proxmox-02"
-    "1103 k8s-wk-3 6    24576 172.16.40.23 sv-proxmox-03"
+    "1001 k8s-cp-1 4    8192  172.16.10.11 sv-proxmox-01"
+    "1002 k8s-cp-2 4    8192  172.16.10.12 sv-proxmox-02"
+    "1003 k8s-cp-3 4    8192  172.16.10.13 sv-proxmox-03"
+    "1101 k8s-wk-1 6    24576 172.16.10.21 sv-proxmox-01"
+    "1102 k8s-wk-2 6    24576 172.16.10.22 sv-proxmox-02"
+    "1103 k8s-wk-3 6    24576 172.16.10.23 sv-proxmox-03"
 )
 
 #endregion
@@ -72,13 +72,16 @@ do
     do
         # clone from template
         # in clone phase, can't create vm-disk to local volume
-        qm clone "${TEMPLATE_VMID}" "${vmid}" --name "${vmname}" --full true --target "${targethost}" --storage "${BOOT_IMAGE_TARGET_VOLUME}"
+        qm clone "${TEMPLATE_VMID}" "${vmid}" --name "${vmname}" --full true --target "${targethost}"
         
         # set compute resources
-        ssh -n "${targethost}" qm set "${vmid}" --cores "${cpu}" --memory "${mem}"
+        ssh -n "${targetip}" qm set "${vmid}" --cores "${cpu}" --memory "${mem}"
+
+        # move vm-disk to ceph storage
+        ssh -n "${targetip}" qm move-disk "${vmid}" scsi0 "${BOOT_IMAGE_TARGET_VOLUME}" --delete true
 
         # resize disk (Resize after cloning, because it takes time to clone a large disk)
-        ssh -n "${targethost}" qm resize "${vmid}" scsi0 100G
+        ssh -n "${targetip}" qm resize "${vmid}" scsi0 100G
 
         # create snippet for cloud-init(user-config)
         # START irregular indent because heredoc
@@ -120,10 +123,10 @@ EOF
         curl -s "${REPOSITORY_RAW_SOURCE_URL}/k8s-on-proxmox/cluster-boot-up/snippets/${vmname}-network.yaml" > "${SNIPPET_TARGET_PATH}"/"${vmname}"-network.yaml
 
         # set snippet to vm
-        ssh -n "${targethost}" qm set "${vmid}" --cicustom "user=${SNIPPET_TARGET_VOLUME}:snippets/${vmname}-user.yaml,network=${SNIPPET_TARGET_VOLUME}:snippets/${vmname}-network.yaml"
+        ssh -n "${targetip}" qm set "${vmid}" --cicustom "user=${SNIPPET_TARGET_VOLUME}:snippets/${vmname}-user.yaml,network=${SNIPPET_TARGET_VOLUME}:snippets/${vmname}-network.yaml"
 
         # start vm
-        ssh -n "${targethost}" qm start "${vmid}"
+        ssh -n "${targetip}" qm start "${vmid}"
 
     done
 done
