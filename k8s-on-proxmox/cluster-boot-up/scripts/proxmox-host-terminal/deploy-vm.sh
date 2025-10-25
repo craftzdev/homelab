@@ -35,7 +35,7 @@ apt-get update && apt-get install libguestfs-tools -y
 virt-customize -a noble-server-cloudimg-amd64.img --install liburing2 --install qemu-guest-agent
 
 # create a new VM and attach Network Adaptor
-qm create $TEMPLATE_VMID --cores 2 --memory 4096 --net0 virtio,bridge=vmbr1 --name k8s-template
+qm create $TEMPLATE_VMID --cores 2 --memory 4096 --net0 virtio,bridge=vmbr1,tag=40,firewall=1 --name k8s-template
 # enable qemu-guest-agent (set separately from create)
 qm set $TEMPLATE_VMID --agent enabled=1,fstrim_cloned_disks=1
 
@@ -82,6 +82,7 @@ do
         
         # set compute resources
         ssh -n "${targetip}" qm set "${vmid}" --cores "${cpu}" --memory "${mem}"
+        ssh -n "${targetip}" qm set "${vmid}" --net0 virtio,bridge=vmbr1,tag=40,firewall=1
 
         # resize disk (Resize after cloning, because it takes time to clone a large disk)
         ssh -n "${targetip}" qm resize "${vmid}" scsi0 100G
