@@ -1,8 +1,8 @@
 # Config values for the ArgoCD Helm Chart.
 # For default values, see
-# https://github.com/argoproj/argo-helm/blob/07d63255ae19ff1e08a22e71c932f686f8f619ac/charts/argocd-apps/Chart.yaml
+# https://github.com/argoproj/argo-helm/blob/main/charts/argocd-apps/values.yaml
 applications:
-  - name: argocd-root-app-of-apps
+  argocd-root-app-of-apps:
     namespace: argocd
     project: argocd-root
     source:
@@ -26,7 +26,7 @@ applications:
           factor: 2
           maxDuration: 2m
 projects:
-  - name: argocd-root
+  argocd-root:
     namespace: argocd
     description: The top-level project
     sourceRepos:
