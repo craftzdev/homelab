@@ -27,44 +27,51 @@ VM_LIST=(
 
 #region create-template
 
-# download the image(ubuntu 24.04 LTS)
-wget https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img
+# Check if template already exists
+if qm status $TEMPLATE_VMID &>/dev/null; then
+    echo "[INFO] Template VM $TEMPLATE_VMID already exists. Skipping template creation."
+else
+    echo "[INFO] Creating template VM $TEMPLATE_VMID..."
 
-# install qemu-guest-agent to image using libguestfs-tools
-apt-get update && apt-get install libguestfs-tools -y
-virt-customize -a noble-server-cloudimg-amd64.img --install liburing2 --install qemu-guest-agent
+    # download the image(ubuntu 24.04 LTS)
+    wget https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img
 
-# create a new VM and attach Network Adaptor
-qm create $TEMPLATE_VMID --cores 2 --memory 4096 --net0 virtio,bridge=vmbr1,tag=40,firewall=1 --name k8s-template
-# enable qemu-guest-agent (set separately from create)
-qm set $TEMPLATE_VMID --agent enabled=1,fstrim_cloned_disks=1
+    # install qemu-guest-agent to image using libguestfs-tools
+    apt-get update && apt-get install libguestfs-tools -y
+    virt-customize -a noble-server-cloudimg-amd64.img --install liburing2 --install qemu-guest-agent
 
-# set UEFI (OVMF) BIOS and machine type q35
-qm set $TEMPLATE_VMID --bios ovmf --machine q35
+    # create a new VM and attach Network Adaptor
+    qm create $TEMPLATE_VMID --cores 2 --memory 4096 --net0 virtio,bridge=vmbr1,tag=40,firewall=1 --name k8s-template
+    # enable qemu-guest-agent (set separately from create)
+    qm set $TEMPLATE_VMID --agent enabled=1,fstrim_cloned_disks=1
 
-# import the downloaded disk to $TEMPLATE_BOOT_IMAGE_TARGET_VOLUME storage
-qm importdisk $TEMPLATE_VMID noble-server-cloudimg-amd64.img $TEMPLATE_BOOT_IMAGE_TARGET_VOLUME
+    # set UEFI (OVMF) BIOS and machine type q35
+    qm set $TEMPLATE_VMID --bios ovmf --machine q35
 
-# finally attach the new disk to the VM as scsi drive
-qm set $TEMPLATE_VMID --scsihw virtio-scsi-pci --scsi0 $TEMPLATE_BOOT_IMAGE_TARGET_VOLUME:vm-$TEMPLATE_VMID-disk-0
+    # import the downloaded disk to $TEMPLATE_BOOT_IMAGE_TARGET_VOLUME storage
+    qm importdisk $TEMPLATE_VMID noble-server-cloudimg-amd64.img $TEMPLATE_BOOT_IMAGE_TARGET_VOLUME
 
-# add EFI disk on shared Ceph storage AFTER attaching main disk to avoid name collision
-qm set $TEMPLATE_VMID --efidisk0 $BOOT_IMAGE_TARGET_VOLUME:0
+    # finally attach the new disk to the VM as scsi drive
+    qm set $TEMPLATE_VMID --scsihw virtio-scsi-pci --scsi0 $TEMPLATE_BOOT_IMAGE_TARGET_VOLUME:vm-$TEMPLATE_VMID-disk-0
 
-# add Cloud-Init CD-ROM drive
-qm set $TEMPLATE_VMID --ide2 $CLOUDINIT_IMAGE_TARGET_VOLUME:cloudinit
+    # add EFI disk on shared Ceph storage AFTER attaching main disk to avoid name collision
+    qm set $TEMPLATE_VMID --efidisk0 $BOOT_IMAGE_TARGET_VOLUME:0
 
-# set the bootdisk parameter to scsi0
-qm set $TEMPLATE_VMID --boot c --bootdisk scsi0
+    # add Cloud-Init CD-ROM drive
+    qm set $TEMPLATE_VMID --ide2 $CLOUDINIT_IMAGE_TARGET_VOLUME:cloudinit
 
-# set serial console
-qm set $TEMPLATE_VMID --serial0 socket --vga serial0
+    # set the bootdisk parameter to scsi0
+    qm set $TEMPLATE_VMID --boot c --bootdisk scsi0
 
-# migrate to template
-qm template $TEMPLATE_VMID
+    # set serial console
+    qm set $TEMPLATE_VMID --serial0 socket --vga serial0
 
-# cleanup
-rm noble-server-cloudimg-amd64.img
+    # migrate to template
+    qm template $TEMPLATE_VMID
+
+    # cleanup
+    rm noble-server-cloudimg-amd64.img
+fi
 
 #endregion
 
@@ -76,6 +83,23 @@ for array in "${VM_LIST[@]}"
 do
     echo "${array}" | while read -r vmid vmname cpu mem targetip targethost
     do
+        echo "=== Processing VM: ${vmname} (${vmid}) on ${targethost} ==="
+
+        # Check if VM already exists and remove it
+        if qm status "${vmid}" &>/dev/null; then
+            echo "[INFO] VM ${vmid} already exists. Removing..."
+            qm stop "${vmid}" 2>/dev/null || true
+            qm destroy "${vmid}" --purge 2>/dev/null || true
+        fi
+
+        # Clean up orphan Ceph images if any
+        for suffix in cloudinit disk-0 disk-1; do
+            if rbd ls "${CEPH_POOL_NAME}" 2>/dev/null | grep -q "vm-${vmid}-${suffix}"; then
+                echo "[INFO] Removing orphan Ceph image: vm-${vmid}-${suffix}"
+                rbd rm "${CEPH_POOL_NAME}/vm-${vmid}-${suffix}" --no-progress 2>/dev/null || true
+            fi
+        done
+
         # clone from template
         # in clone phase, can't create vm-disk to local volume
         qm clone "${TEMPLATE_VMID}" "${vmid}" --name "${vmname}" --full true --target "${targethost}"
