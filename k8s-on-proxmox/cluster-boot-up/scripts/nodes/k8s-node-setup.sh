@@ -429,12 +429,12 @@ helm upgrade --install argocd argo/argo-cd \
     --create-namespace \
     --namespace argocd \
     --timeout 15m \
-    --values https://raw.githubusercontent.com/craftzdev/homelab/"${TARGET_BRANCH}"/k8s-manifests/argocd-helm-chart-values.yaml
+    --values https://raw.githubusercontent.com/craftzdev/homelab/"${TARGET_BRANCH}"/k8s-on-proxmox/manifests/kubernetes/argocd-helm-chart-values.yaml
 helm upgrade --install argocd-apps argo/argocd-apps \
     --version 2.0.2 \
     --namespace argocd \
     --timeout 15m \
-    --values https://raw.githubusercontent.com/craftzdev/homelab/"${TARGET_BRANCH}"/k8s-manifests/argocd-apps-helm-chart-values.yaml
+    --values https://raw.githubusercontent.com/craftzdev/homelab/"${TARGET_BRANCH}"/k8s-on-proxmox/manifests/kubernetes/argocd-apps-helm-chart-values.yaml
 
 
 cat <<EOF | kubectl apply -f -
@@ -497,6 +497,17 @@ EOF
 
 # ---
 
+# Add join tokens to ansible group_vars for other nodes to use
+ANSIBLE_GROUP_VARS="$HOME/homelab/k8s-on-proxmox/cluster-boot-up/ansible/hosts/k8s-servers/group_vars/all.yaml"
+if [ -f "$ANSIBLE_GROUP_VARS" ]; then
+  # Remove existing token entries if present (for idempotency)
+  sed -i '/^kubeadm_bootstrap_token:/d' "$ANSIBLE_GROUP_VARS"
+  sed -i '/^kubeadm_uploaded_certs:/d' "$ANSIBLE_GROUP_VARS"
+  # Append new values
+  echo "kubeadm_bootstrap_token: $KUBEADM_BOOTSTRAP_TOKEN" >> "$ANSIBLE_GROUP_VARS"
+  echo "kubeadm_uploaded_certs: $KUBEADM_UPLOADED_CERTS" >> "$ANSIBLE_GROUP_VARS"
+fi
+
 # install ansible
 sudo apt-get install -y ansible git sshpass
 
@@ -505,12 +516,11 @@ if [ ! -d "$HOME/homelab" ]; then
   git clone -b "${TARGET_BRANCH}" https://github.com/craftzdev/homelab.git "$HOME/homelab"
 fi
 
-# export ansible.cfg target
-export ANSIBLE_CONFIG="$HOME"/homelab/ansible/ansible.cfg
-
-# run ansible-playbook
-ansible-galaxy role install -r "$HOME"/homelab/ansible/roles/requirements.yaml
-ansible-galaxy collection install -r "$HOME"/homelab/ansible/roles/requirements.yaml
-ansible-playbook -i "$HOME"/homelab/ansible/hosts/k8s-servers/inventory "$HOME"/homelab/ansible/site.yaml
+# export ansible.cfg target and run ansible-playbook
+ANSIBLE_BASE="$HOME/homelab/k8s-on-proxmox/cluster-boot-up/ansible"
+export ANSIBLE_CONFIG="${ANSIBLE_BASE}/ansible.cfg"
+ansible-galaxy role install -r "${ANSIBLE_BASE}/roles/requirements.yaml" || true
+ansible-galaxy collection install -r "${ANSIBLE_BASE}/roles/requirements.yaml" || true
+ansible-playbook -i "${ANSIBLE_BASE}/hosts/k8s-servers/inventory" "${ANSIBLE_BASE}/site.yaml"
 
 # endregion

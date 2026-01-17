@@ -8,7 +8,7 @@ applications:
     source:
       repoURL: https://github.com/craftzdev/homelab
       targetRevision: main
-      path: k8s-manifests/apps/root
+      path: k8s-on-proxmox/manifests/kubernetes/apps/root
     destination:
       server: https://kubernetes.default.svc
       namespace: argocd

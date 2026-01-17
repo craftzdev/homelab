@@ -22,4 +22,4 @@
  
 - name: restart sshd
   become: yes
-  service: name=sshd state=restarted
+  service: name=ssh state=restarted
