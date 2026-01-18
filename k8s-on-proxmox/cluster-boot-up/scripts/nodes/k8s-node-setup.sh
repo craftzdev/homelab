@@ -240,7 +240,7 @@ vrrp_instance LB_VIP {
 
     authentication {
         auth_type AH
-        auth_pass zaq12wsx	# Password for accessing vrrpd. Same on all devices
+        auth_pass ${KEEPALIVED_AUTH_PASS:-$(openssl rand -hex 8)}	# Password for accessing vrrpd. Same on all devices
     }
     unicast_src_ip ${KEEPALIVED_UNICAST_SRC_IP} # Private IP address of master
     unicast_peer {
@@ -342,11 +342,11 @@ apiServer:
 controllerManager:
   extraArgs:
   - name: bind-address
-    value: "0.0.0.0"
+    value: "127.0.0.1"
 scheduler:
   extraArgs:
   - name: bind-address
-    value: "0.0.0.0"
+    value: "127.0.0.1"
 ---
 apiVersion: kubelet.config.k8s.io/v1beta1
 kind: KubeletConfiguration
@@ -457,6 +457,11 @@ EOF
 # Generate control plane certificate
 KUBEADM_UPLOADED_CERTS=$(kubeadm init phase upload-certs --upload-certs | tail -n 1)
 
+# Calculate CA certificate hash for secure join
+CA_CERT_HASH=$(openssl x509 -pubkey -in /etc/kubernetes/pki/ca.crt | \
+  openssl rsa -pubin -outform der 2>/dev/null | \
+  openssl dgst -sha256 -hex | sed 's/^.* //')
+
 # Set join configuration for other control plane nodes
 cat > "$HOME"/join_kubeadm_cp.yaml <<EOF
 apiVersion: kubelet.config.k8s.io/v1beta1
@@ -472,7 +477,8 @@ discovery:
   bootstrapToken:
     apiServerEndpoint: "${KUBE_API_SERVER_VIP}:8443"
     token: "$KUBEADM_BOOTSTRAP_TOKEN"
-    unsafeSkipCAVerification: true
+    caCertHashes:
+      - "sha256:$CA_CERT_HASH"
 controlPlane:
   certificateKey: "$KUBEADM_UPLOADED_CERTS"
 EOF
@@ -492,7 +498,8 @@ discovery:
   bootstrapToken:
     apiServerEndpoint: "${KUBE_API_SERVER_VIP}:8443"
     token: "$KUBEADM_BOOTSTRAP_TOKEN"
-    unsafeSkipCAVerification: true
+    caCertHashes:
+      - "sha256:$CA_CERT_HASH"
 EOF
 
 # ---
@@ -503,9 +510,11 @@ if [ -f "$ANSIBLE_GROUP_VARS" ]; then
   # Remove existing token entries if present (for idempotency)
   sed -i '/^kubeadm_bootstrap_token:/d' "$ANSIBLE_GROUP_VARS"
   sed -i '/^kubeadm_uploaded_certs:/d' "$ANSIBLE_GROUP_VARS"
+  sed -i '/^kubeadm_ca_cert_hash:/d' "$ANSIBLE_GROUP_VARS"
   # Append new values
   echo "kubeadm_bootstrap_token: $KUBEADM_BOOTSTRAP_TOKEN" >> "$ANSIBLE_GROUP_VARS"
   echo "kubeadm_uploaded_certs: $KUBEADM_UPLOADED_CERTS" >> "$ANSIBLE_GROUP_VARS"
+  echo "kubeadm_ca_cert_hash: $CA_CERT_HASH" >> "$ANSIBLE_GROUP_VARS"
 fi
 
 # install ansible

@@ -125,12 +125,9 @@ users:
   - default
   - name: cloudinit
     sudo: ALL=(ALL) NOPASSWD:ALL
-    lock_passwd: false
-    # mkpasswd --method=SHA-512 --rounds=4096
-    # password is zaq12wsx
-    passwd: \$6\$rounds=4096\$Xlyxul70asLm\$9tKm.0po4ZE7vgqc.grptZzUU9906z/.vjwcqz/WYVtTwc5i2DWfjVpXb8HBtoVfvSY61rvrs/iwHxREKl3f20
-# ssh_pwauth will be changed to false during cluster-bootup-phase in ansible
-ssh_pwauth: true
+    lock_passwd: true
+    # SSH key-only authentication - no password
+ssh_pwauth: false
 ssh_authorized_keys: []
 package_upgrade: true
 runcmd:

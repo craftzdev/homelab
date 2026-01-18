@@ -7,7 +7,8 @@ k8s-wk-2 ansible_host=172.16.40.22 host_addr_cls=172.16.40.22
 k8s-wk-3 ansible_host=172.16.40.23 host_addr_cls=172.16.40.23
 
 [k8s-servers:vars]
-ansible_ssh_pass=zaq12wsx
+# SSH key-based authentication (password removed for security)
+ansible_ssh_private_key_file=/root/.ssh/id_ed25519
 
 
 [k8s-servers-with-ssh:children]
