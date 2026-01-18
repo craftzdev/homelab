@@ -511,6 +511,8 @@ if [ -f "$ANSIBLE_GROUP_VARS" ]; then
   sed -i '/^kubeadm_bootstrap_token:/d' "$ANSIBLE_GROUP_VARS"
   sed -i '/^kubeadm_uploaded_certs:/d' "$ANSIBLE_GROUP_VARS"
   sed -i '/^kubeadm_ca_cert_hash:/d' "$ANSIBLE_GROUP_VARS"
+  # Ensure file ends with a newline before appending
+  [ -n "$(tail -c1 "$ANSIBLE_GROUP_VARS")" ] && echo "" >> "$ANSIBLE_GROUP_VARS"
   # Append new values
   echo "kubeadm_bootstrap_token: $KUBEADM_BOOTSTRAP_TOKEN" >> "$ANSIBLE_GROUP_VARS"
   echo "kubeadm_uploaded_certs: $KUBEADM_UPLOADED_CERTS" >> "$ANSIBLE_GROUP_VARS"

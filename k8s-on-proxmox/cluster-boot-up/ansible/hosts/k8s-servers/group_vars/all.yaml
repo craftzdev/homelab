@@ -3,3 +3,10 @@ ansible_python_interpreter: /usr/bin/python3
 ansible_port: 22
 ansible_user: cloudinit
 kube_api_server_vip: 172.16.40.100
+
+# kubeadm CA certificate hash for secure join
+# Generate this on the first control plane node:
+#   openssl x509 -pubkey -in /etc/kubernetes/pki/ca.crt | \
+#     openssl rsa -pubin -outform der 2>/dev/null | \
+#     openssl dgst -sha256 -hex | sed 's/^.* //'
+# Pass this value when running ansible-playbook: -e kubeadm_ca_cert_hash=<hash>
