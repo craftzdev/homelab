@@ -124,7 +124,16 @@ argocd account update-password
 kubectl -n argocd delete secret argocd-initial-admin-secret
 ```
 
-### 3.5 Cloudflare の設定
+### 3.5 Grafana の管理者パスワード
+
+**この手順を飛ばすと Grafana は起動しません。** これは意図的な設計です
+（既定パスワードで静かに起動するより、明確に失敗する方が安全なため）。
+
+手順は [kubernetes/infra/monitoring/README.md](../kubernetes/infra/monitoring/README.md)
+を参照してください。要約すると、強いパスワードを生成して SOPS で暗号化し、
+`grafana-admin.sops.yaml` としてコミットします。
+
+### 3.6 Cloudflare の設定
 
 ```bash
 cd tofu/20-cloudflare
@@ -143,7 +152,7 @@ git commit -m "feat(cloudflared): Tunnel の設定を追加"
 git push
 ```
 
-### 3.6 疎通確認
+### 3.7 疎通確認
 
 ```bash
 # 認証情報なしでは 401 が返ること（200 が返ったら設定ミス）

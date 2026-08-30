@@ -40,29 +40,29 @@ locals {
   # （templatefile は vars に未使用のキーがあってもエラーにならない）
   node_template_vars = {
     for name, node in local.all_nodes : name => {
-      hostname         = name
-      mac_k8s          = lower(node.mac_k8s)
-      mac_ceph         = lower(node.mac_ceph)
-      ip               = node.ip
-      ceph_ip          = node.ceph_ip
-      gateway          = var.k8s_gateway
-      vip              = var.cluster_vip
-      nameservers      = jsonencode(var.nameservers)
-      ntp_servers      = jsonencode(var.ntp_servers)
-      cert_sans        = jsonencode(local.cert_sans)
-      installer_image  = data.talos_image_factory_urls.this.urls.installer
-      k8s_subnet       = local.k8s_subnet
-      pod_cidr         = var.pod_cidr
-      service_cidr     = var.service_cidr
+      hostname        = name
+      mac_k8s         = lower(node.mac_k8s)
+      mac_ceph        = lower(node.mac_ceph)
+      ip              = node.ip
+      ceph_ip         = node.ceph_ip
+      gateway         = var.k8s_gateway
+      vip             = var.cluster_vip
+      nameservers     = jsonencode(var.nameservers)
+      ntp_servers     = jsonencode(var.ntp_servers)
+      cert_sans       = jsonencode(local.cert_sans)
+      installer_image = data.talos_image_factory_urls.this.urls.installer
+      k8s_subnet      = local.k8s_subnet
+      pod_cidr        = var.pod_cidr
+      service_cidr    = var.service_cidr
     }
   }
 
   firewall_template_vars = {
-    k8s_subnet             = local.k8s_subnet
-    pod_cidr               = var.pod_cidr
-    service_cidr           = var.service_cidr
-    management_ingress     = local.management_ingress
-    management_cidrs_desc  = join(", ", var.management_cidrs)
+    k8s_subnet            = local.k8s_subnet
+    pod_cidr              = var.pod_cidr
+    service_cidr          = var.service_cidr
+    management_ingress    = local.management_ingress
+    management_cidrs_desc = join(", ", var.management_cidrs)
   }
 }
 

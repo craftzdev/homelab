@@ -27,7 +27,7 @@ data "talos_image_factory_urls" "this" {
 
 # ISO を共有ストレージ（CephFS）へ配置する。
 # 共有ストレージに置くことで、3 ノードのどこに VM を作っても同じ ISO を参照できる。
-resource "proxmox_virtual_environment_download_file" "talos_iso" {
+resource "proxmox_download_file" "talos_iso" {
   content_type = "iso"
   datastore_id = var.iso_datastore_id
   node_name    = var.proxmox_nodes[0].name

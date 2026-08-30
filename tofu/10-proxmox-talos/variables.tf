@@ -222,22 +222,22 @@ variable "control_plane_nodes" {
   }))
   default = {
     "k8s-cp-1" = {
-      vmid = 1001, pve_node = "sv-proxmox-01"
-      ip = "172.16.40.11", ceph_ip = "172.16.20.41"
+      vmid    = 1001, pve_node = "sv-proxmox-01"
+      ip      = "172.16.40.11", ceph_ip = "172.16.20.41"
       mac_k8s = "BC:24:11:40:00:11", mac_ceph = "BC:24:11:20:00:11"
-      cores = 4, memory_mib = 8192, disk_gib = 60
+      cores   = 4, memory_mib = 8192, disk_gib = 60
     }
     "k8s-cp-2" = {
-      vmid = 1002, pve_node = "sv-proxmox-02"
-      ip = "172.16.40.12", ceph_ip = "172.16.20.42"
+      vmid    = 1002, pve_node = "sv-proxmox-02"
+      ip      = "172.16.40.12", ceph_ip = "172.16.20.42"
       mac_k8s = "BC:24:11:40:00:12", mac_ceph = "BC:24:11:20:00:12"
-      cores = 4, memory_mib = 8192, disk_gib = 60
+      cores   = 4, memory_mib = 8192, disk_gib = 60
     }
     "k8s-cp-3" = {
-      vmid = 1003, pve_node = "sv-proxmox-03"
-      ip = "172.16.40.13", ceph_ip = "172.16.20.43"
+      vmid    = 1003, pve_node = "sv-proxmox-03"
+      ip      = "172.16.40.13", ceph_ip = "172.16.20.43"
       mac_k8s = "BC:24:11:40:00:13", mac_ceph = "BC:24:11:20:00:13"
-      cores = 4, memory_mib = 8192, disk_gib = 60
+      cores   = 4, memory_mib = 8192, disk_gib = 60
     }
   }
 }
@@ -257,22 +257,22 @@ variable "worker_nodes" {
   }))
   default = {
     "k8s-wk-1" = {
-      vmid = 1101, pve_node = "sv-proxmox-01"
-      ip = "172.16.40.21", ceph_ip = "172.16.20.51"
+      vmid    = 1101, pve_node = "sv-proxmox-01"
+      ip      = "172.16.40.21", ceph_ip = "172.16.20.51"
       mac_k8s = "BC:24:11:40:00:21", mac_ceph = "BC:24:11:20:00:21"
-      cores = 6, memory_mib = 20480, disk_gib = 120
+      cores   = 6, memory_mib = 20480, disk_gib = 120
     }
     "k8s-wk-2" = {
-      vmid = 1102, pve_node = "sv-proxmox-02"
-      ip = "172.16.40.22", ceph_ip = "172.16.20.52"
+      vmid    = 1102, pve_node = "sv-proxmox-02"
+      ip      = "172.16.40.22", ceph_ip = "172.16.20.52"
       mac_k8s = "BC:24:11:40:00:22", mac_ceph = "BC:24:11:20:00:22"
-      cores = 6, memory_mib = 20480, disk_gib = 120
+      cores   = 6, memory_mib = 20480, disk_gib = 120
     }
     "k8s-wk-3" = {
-      vmid = 1103, pve_node = "sv-proxmox-03"
-      ip = "172.16.40.23", ceph_ip = "172.16.20.53"
+      vmid    = 1103, pve_node = "sv-proxmox-03"
+      ip      = "172.16.40.23", ceph_ip = "172.16.20.53"
       mac_k8s = "BC:24:11:40:00:23", mac_ceph = "BC:24:11:20:00:23"
-      cores = 6, memory_mib = 20480, disk_gib = 120
+      cores   = 6, memory_mib = 20480, disk_gib = 120
     }
   }
 }

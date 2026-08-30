@@ -77,7 +77,7 @@ resource "proxmox_virtual_environment_vm" "node" {
   # メンテナンスモードで起動でき、再インストールで復旧できる。
   # ---------------------------------------------------------------------------
   cdrom {
-    file_id   = proxmox_virtual_environment_download_file.talos_iso.id
+    file_id   = proxmox_download_file.talos_iso.id
     interface = "ide0"
   }
 

@@ -62,3 +62,7 @@ tmp/
 node_modules/
 .wrangler/
 dist/
+
+# OpenTofu の provider lock file は環境依存のハッシュを含むが、
+# 再現性のためコミットする（除外しない）
+!.terraform.lock.hcl

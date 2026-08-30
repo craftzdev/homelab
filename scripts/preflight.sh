@@ -219,7 +219,9 @@ section "5. ストレージ設定"
 # ===========================================================================
 STORAGE_CFG="$(pve 'cat /etc/pve/storage.cfg' 2>/dev/null || echo "")"
 
-if printf '%s' "${STORAGE_CFG}" | grep -q "^cephfs: ${ISO_DATASTORE}\$\|^cephfs: ${ISO_DATASTORE}[[:space:]]"; then
+# ストレージ種別（cephfs / dir / nfs など）を限定せずに定義行を探す。
+# ISO 置き場を CephFS 以外に変更しても検出できるようにするため。
+if printf '%s' "${STORAGE_CFG}" | grep -qE "^[a-z]+: ${ISO_DATASTORE}([[:space:]]|$)"; then
   ISO_CONTENT="$(printf '%s\n' "${STORAGE_CFG}" \
     | awk -v ds="${ISO_DATASTORE}" '$0 ~ "^[a-z]+: "ds"$"{f=1;next} /^[a-z]+: /{f=0} f && /content/{print}' || echo "")"
   if printf '%s' "${ISO_CONTENT}" | grep -q "iso"; then

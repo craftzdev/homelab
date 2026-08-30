@@ -37,7 +37,9 @@ usage() {
 
 環境変数:
   PVE_HOST      Proxmox ホスト (既定: 172.16.10.11)
-  LEGACY_VMIDS  削除対象の VMID をスペース区切りで上書きできる
+  LEGACY_VMIDS_OVERRIDE
+                削除対象の VMID をスペース区切りで上書きできる
+                例: LEGACY_VMIDS_OVERRIDE="1001 1002" ./destroy-legacy-vms.sh
 USAGE
 }
 
