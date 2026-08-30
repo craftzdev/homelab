@@ -157,8 +157,9 @@ resource "cloudflare_zero_trust_access_application" "published" {
 #    kubernetes/infra/cloudflared/ に配置する。
 # ---------------------------------------------------------------------------
 resource "local_sensitive_file" "cloudflared_credentials" {
-  filename        = var.credentials_output_path
-  file_permission = "0600"
+  filename             = var.credentials_output_path
+  file_permission      = "0600"
+  directory_permission = "0700"
 
   content = jsonencode({
     AccountTag   = var.cloudflare_account_id

@@ -120,17 +120,31 @@ resource "talos_cluster_kubeconfig" "this" {
 # ---------------------------------------------------------------------------
 # 認証情報をローカルファイルへ出力
 #
-# パーミッションは 0600。これらのファイルはクラスタの完全な管理権限を
-# 持つため、絶対にコミットしないこと（.gitignore 済み）。
+# ⚠️ これらのファイルはクラスタの**完全な管理権限**そのものである。
+#
+#   kubeconfig  : cluster-admin 相当の認証情報
+#   talosconfig : Talos API の全操作が可能なクライアント証明書
+#
+# ファイルは 0600、ディレクトリは 0700 で作成する。ディレクトリの権限を
+# 指定しないと 0755 で作られ、同一マシンの他ユーザーからディレクトリを
+# 一覧できてしまう（中身は読めないが、存在と名前が漏れる）。
+#
+# ⚠️⚠️ さらに重要な注意:
+#   OpenTofu の **ステートファイルにも同じ秘密が平文で含まれる**。
+#   `_out/` だけを守ってもステートが無防備なら意味がない。
+#   ステートの保護方針は versions.tf の注記および
+#   docs/50-operations.md §7.3 を参照すること。
 # ---------------------------------------------------------------------------
 resource "local_sensitive_file" "kubeconfig" {
-  content         = talos_cluster_kubeconfig.this.kubeconfig_raw
-  filename        = "${var.output_dir}/kubeconfig"
-  file_permission = "0600"
+  content              = talos_cluster_kubeconfig.this.kubeconfig_raw
+  filename             = "${var.output_dir}/kubeconfig"
+  file_permission      = "0600"
+  directory_permission = "0700"
 }
 
 resource "local_sensitive_file" "talosconfig" {
-  content         = data.talos_client_configuration.this.talos_config
-  filename        = "${var.output_dir}/talosconfig"
-  file_permission = "0600"
+  content              = data.talos_client_configuration.this.talos_config
+  filename             = "${var.output_dir}/talosconfig"
+  file_permission      = "0600"
+  directory_permission = "0700"
 }

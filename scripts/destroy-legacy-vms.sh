@@ -51,9 +51,26 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# 環境変数での上書きに対応
+# ---------------------------------------------------------------------------
+# 環境変数での上書きに対応する
+#
+# ⚠️ VMID は `qm destroy` に渡されるため、数値以外を受け付けない。
+#    ここを緩めると root SSH 経由の任意コマンド実行につながる。
+# ---------------------------------------------------------------------------
 if [[ -n "${LEGACY_VMIDS_OVERRIDE:-}" ]]; then
   read -r -a LEGACY_VMIDS <<< "${LEGACY_VMIDS_OVERRIDE}"
+fi
+
+for vmid in "${LEGACY_VMIDS[@]}"; do
+  [[ "${vmid}" =~ ^[0-9]+$ ]] || die "VMID は数値である必要があります: '${vmid}'"
+done
+unset vmid
+
+if [[ ! "${PVE_HOST}" =~ ^[A-Za-z0-9.:_-]+$ ]]; then
+  die "PVE_HOST に使用できない文字が含まれています: '${PVE_HOST}'"
+fi
+if [[ ! "${PVE_SSH_USER}" =~ ^[A-Za-z0-9._-]+$ ]]; then
+  die "PVE_SSH_USER に使用できない文字が含まれています: '${PVE_SSH_USER}'"
 fi
 
 pve() { ssh -o BatchMode=yes -o ConnectTimeout=10 "${PVE_SSH_USER}@${PVE_HOST}" "$@"; }

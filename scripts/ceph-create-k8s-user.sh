@@ -70,6 +70,41 @@ while [[ $# -gt 0 ]]; do
 done
 
 # ---------------------------------------------------------------------------
+# 入力の検証
+#
+# このスクリプトは環境変数の値を **root SSH のリモートコマンド文字列に
+# 連結** する。値に空白やシェルのメタ文字が入ると、意図しないコマンドが
+# Proxmox 上で root 実行されうる。
+#
+# 実行者は元々 root SSH 権限を持っているため権限昇格にはならないが、
+# 「タイプミスや貼り付け事故が破壊的な結果になる」ことは避けたい。
+# Ceph の識別子として妥当な文字種に限定する。
+# ---------------------------------------------------------------------------
+validate_identifier() {
+  local name="$1" value="$2"
+  if [[ ! "${value}" =~ ^[A-Za-z0-9._-]+$ ]]; then
+    die "${name} に使用できない文字が含まれています: '${value}'
+     英数字・ドット・アンダースコア・ハイフンのみ指定できます。"
+  fi
+}
+
+validate_host() {
+  local name="$1" value="$2"
+  # IP アドレスまたはホスト名のみを許可する
+  if [[ ! "${value}" =~ ^[A-Za-z0-9.:_-]+$ ]]; then
+    die "${name} に使用できない文字が含まれています: '${value}'"
+  fi
+}
+
+validate_host       PVE_HOST              "${PVE_HOST}"
+validate_identifier PVE_SSH_USER          "${PVE_SSH_USER}"
+validate_identifier RBD_POOL              "${RBD_POOL}"
+validate_identifier CEPHFS_NAME           "${CEPHFS_NAME}"
+validate_identifier CEPHFS_SUBVOLUMEGROUP "${CEPHFS_SUBVOLUMEGROUP}"
+validate_identifier RBD_USER              "${RBD_USER}"
+validate_identifier CEPHFS_USER           "${CEPHFS_USER}"
+
+# ---------------------------------------------------------------------------
 # 前提チェック
 # ---------------------------------------------------------------------------
 command -v sops >/dev/null 2>&1 || die "sops が見つかりません。'brew install sops' でインストールしてください。"

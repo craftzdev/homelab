@@ -43,6 +43,23 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# ---------------------------------------------------------------------------
+# 入力の検証
+#
+# 環境変数の値を SSH のリモートコマンド文字列に連結するため、
+# シェルのメタ文字を含む値を弾く（詳細は ceph-create-k8s-user.sh の注記）。
+# ---------------------------------------------------------------------------
+for pair in "PVE_HOST=${PVE_HOST}" "PVE_SSH_USER=${PVE_SSH_USER}" \
+            "RBD_POOL=${RBD_POOL}" "ISO_DATASTORE=${ISO_DATASTORE}"; do
+  name="${pair%%=*}"; value="${pair#*=}"
+  if [[ ! "${value}" =~ ^[A-Za-z0-9.:_-]+$ ]]; then
+    printf '%s[ERROR]%s %s に使用できない文字が含まれています: %s\n' \
+      "${C_RED}" "${C_RESET}" "${name}" "${value}" >&2
+    exit 2
+  fi
+done
+unset pair name value
+
 pve() { ssh -o BatchMode=yes -o ConnectTimeout=10 "${PVE_SSH_USER}@${PVE_HOST}" "$@"; }
 
 printf '%shomelab preflight check%s\n' "${C_BLUE}" "${C_RESET}"
