@@ -1,9 +1,14 @@
 # ===========================================================================
 # Kubernetes ノード VM
 #
-# 各ノードは 2 枚の NIC を持つ（[ADR-0007](../../docs/adr/0007-dual-nic-topology.md)）:
-#   net0 = VLAN40 : Kubernetes 全般
-#   net1 = VLAN20 : Ceph public（デフォルトゲートウェイ無し）
+# 1 物理ノードにつき 1 VM（control-plane 兼 worker）の 3 ノード構成。
+#
+# ディスクは 2 本:
+#   scsi0 = OS（Talos がインストールされる）
+#   scsi1 = Longhorn のデータ領域（UserVolumeConfig で切り出す）
+#
+# NIC は VLAN40 の 1 枚のみ。Ceph を廃止したため VLAN20 への接続は不要になった
+# （[ADR-0009](../../docs/adr/0009-drop-ceph-adopt-longhorn.md)）。
 #
 # MAC アドレスは variables.tf で固定的に払い出している。Talos の machine config
 # は MAC で NIC を選択するため、ここが安定していることが構成の前提になる。
@@ -57,9 +62,13 @@ resource "proxmox_virtual_environment_vm" "node" {
   # ---------------------------------------------------------------------------
   # ディスク
   #
-  # Ceph RBD（cephrdb_k8s）上に置く。ノード障害時に別ノードで
-  # 起動し直せるようにするため、ローカルストレージは使わない。
+  # 各ノードのローカル ZFS（local-zfs）上に置く。
+  # Ceph を廃止したため共有ストレージは無く、VM はノードに固定される。
+  # Talos ノードはステートレスに近く「壊れたら tofu で作り直す」運用が
+  # 成立するため、これで問題ない。作り直せないデータ（PV）は
+  # Longhorn が 3 レプリカで保護する。
   # ---------------------------------------------------------------------------
+  # --- OS ディスク ---
   disk {
     datastore_id = var.vm_datastore_id
     interface    = "scsi0"
@@ -67,11 +76,34 @@ resource "proxmox_virtual_environment_vm" "node" {
     file_format  = "raw"
     # SSD として見せることで、ゲスト側が discard を発行しやすくなる
     ssd = true
-    # 未使用ブロックを Ceph へ返却する（thin provision を維持する）
+    # 未使用ブロックを ZFS へ返却する（thin provision を維持する）
     discard = "on"
     # I/O を専用スレッドで処理し、他の VM の影響を受けにくくする
     iothread = true
     cache    = "none"
+  }
+
+  # ---------------------------------------------------------------------------
+  # --- Longhorn データディスク ---
+  #
+  # OS と分ける理由: Talos の再インストールや upgrade で EPHEMERAL パーティションが
+  # 初期化されても、この専用ディスク上の Longhorn データは失われない。
+  # Talos の UserVolumeConfig がこのディスクを検出して
+  # /var/mnt/longhorn へマウントする（talos/patches/ を参照）。
+  #
+  # ⚠️ serial を固定している。Talos の diskSelector がこの値で
+  #    「どちらが Longhorn 用か」を判別するため、変更してはならない。
+  # ---------------------------------------------------------------------------
+  disk {
+    datastore_id = var.vm_datastore_id
+    interface    = "scsi1"
+    size         = var.longhorn_disk_gib
+    file_format  = "raw"
+    ssd          = true
+    discard      = "on"
+    iothread     = true
+    cache        = "none"
+    serial       = "longhorn"
   }
 
   scsi_hardware = "virtio-scsi-single"
@@ -87,7 +119,7 @@ resource "proxmox_virtual_environment_vm" "node" {
   # メンテナンスモードで起動でき、再インストールで復旧できる。
   # ---------------------------------------------------------------------------
   cdrom {
-    file_id   = proxmox_download_file.talos_iso.id
+    file_id   = proxmox_download_file.talos_iso[each.value.pve_node].id
     interface = "ide0"
   }
 
@@ -102,25 +134,15 @@ resource "proxmox_virtual_environment_vm" "node" {
   # Talos の nocloud プラットフォームは cloud-init の network-config を
   # 解釈する。これにより、DHCP の無い VLAN40 でもメンテナンスモードの
   # 時点でノードに到達できるようになる。
-  #
-  # ip_config はリスト順に net0, net1 へ対応する。
   # ---------------------------------------------------------------------------
   initialization {
     datastore_id = var.vm_datastore_id
     interface    = "ide2"
 
-    # net0: VLAN40（デフォルトゲートウェイあり）
     ip_config {
       ipv4 {
         address = "${each.value.ip}/24"
         gateway = var.k8s_gateway
-      }
-    }
-
-    # net1: VLAN20（Ceph public / ゲートウェイなし）
-    ip_config {
-      ipv4 {
-        address = "${each.value.ceph_ip}/24"
       }
     }
 
@@ -138,14 +160,6 @@ resource "proxmox_virtual_environment_vm" "node" {
     mac_address = each.value.mac_k8s
     model       = "virtio"
     firewall    = false # フィルタは Talos の ingressFirewall で行う
-  }
-
-  network_device {
-    bridge      = var.network_bridge
-    vlan_id     = var.vlan_ceph_public
-    mac_address = each.value.mac_ceph
-    model       = "virtio"
-    firewall    = false
   }
 
   operating_system {

@@ -21,8 +21,8 @@
 #       運用端末（Tailscale 経由）と Proxmox 管理セグメントから
 #       クラスタを操作するために必要な最小限のポートだけを開ける。
 #
-#   (3) それ以外（VLAN20 の Ceph 側を含む全て）— 既定で block。
-#       Ceph への通信はノード発の outbound なので、この遮断の影響を受けない。
+#   (3) それ以外 — 既定で block。
+#       Longhorn のレプリカ同期は VLAN40 内で完結するため影響を受けない。
 #
 # ---------------------------------------------------------------------------
 # ⚠️ 復旧手段について
@@ -42,7 +42,7 @@
 apiVersion: v1alpha1
 kind: NetworkDefaultActionConfig
 # 明示的に許可されていないインバウンドは全て遮断する。
-# egress は制限しない（Ceph・コンテナレジストリ・NTP への通信が必要なため）。
+# egress は制限しない（コンテナレジストリ・NTP・バックアップ先への通信が必要なため）。
 ingress: block
 
 ---
@@ -146,23 +146,23 @@ portSelector:
 ingress:
 ${management_ingress}
 
+---
 # ---------------------------------------------------------------------------
-# ICMP について（意図的に許可していない）
+# ICMP — 疎通確認のために管理経路からのみ許可する
 #
-# 運用の切り分けでは ping が通ると便利だが、Talos の NetworkRuleConfig が
-# icmp プロトコルをどう扱うか（portSelector が必要か、そもそも対応するか）が
-# 公式ドキュメントで明示されていない。
+# `talosctl docs config` で出力した NetworkRuleConfig の仕様を確認し、
+# protocol に icmp / icmpv6 が使えることを確認済み。
 #
-# ingressFirewall の設定ミスはノードへの到達不能に直結し、Talos には SSH が
-# 無いため復旧の手間が大きい。**確実に動く設定だけを書く**方針を取り、
-# 不確実な ICMP ルールは追加しない。
-#
-# なお VLAN40 内（node-to-node ルール）からの通信は全許可しているため、
-# ノード同士および VLAN40 内の端末からの ping は通る。
-# 管理セグメントからの疎通確認は ping ではなく talosctl を使うこと:
-#
-#   talosctl -n 172.16.40.11 version
-#
-# 将来 ICMP を許可したくなった場合は、まず 1 ノードだけに適用して
-# 到達性を確認してから全ノードへ展開すること。
+# ping が通ることは運用の切り分けで価値がある（「ノードが生きているか」を
+# talosctl の証明書無しで確認できる）。ICMP 自体の情報漏洩リスクは小さく、
+# 送信元を管理セグメントに限定しているため許可する。
 # ---------------------------------------------------------------------------
+apiVersion: v1alpha1
+kind: NetworkRuleConfig
+name: icmp
+portSelector:
+  ports:
+    - 1-65535
+  protocol: icmp
+ingress:
+${management_ingress}

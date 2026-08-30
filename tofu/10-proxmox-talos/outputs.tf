@@ -70,8 +70,7 @@ output "next_steps" {
     3) Cilium を導入してノードを Ready にする
          ../../scripts/bootstrap-cluster.sh
 
-    4) Ceph の認証情報を作成し、ArgoCD を導入する
-         ../../scripts/ceph-create-k8s-user.sh
+    4) ArgoCD を導入する（Longhorn 等は ArgoCD が同期する）
          ../../scripts/bootstrap-argocd.sh
 
     詳細な手順は docs/50-operations.md を参照してください。

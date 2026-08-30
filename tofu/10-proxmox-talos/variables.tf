@@ -71,25 +71,40 @@ variable "proxmox_nodes" {
 # ストレージ
 # ===========================================================================
 variable "iso_datastore_id" {
-  description = "Talos ISO を置く Proxmox ストレージ（全ノードから見える共有ストレージであること）"
-  type        = string
-  default     = "cephfs01"
-}
-
-variable "snippet_datastore_id" {
   description = <<-EOT
-    cloud-init user-data（machine config）を置くストレージ。
-    `snippets` content type が有効化されている必要がある:
-      pvesm set cephfs01 --content backup,vztmpl,iso,snippets
+    Talos ISO を置く Proxmox ストレージ。
+
+    Ceph 廃止後は共有ストレージが無くなるため、各ノードのローカル `local`
+    （/var/lib/vz）に置く。ISO は各ノードへ個別にダウンロードされるが、
+    数百 MB なので許容できる。
   EOT
   type        = string
-  default     = "cephfs01"
+  default     = "local"
 }
 
 variable "vm_datastore_id" {
-  description = "VM ディスクを置く Proxmox ストレージ（Ceph RBD プール）"
+  description = <<-EOT
+    VM ディスクを置く Proxmox ストレージ。
+
+    Ceph を廃止し、各ノードの SATA SSD を単体 ZFS（local-zfs）にした構成を前提とする。
+    共有ストレージではないため VM はノードに固定されるが、Talos ノードは
+    ステートレスに近く「壊れたら tofu で作り直す」運用が成立するため問題ない。
+    作り直せないデータ（PV）は Longhorn が 3 レプリカで保護する。
+  EOT
   type        = string
-  default     = "cephrdb_k8s"
+  default     = "local-zfs"
+}
+
+variable "longhorn_disk_gib" {
+  description = <<-EOT
+    Longhorn 用のデータディスクサイズ（GiB）。OS ディスクとは別に付ける。
+
+    分ける理由: Talos の再インストールや upgrade で EPHEMERAL パーティションが
+    初期化されても、この専用ディスク上の Longhorn データは失われない。
+    OS とデータのライフサイクルを分離しておくことが復旧時に効く。
+  EOT
+  type        = number
+  default     = 300
 }
 
 # ===========================================================================
@@ -126,11 +141,28 @@ variable "cluster_name" {
 variable "talos_extensions" {
   description = <<-EOT
     Image Factory に組み込む公式 system extension。
-    qemu-guest-agent は Proxmox から VM の状態取得・正常シャットダウンを
-    行うために必要。不要な拡張は攻撃面になるため追加しないこと。
+
+    ⚠️ 不要な拡張は攻撃面になる。追加する際は「何のために必要か」を
+       ここに書き残すこと。
+
+      siderolabs/qemu-guest-agent
+        Proxmox から VM の状態取得・正常シャットダウンを行うために必要。
+
+      siderolabs/iscsi-tools
+        Longhorn が PV を iSCSI でノードへアタッチするために必要
+        （iscsid / iscsiadm を提供する）。これが無いと Pod が
+        ボリュームをマウントできず永久に ContainerCreating のままになる。
+
+      siderolabs/util-linux-tools
+        Longhorn がボリュームの trim（fstrim）を行うために必要。
+        無くても動くが、削除済みブロックが解放されず容量を食い続ける。
   EOT
   type        = list(string)
-  default     = ["siderolabs/qemu-guest-agent"]
+  default = [
+    "siderolabs/qemu-guest-agent",
+    "siderolabs/iscsi-tools",
+    "siderolabs/util-linux-tools",
+  ]
 }
 
 # ===========================================================================
@@ -146,12 +178,6 @@ variable "vlan_k8s" {
   description = "Kubernetes 用 VLAN ID"
   type        = number
   default     = 40
-}
-
-variable "vlan_ceph_public" {
-  description = "Ceph public network の VLAN ID"
-  type        = number
-  default     = 20
 }
 
 variable "k8s_gateway" {
@@ -202,83 +228,75 @@ variable "management_cidrs" {
   default     = ["172.16.40.0/24", "172.16.10.0/24", "100.64.0.0/10"]
 }
 
-variable "ceph_public_cidr" {
-  description = "Ceph public network の CIDR"
-  type        = string
-  default     = "172.16.20.0/24"
-}
-
 # ===========================================================================
 # ノード定義
 # ===========================================================================
 variable "control_plane_nodes" {
-  description = "control-plane ノードの定義"
+  description = <<-EOT
+    Kubernetes ノードの定義（control-plane 兼 worker）。
+
+    ⚠️ 3 ノード集約構成である。
+       当初は control-plane 3 + worker 3 の 6 VM 構成だったが、
+       Ceph を廃止して各ノードのローカルストレージを使う構成にしたことで
+       「1 物理ノード = 1 VM」の方が障害ドメインが明確になるため集約した。
+
+       - etcd のクォーラムは 3 で成立する（1 ノード障害に耐える）
+       - Longhorn も 3 レプリカなので同じ障害ドメインに揃う
+       - CPU が先に不足するため、worker の追加は必要になってから行う
+         （worker_nodes 変数に足せば、その分だけ増える）
+
+    `cluster.allowSchedulingOnControlPlanes` を true にしてワークロードを
+    載せる。control-plane を分離する原則より、3 台という規模で
+    「ノードを遊ばせない」ことを優先した判断である。
+  EOT
   type = map(object({
     vmid       = number
     pve_node   = string
-    ip         = string # VLAN40
-    ceph_ip    = string # VLAN20
+    ip         = string
     mac_k8s    = string
-    mac_ceph   = string
     cores      = number
     memory_mib = number
     disk_gib   = number
   }))
   default = {
-    "k8s-cp-1" = {
+    "k8s-1" = {
       vmid    = 1001, pve_node = "sv-proxmox-01"
-      ip      = "172.16.40.11", ceph_ip = "172.16.20.41"
-      mac_k8s = "BC:24:11:40:00:11", mac_ceph = "BC:24:11:20:00:11"
-      cores   = 4, memory_mib = 8192, disk_gib = 60
+      ip      = "172.16.40.11"
+      mac_k8s = "BC:24:11:40:00:11"
+      cores   = 8, memory_mib = 32768, disk_gib = 60
     }
-    "k8s-cp-2" = {
+    "k8s-2" = {
       vmid    = 1002, pve_node = "sv-proxmox-02"
-      ip      = "172.16.40.12", ceph_ip = "172.16.20.42"
-      mac_k8s = "BC:24:11:40:00:12", mac_ceph = "BC:24:11:20:00:12"
-      cores   = 4, memory_mib = 8192, disk_gib = 60
+      ip      = "172.16.40.12"
+      mac_k8s = "BC:24:11:40:00:12"
+      cores   = 8, memory_mib = 32768, disk_gib = 60
     }
-    "k8s-cp-3" = {
+    "k8s-3" = {
       vmid    = 1003, pve_node = "sv-proxmox-03"
-      ip      = "172.16.40.13", ceph_ip = "172.16.20.43"
-      mac_k8s = "BC:24:11:40:00:13", mac_ceph = "BC:24:11:20:00:13"
-      cores   = 4, memory_mib = 8192, disk_gib = 60
+      ip      = "172.16.40.13"
+      mac_k8s = "BC:24:11:40:00:13"
+      cores   = 8, memory_mib = 32768, disk_gib = 60
     }
   }
 }
 
 variable "worker_nodes" {
-  description = "worker ノードの定義"
+  description = <<-EOT
+    追加の worker ノード（既定では作らない）。
+
+    3 ノード構成で CPU が足りなくなったらここに足す。
+    control_plane_nodes と同じ形式で、VMID は 1101 以降を使う想定。
+  EOT
   type = map(object({
     vmid       = number
     pve_node   = string
     ip         = string
-    ceph_ip    = string
     mac_k8s    = string
-    mac_ceph   = string
     cores      = number
     memory_mib = number
     disk_gib   = number
   }))
-  default = {
-    "k8s-wk-1" = {
-      vmid    = 1101, pve_node = "sv-proxmox-01"
-      ip      = "172.16.40.21", ceph_ip = "172.16.20.51"
-      mac_k8s = "BC:24:11:40:00:21", mac_ceph = "BC:24:11:20:00:21"
-      cores   = 6, memory_mib = 20480, disk_gib = 120
-    }
-    "k8s-wk-2" = {
-      vmid    = 1102, pve_node = "sv-proxmox-02"
-      ip      = "172.16.40.22", ceph_ip = "172.16.20.52"
-      mac_k8s = "BC:24:11:40:00:22", mac_ceph = "BC:24:11:20:00:22"
-      cores   = 6, memory_mib = 20480, disk_gib = 120
-    }
-    "k8s-wk-3" = {
-      vmid    = 1103, pve_node = "sv-proxmox-03"
-      ip      = "172.16.40.23", ceph_ip = "172.16.20.53"
-      mac_k8s = "BC:24:11:40:00:23", mac_ceph = "BC:24:11:20:00:23"
-      cores   = 6, memory_mib = 20480, disk_gib = 120
-    }
-  }
+  default = {}
 }
 
 # ===========================================================================

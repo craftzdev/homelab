@@ -3,12 +3,17 @@
 # 構築前の前提チェック
 #
 # 「動かしてみて失敗する」より「事前に分かる問題を潰す」方が安全で速い。
-# 特に Ceph の健全性は、Kubernetes を載せた後に問題が発覚すると
+# ストレージやネットワークの不備は、クラスタを作った後に発覚すると
 # 切り分けが極めて困難になるため、ここで確実に検出する。
 #
 # 使い方:
 #   ./scripts/preflight.sh
-#   ./scripts/preflight.sh --skip-ceph-health   # 承知の上で Ceph 警告を無視する
+#
+# 環境変数:
+#   PVE_HOST / PVE_SSH_USER / PVE_NODES
+#   ZFS_POOL_NAME  VM ディスク用の ZFS プール名（既定: local-zfs）
+#   ISO_DATASTORE  ISO 置き場のストレージ（既定: local）
+#   PROXMOX_POOL   API トークンの ACL 範囲となるリソースプール（既定: k8s）
 # ===========================================================================
 set -euo pipefail
 
@@ -17,10 +22,11 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 PVE_HOST="${PVE_HOST:-172.16.10.11}"
 PVE_SSH_USER="${PVE_SSH_USER:-root}"
-RBD_POOL="${RBD_POOL:-cephrdb_k8s}"
-ISO_DATASTORE="${ISO_DATASTORE:-cephfs01}"
+ZFS_POOL_NAME="${ZFS_POOL_NAME:-local-zfs}"
+ISO_DATASTORE="${ISO_DATASTORE:-local}"
+PROXMOX_POOL="${PROXMOX_POOL:-k8s}"
+PVE_NODES="${PVE_NODES:-sv-proxmox-01 sv-proxmox-02 sv-proxmox-03}"
 
-SKIP_CEPH_HEALTH=false
 FAILURES=0
 WARNINGS=0
 
@@ -35,7 +41,6 @@ note()    { printf '    %s\n' "$*"; }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --skip-ceph-health) SKIP_CEPH_HEALTH=true; shift ;;
     -h|--help)
       sed -n '2,15p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'
       exit 0 ;;
@@ -50,7 +55,7 @@ done
 # シェルのメタ文字を含む値を弾く（詳細は ceph-create-k8s-user.sh の注記）。
 # ---------------------------------------------------------------------------
 for pair in "PVE_HOST=${PVE_HOST}" "PVE_SSH_USER=${PVE_SSH_USER}" \
-            "RBD_POOL=${RBD_POOL}" "ISO_DATASTORE=${ISO_DATASTORE}"; do
+            "ZFS_POOL_NAME=${ZFS_POOL_NAME}" "ISO_DATASTORE=${ISO_DATASTORE}"; do
   name="${pair%%=*}"; value="${pair#*=}"
   if [[ ! "${value}" =~ ^[A-Za-z0-9.:_-]+$ ]]; then
     printf '%s[ERROR]%s %s に使用できない文字が含まれています: %s\n' \
@@ -150,94 +155,57 @@ else
 fi
 
 # ===========================================================================
-section "4. Ceph の健全性"
+section "4. ストレージ（local-ZFS）"
 # ===========================================================================
+# Ceph は廃止済み（docs/adr/0009-drop-ceph-adopt-longhorn.md）。
+# VM ディスクは各ノードのローカル ZFS に置く。
+ZFS_MISSING=0
+for node in ${PVE_NODES}; do
+  if pve "ssh -o BatchMode=yes -o ConnectTimeout=8 ${node} 'zpool list -H -o name' 2>/dev/null" \
+       | grep -qx "${ZFS_POOL_NAME}"; then
+    size="$(pve "ssh -o BatchMode=yes -o ConnectTimeout=8 ${node} 'zpool list -H -o size,free ${ZFS_POOL_NAME}' 2>/dev/null" || echo "?")"
+    pass "${node}: ZFS プール '${ZFS_POOL_NAME}' あり (size/free: ${size})"
+  else
+    fail "${node}: ZFS プール '${ZFS_POOL_NAME}' が見つかりません"
+    ZFS_MISSING=$((ZFS_MISSING + 1))
+  fi
+done
+
+if [[ "${ZFS_MISSING}" -gt 0 ]]; then
+  note "Ceph からの移行がまだ済んでいない可能性があります:"
+  note "  ./scripts/decommission-ceph.sh          # dry-run で確認"
+  note "  ./scripts/decommission-ceph.sh --yes    # 実行"
+fi
+
+# --- Ceph が残っていないか（残っていると SSD が解放されていない）---
 if pve 'ceph -s >/dev/null 2>&1'; then
-  CEPH_HEALTH="$(pve "ceph health detail 2>/dev/null" || echo "UNKNOWN")"
-  CEPH_STATUS="$(printf '%s' "${CEPH_HEALTH}" | head -1)"
+  warn "Ceph クラスタがまだ稼働しています"
+  note "本構成では Ceph を使いません。SSD が Ceph OSD に占有されていると"
+  note "local-zfs を作成できません。decommission-ceph.sh で廃止してください。"
+fi
 
-  case "${CEPH_STATUS}" in
-    HEALTH_OK*)
-      pass "Ceph は HEALTH_OK です"
-      ;;
-    HEALTH_WARN*)
-      if [[ "${SKIP_CEPH_HEALTH}" == true ]]; then
-        warn "Ceph が HEALTH_WARN ですが、--skip-ceph-health により続行します"
-        printf '%s\n' "${CEPH_HEALTH}" | sed 's/^/      /'
-      else
-        fail "Ceph が HEALTH_WARN です"
-        printf '%s\n' "${CEPH_HEALTH}" | sed 's/^/      /'
-        note ""
-        note "Kubernetes の PV はこの Ceph の上に載ります。ストレージ層の"
-        note "不安定さは、そのままアプリケーションの不安定さになります。"
-        note "構築前に原因を特定することを強く推奨します。"
-        note "切り分けの手順: docs/30-storage-design.md §2"
-        note ""
-        note "承知の上で続行する場合は --skip-ceph-health を付けてください。"
-      fi
-      ;;
-    HEALTH_ERR*)
-      fail "Ceph が HEALTH_ERR です。構築を中止してください。"
-      printf '%s\n' "${CEPH_HEALTH}" | sed 's/^/      /'
-      ;;
-    *)
-      warn "Ceph の状態を判定できませんでした: ${CEPH_STATUS}"
-      ;;
-  esac
-
-  # --- OSD の数 ---
-  OSD_UP="$(pve "ceph osd stat --format json 2>/dev/null" | jq -r '.num_up_osds // 0' 2>/dev/null || echo 0)"
-  OSD_IN="$(pve "ceph osd stat --format json 2>/dev/null" | jq -r '.num_in_osds // 0' 2>/dev/null || echo 0)"
-  if [[ "${OSD_UP}" -ge 3 ]]; then
-    pass "OSD: ${OSD_UP} up / ${OSD_IN} in"
-  else
-    fail "OSD が ${OSD_UP} 個しか up していません（replica 3 には最低 3 個必要）"
-  fi
-
-  # --- プールの存在 ---
-  if pve "ceph osd pool ls 2>/dev/null | grep -qx '${RBD_POOL}'"; then
-    pass "RBD プール '${RBD_POOL}' が存在します"
-
-    POOL_USED="$(pve "ceph df --format json 2>/dev/null" \
-      | jq -r --arg p "${RBD_POOL}" '.pools[] | select(.name==$p) | .stats.bytes_used' 2>/dev/null || echo 0)"
-    POOL_AVAIL="$(pve "ceph df --format json 2>/dev/null" \
-      | jq -r --arg p "${RBD_POOL}" '.pools[] | select(.name==$p) | .stats.max_avail' 2>/dev/null || echo 0)"
-
-    if [[ "${POOL_USED}" -gt 0 && "${POOL_AVAIL}" -gt 0 ]]; then
-      USED_GIB=$((POOL_USED / 1024 / 1024 / 1024))
-      AVAIL_GIB=$((POOL_AVAIL / 1024 / 1024 / 1024))
-      note "使用中: ${USED_GIB} GiB / 空き: ${AVAIL_GIB} GiB"
-
-      # VM 6 台分（60×3 + 120×3 = 540 GiB、thin provision）に対する余裕
-      if [[ "${AVAIL_GIB}" -lt 200 ]]; then
-        warn "プールの空き容量が ${AVAIL_GIB} GiB です（VM 分 + PVC 分に不足する可能性）"
-      fi
-    fi
-  else
-    fail "RBD プール '${RBD_POOL}' が存在しません"
-    note "Proxmox のダッシュボードから作成してください。"
-  fi
-
-  # --- 旧クラスタの残骸 ---
-  ORPHAN_IMAGES="$(pve "rbd -p ${RBD_POOL} ls 2>/dev/null" || echo "")"
-  if [[ -n "${ORPHAN_IMAGES}" ]]; then
-    IMAGE_COUNT="$(printf '%s\n' "${ORPHAN_IMAGES}" | grep -c . || true)"
-    warn "RBD プールに ${IMAGE_COUNT} 個のイメージが存在します"
-    note "旧クラスタの残骸である可能性があります。内容を確認してください:"
-    note "  ssh ${PVE_SSH_USER}@${PVE_HOST} rbd -p ${RBD_POOL} ls -l"
-    note "⚠️ このスクリプトは自動削除を行いません（データ損失を避けるため）。"
-  fi
+# --- Proxmox のストレージ定義 ---
+if pve "grep -qE '^zfspool: ${ZFS_POOL_NAME}$' /etc/pve/storage.cfg 2>/dev/null"; then
+  pass "Proxmox に zfspool ストレージ '${ZFS_POOL_NAME}' が登録されています"
 else
-  fail "Ceph が構成されていないか、コマンドを実行できません"
+  fail "Proxmox に zfspool ストレージ '${ZFS_POOL_NAME}' が登録されていません"
+  note "  pvesm add zfspool ${ZFS_POOL_NAME} --pool ${ZFS_POOL_NAME} --content images,rootdir --sparse 1"
+fi
+
+# --- リソースプール（API トークンの ACL 範囲）---
+if pve "pvesh get /pools --output-format json 2>/dev/null" | grep -q "\"${PROXMOX_POOL}\""; then
+  pass "リソースプール '${PROXMOX_POOL}' が存在します"
+else
+  fail "リソースプール '${PROXMOX_POOL}' が存在しません"
+  note "API トークンの ACL をこのプールに限定しているため必須です:"
+  note "  pveum pool add ${PROXMOX_POOL}"
 fi
 
 # ===========================================================================
-section "5. ストレージ設定"
+section "5. ISO 置き場"
 # ===========================================================================
 STORAGE_CFG="$(pve 'cat /etc/pve/storage.cfg' 2>/dev/null || echo "")"
 
-# ストレージ種別（cephfs / dir / nfs など）を限定せずに定義行を探す。
-# ISO 置き場を CephFS 以外に変更しても検出できるようにするため。
 if printf '%s' "${STORAGE_CFG}" | grep -qE "^[a-z]+: ${ISO_DATASTORE}([[:space:]]|$)"; then
   ISO_CONTENT="$(printf '%s\n' "${STORAGE_CFG}" \
     | awk -v ds="${ISO_DATASTORE}" '$0 ~ "^[a-z]+: "ds"$"{f=1;next} /^[a-z]+: /{f=0} f && /content/{print}' || echo "")"
@@ -246,10 +214,10 @@ if printf '%s' "${STORAGE_CFG}" | grep -qE "^[a-z]+: ${ISO_DATASTORE}([[:space:]
   else
     fail "ストレージ '${ISO_DATASTORE}' で iso content が有効になっていません"
     note "Talos の ISO を配置できません。以下で有効化してください:"
-    note "  ssh ${PVE_SSH_USER}@${PVE_HOST} pvesm set ${ISO_DATASTORE} --content backup,vztmpl,iso"
+    note "  ssh ${PVE_SSH_USER}@${PVE_HOST} pvesm set ${ISO_DATASTORE} --content iso,backup,vztmpl"
   fi
 else
-  warn "ストレージ '${ISO_DATASTORE}' が見つかりません"
+  fail "ストレージ '${ISO_DATASTORE}' が見つかりません"
 fi
 
 # ===========================================================================
@@ -283,8 +251,7 @@ fi
 # --- VLAN40 の IP が空いているか ---
 section "7. IP アドレスの重複"
 CONFLICT=0
-for ip in 172.16.40.10 172.16.40.11 172.16.40.12 172.16.40.13 \
-          172.16.40.21 172.16.40.22 172.16.40.23 172.16.40.200; do
+for ip in 172.16.40.10 172.16.40.11 172.16.40.12 172.16.40.13 172.16.40.201; do
   if ping -c 1 -W 800 "${ip}" >/dev/null 2>&1; then
     fail "${ip} に応答があります（既に使用中の可能性）"
     CONFLICT=$((CONFLICT + 1))
@@ -309,7 +276,7 @@ for node in sv-proxmox-01 sv-proxmox-02 sv-proxmox-03; do
 done
 
 COLLISION=0
-for vmid in 1001 1002 1003 1101 1102 1103; do
+for vmid in 1001 1002 1003; do
   if printf '%s\n' "${EXISTING_VMIDS}" | grep -qx "${vmid}"; then
     warn "VMID ${vmid} は既に使用されています"
     COLLISION=$((COLLISION + 1))

@@ -5,8 +5,8 @@
 | VLAN | サブネット | 用途 | ゲートウェイ | 備考 |
 | --- | --- | --- | --- | --- |
 | 10 | 172.16.10.0/24 | 管理 | 172.16.10.1 (IX2215) | Proxmox ホスト、PBS |
-| 20 | 172.16.20.0/24 | Ceph public | (L2 のみ / ルータ経由可) | Proxmox ホストが `vmbr1.20` を保持 |
-| 30 | 172.16.30.0/24 | Ceph cluster | (L2 のみ) | OSD 間レプリケーション専用。**K8s からは触れない** |
+| 20 | 172.16.20.0/24 | （旧 Ceph public） | (L2 のみ) | **Ceph 廃止により未使用**。将来 TrueNAS / ストレージ用途に転用予定 |
+| 30 | 172.16.30.0/24 | （旧 Ceph cluster） | (L2 のみ) | **Ceph 廃止により未使用** |
 | 40 | 172.16.40.0/24 | VM / Kubernetes | 172.16.40.1 (IX2215) | Kubernetes ノードの主系 |
 
 Proxmox ホストのブリッジ構成（実測）:
@@ -14,42 +14,53 @@ Proxmox ホストのブリッジ構成（実測）:
 ```
 vmbr0 : enp3s0 (1GbE)  → VLAN10 untagged, 172.16.10.1{1,2,3}/24
 vmbr1 : enp1s0 (10GbE) → vlan-aware, bridge-vids 20 30 40
-        └ vmbr1.20 : 172.16.20.1{1,2,3}/24  (Ceph public)
-        └ vmbr1.30 : 172.16.30.1{1,2,3}/24  (Ceph cluster)
+        └ vmbr1.20 : 172.16.20.1{1,2,3}/24  (旧 Ceph public / 現在未使用)
+        └ vmbr1.30 : 172.16.30.1{1,2,3}/24  (旧 Ceph cluster / 現在未使用)
 ```
 
 ## 2. Kubernetes ノードのアドレス設計
 
-各ノードは **2 枚の NIC** を持つ。理由は [ADR-0007](adr/0007-dual-nic-topology.md) を参照。
+**1 物理ノード = 1 Kubernetes ノード**の 3 ノード構成。
+NIC は VLAN40 の 1 枚のみ（Ceph 廃止により VLAN20 への接続は不要になった）。
+理由は [ADR-0009](adr/0009-drop-ceph-adopt-longhorn.md) を参照。
 
-| ホスト名 | 役割 | 配置ノード | VMID | eth0 (VLAN40) | eth1 (VLAN20 / Ceph) | vCPU | RAM | Disk |
+| ホスト名 | 役割 | 配置ノード | VMID | IP (VLAN40) | vCPU | RAM | OS Disk | Longhorn Disk |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `k8s-cp-1` | control-plane | sv-proxmox-01 | 1001 | 172.16.40.11/24 | 172.16.20.41/24 | 4 | 8 GiB | 60 GiB |
-| `k8s-cp-2` | control-plane | sv-proxmox-02 | 1002 | 172.16.40.12/24 | 172.16.20.42/24 | 4 | 8 GiB | 60 GiB |
-| `k8s-cp-3` | control-plane | sv-proxmox-03 | 1003 | 172.16.40.13/24 | 172.16.20.43/24 | 4 | 8 GiB | 60 GiB |
-| `k8s-wk-1` | worker | sv-proxmox-01 | 1101 | 172.16.40.21/24 | 172.16.20.51/24 | 6 | 20 GiB | 120 GiB |
-| `k8s-wk-2` | worker | sv-proxmox-02 | 1102 | 172.16.40.22/24 | 172.16.20.52/24 | 6 | 20 GiB | 120 GiB |
-| `k8s-wk-3` | worker | sv-proxmox-03 | 1103 | 172.16.40.23/24 | 172.16.20.53/24 | 6 | 20 GiB | 120 GiB |
+| `k8s-1` | control-plane 兼 worker | sv-proxmox-01 | 1001 | 172.16.40.11/24 | 8 | 32 GiB | 60 GiB | 300 GiB |
+| `k8s-2` | control-plane 兼 worker | sv-proxmox-02 | 1002 | 172.16.40.12/24 | 8 | 32 GiB | 60 GiB | 300 GiB |
+| `k8s-3` | control-plane 兼 worker | sv-proxmox-03 | 1003 | 172.16.40.13/24 | 8 | 32 GiB | 60 GiB | 300 GiB |
 
-**物理ノードあたりの割当**: 10 vCPU / 28 GiB（16 vCPU / 58 GiB に対し十分な余裕を残す）。
-ノード 1 台が停止しても、残り 2 台で全 Pod を収容できる余力を確保する意図。
+**物理ノードあたりの割当**: 8 vCPU / 32 GiB（16 vCPU / 58 GiB に対し余裕を残す）。
+ディスクは 360 GiB / 1 TB（SATA SSD）。
+
+> **なぜ control-plane と worker を分けないのか**: 物理ノードが 3 台しかない以上、
+> VM を分けても障害耐性は変わりません。Ryzen 5700G は CPU が先に不足するため、
+> VM 数を増やすより 1 VM あたりの割当を増やす方が効率的です。
+> `cluster.allowSchedulingOnControlPlanes: true` でワークロードを載せています。
 
 ### 予約アドレス
 
 | アドレス | 用途 | 備考 |
 | --- | --- | --- |
 | 172.16.40.10 | **kube-apiserver VIP** | Talos 内蔵 VIP 機能（control-plane 間で自動フェイルオーバー） |
-| 172.16.40.11 - .13 | control-plane ノード | |
-| 172.16.40.21 - .23 | worker ノード | |
-| 172.16.40.200 - .239 | **Cilium L2 LoadBalancer プール** | Service type=LoadBalancer に払い出す |
+| 172.16.40.11 - .13 | Kubernetes ノード（control-plane 兼 worker） | |
+| 172.16.40.21 - .29 | 追加 worker 用に予約 | 必要になったときに使う |
+| 172.16.40.200 - .239 | **Cilium L2 LoadBalancer プール** | `homelab.io/lan-exposed: "true"` ラベルを持つ Service にのみ払い出す |
 | 172.16.40.240 - .254 | 予約（将来用） | |
 
 ### 割当済み LoadBalancer IP（固定）
 
 | IP | サービス | 公開範囲 | 定義箇所 |
 | --- | --- | --- | --- |
-| 172.16.40.200 | ingress-nginx | 宅内のみ。cloudflared の origin もここを向く | `kubernetes/infra/ingress-nginx/values.yaml` |
 | 172.16.40.201 | Grafana | 宅内のみ | `kubernetes/infra/monitoring/values.yaml` |
+
+> **ingress-nginx には LoadBalancer IP を割り当てていません。**
+> 当初は 172.16.40.200 で L2 公開していましたが、それは
+> **Cloudflare Access を迂回できる第 2 の入口**を作ることを意味していました。
+> VLAN40 に到達できる者が Host ヘッダを指定すれば、Access の認可も
+> cloudflared の JWT 検証も通らずにアプリへ到達できます。
+> 「外部公開は Cloudflare Tunnel のみ」を構成そのもので保証するため
+> ClusterIP に変更しました。
 
 > **固定 IP を使う理由**: Cilium の IP プールは動的に払い出せるが、
 > ブックマークや監視設定が IP に依存するため、人が直接アクセスする
@@ -67,7 +78,7 @@ vmbr1 : enp1s0 (10GbE) → vlan-aware, bridge-vids 20 30 40
 | Service CIDR | `10.96.0.0/12` | Kubernetes 既定 |
 | クラスタ DNS | `10.96.0.10` | CoreDNS |
 
-いずれも VLAN20/30 および 172.16.0.0/16 と重複しないことを確認済み。
+いずれも 172.16.0.0/16 と重複しないことを確認済み。
 
 ## 4. 通信経路
 
@@ -93,13 +104,15 @@ Ingress → Service → アプリ Pod
 **この経路で自宅側に開くポートは 0 個**。cloudflared からの outbound（UDP/443, TCP/443）
 のみで成立する。
 
-### 4.2 Kubernetes ノード → Ceph
+### 4.2 ストレージ（Longhorn）
 
 ```
-Pod（ceph-csi）→ ノードの eth1 (172.16.20.5x) → L2 スイッチ → Ceph MON/OSD (172.16.20.1x)
+Pod → Longhorn CSI → iSCSI（ノード内） → /var/mnt/longhorn（ローカルディスク）
+                          └─ レプリカ同期 → VLAN40 経由で他ノードへ
 ```
 
-L3 ルータ（IX2215）を経由しないため、ストレージ I/O がルータの転送性能に律速されない。
+Longhorn のレプリカ同期は VLAN40（10GbE）内で完結します。
+外部のストレージネットワークは不要になりました。
 
 ### 4.3 運用端末 → クラスタ
 
@@ -121,7 +134,7 @@ Talos の ingressFirewall（`NetworkDefaultActionConfig` + `NetworkRuleConfig`�
 | **VLAN40**（172.16.40.0/24） | TCP/UDP 全ポート | このセグメントには Kubernetes ノードしか居ない。etcd(2379-2380) / kubelet(10250) / KubePrism(7445) / Cilium(4240,4244,4245) / trustd(50001) / VXLAN(8472) など必要なポートが多岐にわたり、1 つでも漏らすとクラスタが起動しない。**同一信頼境界の内側は開ける**方が、穴だらけの許可リストを維持し続けるより確実で安全と判断した |
 | **Pod CIDR**（10.244.0.0/16） | TCP/UDP 全ポート | Cilium が native routing のため Pod のトラフィックがホストのスタックを通る。遮断すると CNI が機能しない |
 | **管理経路**（172.16.10.0/24, 100.64.0.0/10） | **50000/tcp と 6443/tcp のみ** | Talos API と kube-apiserver。到達できても mTLS のクライアント証明書が無ければ何もできないが、攻撃面を減らす |
-| 上記以外（VLAN20 の Ceph 側を含む） | **全て block** | Ceph への通信はノード発の outbound なので影響を受けない |
+| 上記以外 | **全て block** | Longhorn のレプリカ同期は VLAN40 内で完結するため影響を受けない |
 
 > **設計判断の明示**: VLAN40 内を全ポート許可にしていることは、
 > 「ノード間は必要最小ポートのみ」という一般的な推奨とは異なる。
@@ -133,9 +146,9 @@ Talos の ingressFirewall（`NetworkDefaultActionConfig` + `NetworkRuleConfig`�
 > `talosctl -n <node> health` と `cilium status` で問題が無いことを
 > 確認してから展開すること。
 
-> Talos の `ingressFirewall` は VLAN20 側（Ceph）にも適用される。Ceph への
-> **アウトバウンド**は制限対象外だが、VLAN20 からノードへの**インバウンド**は
-> 既定 block により遮断される。
+> ICMP は管理経路からのみ許可している（`talosctl docs config` で
+> NetworkRuleConfig が icmp に対応することを確認済み）。ping が通ることは
+> 「ノードが生きているか」を証明書無しで確認できるため運用上の価値がある。
 
 > ⚠️ **Service CIDR は送信元として指定しない。** ClusterIP は宛先アドレスで
 > あり、DNAT 後もパケットの送信元は Pod IP のままである。送信元 CIDR に

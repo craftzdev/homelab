@@ -6,9 +6,8 @@
 # ---------------------------------------------------------------------------
 #   -20  policies        : クラスタ全体のネットワークポリシー
 #   -10  cilium          : CNI。これが無いと他の Pod が起動しない
-#     0  ceph-csi-config : namespace / StorageClass / Secret
-#     1  ceph-csi-rbd    : CSI ドライバ本体（namespace が先に必要）
-#     1  ceph-csi-cephfs
+#    -5  snapshot-controller : VolumeSnapshot の CRD
+#     0  longhorn        : 分散ブロックストレージ（PV の供給元）
 #     2  cert-manager    : 証明書管理（他が依存する）
 #     3  ingress-nginx   : HTTP ルーティング
 #     4  cloudflared     : 外部公開（ingress-nginx が先に必要）
@@ -101,12 +100,12 @@ spec:
 # ---------------------------------------------------------------------------
 # snapshot-controller（VolumeSnapshot の CRD とコントローラ）
 #
-# ⚠️ ceph-csi より先に導入する必要がある。
+# ⚠️ Longhorn より先に導入する必要がある。
 #    VolumeSnapshot / VolumeSnapshotClass / VolumeSnapshotContent は
 #    Kubernetes のコア API ではなく CRD であり、Kubernetes 本体にも
-#    ceph-csi の chart にも含まれていない。これが無いと
-#    kubernetes/infra/ceph-csi/storageclass.yaml の VolumeSnapshotClass が
-#    適用できず、Velero の CSI 連携も機能しない。
+#    Longhorn の chart にも含まれていない。これが無いと
+#    kubernetes/infra/longhorn/ の VolumeSnapshotClass が適用できず、
+#    Velero の CSI 連携も機能しない。
 # ---------------------------------------------------------------------------
 apiVersion: argoproj.io/v1alpha1
 kind: Application
@@ -144,14 +143,21 @@ spec:
 
 ---
 # ---------------------------------------------------------------------------
-# ceph-csi の設定（namespace / StorageClass / Secret）
+# Longhorn（分散ブロックストレージ）
 #
-# Helm chart より先に適用する必要がある（namespace が無いと chart が失敗する）。
+# Ceph を廃止した後の PV を担う。K8s 内で 3 レプリカを持つため、
+# 1 ノード障害でもデータは失われない。
+# 判断の経緯は docs/adr/0009-drop-ceph-adopt-longhorn.md を参照。
+#
+# ⚠️ Talos 側で以下が揃っている必要がある（tofu/10-proxmox-talos が設定済み）:
+#      - system extension: iscsi-tools, util-linux-tools
+#      - UserVolumeConfig で /var/mnt/longhorn を専用ディスクに切り出し
+#      - kubelet の extraMounts（rshared）
 # ---------------------------------------------------------------------------
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: ceph-csi-config
+  name: longhorn
   namespace: argocd
   annotations:
     argocd.argoproj.io/sync-wave: "0"
@@ -159,84 +165,35 @@ metadata:
     - resources-finalizer.argocd.argoproj.io
 spec:
   project: infrastructure
-  source:
-    repoURL: https://github.com/craftzdev/homelab.git
-    targetRevision: main
-    path: kubernetes/infra/ceph-csi
+  sources:
+    - repoURL: https://charts.longhorn.io
+      chart: longhorn
+      targetRevision: 1.12.1
+      helm:
+        releaseName: longhorn
+        valueFiles:
+          - $values/kubernetes/infra/longhorn/values.yaml
+    - repoURL: https://github.com/craftzdev/homelab.git
+      targetRevision: main
+      path: kubernetes/infra/longhorn
+      directory:
+        include: "{namespace-and-storageclass.yaml,networkpolicy.yaml}"
+    - repoURL: https://github.com/craftzdev/homelab.git
+      targetRevision: main
+      ref: values
   destination:
     server: https://kubernetes.default.svc
-    namespace: ceph-csi
+    namespace: longhorn-system
   syncPolicy:
     automated:
       # ⚠️ prune: false
-      #    StorageClass を誤って削除すると、既存 PV のマウントに
-      #    影響が及ぶ可能性がある。削除は手動で行う。
+      #    Longhorn の CRD や StorageClass を prune で消すと、
+      #    既存 PV が孤児になりデータへ到達できなくなる。削除は手動で行う。
       prune: false
       selfHeal: true
     syncOptions:
+      - ServerSideApply=true
       - CreateNamespace=false
-
----
-apiVersion: argoproj.io/v1alpha1
-kind: Application
-metadata:
-  name: ceph-csi-rbd
-  namespace: argocd
-  annotations:
-    argocd.argoproj.io/sync-wave: "1"
-  finalizers:
-    - resources-finalizer.argocd.argoproj.io
-spec:
-  project: infrastructure
-  sources:
-    - repoURL: https://ceph.github.io/csi-charts
-      chart: ceph-csi-rbd
-      targetRevision: 3.17.1
-      helm:
-        releaseName: ceph-csi-rbd
-        valueFiles:
-          - $values/kubernetes/infra/ceph-csi/values-rbd.yaml
-    - repoURL: https://github.com/craftzdev/homelab.git
-      targetRevision: main
-      ref: values
-  destination:
-    server: https://kubernetes.default.svc
-    namespace: ceph-csi
-  syncPolicy:
-    automated:
-      prune: true
-      selfHeal: true
-
----
-apiVersion: argoproj.io/v1alpha1
-kind: Application
-metadata:
-  name: ceph-csi-cephfs
-  namespace: argocd
-  annotations:
-    argocd.argoproj.io/sync-wave: "1"
-  finalizers:
-    - resources-finalizer.argocd.argoproj.io
-spec:
-  project: infrastructure
-  sources:
-    - repoURL: https://ceph.github.io/csi-charts
-      chart: ceph-csi-cephfs
-      targetRevision: 3.17.1
-      helm:
-        releaseName: ceph-csi-cephfs
-        valueFiles:
-          - $values/kubernetes/infra/ceph-csi/values-cephfs.yaml
-    - repoURL: https://github.com/craftzdev/homelab.git
-      targetRevision: main
-      ref: values
-  destination:
-    server: https://kubernetes.default.svc
-    namespace: ceph-csi
-  syncPolicy:
-    automated:
-      prune: true
-      selfHeal: true
 
 ---
 # ---------------------------------------------------------------------------

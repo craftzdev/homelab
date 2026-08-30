@@ -36,24 +36,9 @@ machine:
         mtu: 1500
         dhcp: false
 
-      # --- eth1 相当: VLAN20（Ceph public）---
-      # デフォルトゲートウェイは設定しない（同一 L2 で完結させる）
-      - deviceSelector:
-          hardwareAddr: "${mac_ceph}"
-        addresses:
-          - ${ceph_ip}/24
-        mtu: 1500
-        dhcp: false
-
   time:
     disabled: false
     servers: ${ntp_servers}
-
-  # ceph-csi の nodeplugin が RBD をマップするために必要
-  kernel:
-    modules:
-      - name: rbd
-      - name: libceph
 
   features:
     rbac: true
@@ -89,6 +74,23 @@ machine:
       rotate-server-certificates: "true"
     extraConfig:
       serverTLSBootstrap: true
+
+    # -----------------------------------------------------------------------
+    # Longhorn のデータパスを kubelet から見えるようにする
+    #
+    # Longhorn の manager / instance-manager は kubelet の mount namespace
+    # を通してレプリカを読み書きする。rshared にしないと、Longhorn が
+    # 作ったマウントが kubelet 側へ伝播せず、Pod がボリュームを
+    # 見つけられない（原因が非常に分かりにくい失敗をする）。
+    # -----------------------------------------------------------------------
+    extraMounts:
+      - destination: /var/mnt/longhorn
+        type: bind
+        source: /var/mnt/longhorn
+        options:
+          - bind
+          - rshared
+          - rw
 
   sysctls:
     net.ipv4.conf.all.log_martians: "1"
@@ -145,3 +147,48 @@ kind: HostnameConfig
 # ---------------------------------------------------------------------------
 auto: off
 hostname: ${hostname}
+
+---
+# ===========================================================================
+# Longhorn 用のデータボリューム
+#
+# ---------------------------------------------------------------------------
+# なぜ専用ディスクを切り出すのか
+# ---------------------------------------------------------------------------
+# Longhorn の既定のデータパスは /var/lib/longhorn だが、Talos の /var は
+# EPHEMERAL パーティション上にあり、再インストールや `talosctl reset` で
+# 初期化される。そこにレプリカを置くと、ノードを 1 台作り直すたびに
+# Longhorn が全レプリカを再同期することになる。
+#
+# VM に 2 本目のディスク（scsi1, serial=longhorn）を付け、
+# UserVolumeConfig で /var/mnt/longhorn として独立させることで、
+# OS のライフサイクルとデータのライフサイクルを分離する。
+#
+# ⚠️ diskSelector は VM 側で固定した serial 番号で判定している。
+#    tofu/10-proxmox-talos/vms.tf の scsi1 の `serial = "longhorn"` を
+#    変更すると、ここが一致しなくなりボリュームが作られない。
+# ===========================================================================
+apiVersion: v1alpha1
+kind: UserVolumeConfig
+name: longhorn
+provisioning:
+  diskSelector:
+    # ---------------------------------------------------------------------
+    # システムディスク以外を選ぶ。
+    #
+    # VM のディスクは 2 本だけ（scsi0 = OS、scsi1 = Longhorn）なので、
+    # 「システムディスクでない方」で一意に決まる。
+    #
+    # serial や by-id のパスで判定する方法もあるが、Proxmox が
+    # ゲストへどう見せるかに依存するため、Talos 自身が知っている
+    # system_disk を基準にする方が確実で壊れにくい。
+    # ---------------------------------------------------------------------
+    match: '!system_disk'
+  # 最小サイズ。これを下回るディスクしか無い場合はエラーになる
+  # （意図しないディスクを掴む事故を防ぐガード）。
+  minSize: 50GB
+  # ディスクの残り全体まで広げる（実サイズは Proxmox 側の
+  # longhorn_disk_gib で決まる）
+  grow: true
+filesystem:
+  type: xfs

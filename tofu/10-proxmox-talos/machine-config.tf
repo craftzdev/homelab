@@ -42,9 +42,7 @@ locals {
     for name, node in local.all_nodes : name => {
       hostname        = name
       mac_k8s         = lower(node.mac_k8s)
-      mac_ceph        = lower(node.mac_ceph)
       ip              = node.ip
-      ceph_ip         = node.ceph_ip
       gateway         = var.k8s_gateway
       vip             = var.cluster_vip
       nameservers     = jsonencode(var.nameservers)

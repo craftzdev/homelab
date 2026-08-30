@@ -25,12 +25,20 @@ data "talos_image_factory_urls" "this" {
   architecture  = "amd64"
 }
 
-# ISO を共有ストレージ（CephFS）へ配置する。
-# 共有ストレージに置くことで、3 ノードのどこに VM を作っても同じ ISO を参照できる。
+# ISO を配置する。
+#
+# ⚠️ Ceph 廃止により共有ストレージが無くなったため、各ノードのローカル
+#    `local`（/var/lib/vz）へ置く。bpg provider は node_name で指定した
+#    1 ノードにのみダウンロードするため、VM を作る全ノードで
+#    ISO が必要になる場合は for_each でノードごとに作ること。
+#    現構成は 1 物理ノード 1 VM なので、下の for_each で全ノードへ配置する。
 resource "proxmox_download_file" "talos_iso" {
+  # 各ノードのローカルストレージへ配置するため、ノードごとに作成する
+  for_each = { for n in var.proxmox_nodes : n.name => n }
+
   content_type = "iso"
   datastore_id = var.iso_datastore_id
-  node_name    = var.proxmox_nodes[0].name
+  node_name    = each.key
 
   # schematic ID をファイル名に含めることで、拡張構成を変更したときに
   # 別ファイルとして扱われ、古いイメージで起動する事故を防ぐ。

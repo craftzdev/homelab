@@ -1,0 +1,139 @@
+# ===========================================================================
+# Longhorn — Kubernetes ネイティブの分散ブロックストレージ
+#
+# Ceph を廃止した後の PV を担う。判断の経緯は
+# docs/adr/0009-drop-ceph-adopt-longhorn.md を参照。
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# データパス
+#
+# ⚠️ 既定の /var/lib/longhorn は使わない。
+#
+#    Talos の /var は EPHEMERAL パーティション上にあり、再インストールや
+#    `talosctl reset` で初期化される。そこにレプリカを置くと、ノードを
+#    1 台作り直すたびに Longhorn が全レプリカを再同期することになる。
+#
+#    VM の 2 本目のディスクを Talos の UserVolumeConfig で
+#    /var/mnt/longhorn として切り出しており、そこを使う。
+#    OS のライフサイクルとデータのライフサイクルが分離される。
+# ---------------------------------------------------------------------------
+defaultSettings:
+  defaultDataPath: /var/mnt/longhorn
+
+  # -------------------------------------------------------------------------
+  # レプリカ数
+  #
+  # 3 ノード構成なので 3。1 ノードが落ちてもデータは失われず、
+  # 残り 2 レプリカで読み書きを継続できる。
+  # -------------------------------------------------------------------------
+  defaultReplicaCount: 3
+
+  # レプリカを必ず別ノードへ配置する。
+  # false にすると同一ノードに複数レプリカが載りうるが、
+  # それでは「ノード障害に耐える」という目的を果たさない。
+  replicaSoftAntiAffinity: false
+  replicaZoneSoftAntiAffinity: false
+
+  # -------------------------------------------------------------------------
+  # ⚠️ ノードのドレイン時にレプリカを退避させない
+  #
+  # true にすると、ノードを一時的に落とすたびに数百 GB の再同期が走る。
+  # Talos のアップグレードは日常的な操作なので、それでは運用にならない。
+  # ノードが戻ってくれば差分だけが同期される。
+  # -------------------------------------------------------------------------
+  nodeDownPodDeletionPolicy: delete-both-statefulset-and-deployment-pod
+  replicaReplenishmentWaitInterval: 1800
+
+  # ディスクの使用率がこれを超えるとスケジュールしない
+  storageOverProvisioningPercentage: 150
+  storageMinimalAvailablePercentage: 20
+
+  # 削除済みブロックを解放する（コンシューマ SSD では特に効く）
+  #   自動 trim は Longhorn 1.5+ の機能
+  autoCleanupSystemGeneratedSnapshot: true
+
+  # -------------------------------------------------------------------------
+  # バックアップ先
+  #
+  # ⚠️ 未設定のままでは Longhorn のスナップショットは
+  #    **同じディスク上にしか存在しない**。ノードやディスクが壊れれば
+  #    スナップショットも一緒に失われる。
+  #
+  #    外部のオブジェクトストレージ（Cloudflare R2 等）を設定すること。
+  #    手順は kubernetes/infra/longhorn/README.md を参照。
+  # -------------------------------------------------------------------------
+  # backupTarget: s3://homelab-longhorn@auto/
+  # backupTargetCredentialSecret: longhorn-backup-credential
+
+  # Talos ではノードの OS 更新を Talos 自身が管理するため、
+  # Longhorn 側の自動アップグレードは無効にする
+  upgradeChecker: false
+
+# ---------------------------------------------------------------------------
+# 既定の StorageClass
+# ---------------------------------------------------------------------------
+persistence:
+  defaultClass: true
+  defaultClassReplicaCount: 3
+  defaultFsType: ext4
+  # PVC 削除時にボリュームも削除する
+  reclaimPolicy: Delete
+
+# ---------------------------------------------------------------------------
+# UI
+#
+# ⚠️ Ingress を作らない。Longhorn UI はボリュームの削除や
+#    ノードの無効化ができる管理ツールであり、外部公開してはならない。
+#    参照は port-forward で行う:
+#      kubectl -n longhorn-system port-forward svc/longhorn-frontend 8080:80
+# ---------------------------------------------------------------------------
+ingress:
+  enabled: false
+
+service:
+  ui:
+    type: ClusterIP
+
+# ---------------------------------------------------------------------------
+# 可観測性
+# ---------------------------------------------------------------------------
+metrics:
+  serviceMonitor:
+    enabled: true
+    additionalLabels:
+      release: kube-prometheus-stack
+
+# ---------------------------------------------------------------------------
+# リソース
+#
+# 3 ノードしかないため、Longhorn 自身が資源を食い潰さないよう制限する。
+# ---------------------------------------------------------------------------
+longhornManager:
+  priorityClass: system-node-critical
+  tolerations:
+    - key: node-role.kubernetes.io/control-plane
+      operator: Exists
+      effect: NoSchedule
+
+longhornDriver:
+  priorityClass: system-node-critical
+  tolerations:
+    - key: node-role.kubernetes.io/control-plane
+      operator: Exists
+      effect: NoSchedule
+
+longhornUI:
+  replicas: 1
+
+# ---------------------------------------------------------------------------
+# CSI サイドカーのレプリカ数
+#
+# 3 ノード構成なので 2 で十分（3 にすると 1 ノード障害時に
+# Pending が残り続ける）。
+# ---------------------------------------------------------------------------
+csi:
+  attacherReplicaCount: 2
+  provisionerReplicaCount: 2
+  resizerReplicaCount: 2
+  snapshotterReplicaCount: 2

@@ -17,7 +17,7 @@ PVE_HOST="${PVE_HOST:-172.16.10.11}"
 PVE_SSH_USER="${PVE_SSH_USER:-root}"
 
 # 削除対象の VMID（旧 kubeadm クラスタ + テンプレート）
-LEGACY_VMIDS=(1001 1002 1003 1101 1102 1103 9050)
+LEGACY_VMIDS=(1001 1002 1003 1101 1102 1103 9050)  # 旧 6VM 構成 + テンプレート
 
 DRY_RUN=true
 
@@ -116,7 +116,7 @@ ${C_YELLOW}これは dry-run です。何も削除していません。${C_RESET
 実際に削除するには:
   $0 --yes
 
-⚠️ 削除すると VM のディスク（Ceph 上の RBD イメージ）も一緒に消えます。
+⚠️ 削除すると VM のディスクも一緒に消えます。
    中のデータが不要であることを必ず確認してください。
 
 EOF
@@ -174,8 +174,8 @@ ok "旧 VM の削除が完了しました。"
 
 cat <<'EOF'
 
-  残った RBD イメージの確認（孤児が残っていないか）:
-    ssh root@172.16.10.11 rbd -p cephrdb_k8s ls -l
+  残ったディスクイメージの確認（孤児が残っていないか）:
+    ssh root@172.16.10.11 pvesm list local-zfs
 
   次の手順:
     ./scripts/preflight.sh

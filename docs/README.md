@@ -21,11 +21,12 @@
 | [0001](adr/0001-talos-linux.md) | ノード OS に **Talos Linux** を使う | SSH もシェルも存在しない = ハードニングすべき対象が無い |
 | [0002](adr/0002-opentofu.md) | **OpenTofu** でプロビジョニングする | 宣言的・plan による事前確認・冪等性が言語機能として得られる |
 | [0003](adr/0003-cilium.md) | CNI に **Cilium** を使い kube-proxy を置換する | L7 ポリシー・Hubble による可視化・MetalLB が不要になる |
-| [0004](adr/0004-ceph-csi.md) | **ceph-csi** を直接使う（Rook を挟まない） | Ceph の運用主体は Proxmox 側。抽象層を増やすと切り分けが困難になる |
+| ~~[0004](adr/0004-ceph-csi.md)~~ | ~~ceph-csi を直接使う~~ | ⛔ **Superseded** — ADR-0009 により置き換え |
 | [0005](adr/0005-cloudflare-zero-trust.md) | **Cloudflare Tunnel + Access** で公開する | インバウンド開放ゼロ。認可を自作しない |
 | [0006](adr/0006-argocd-sops.md) | **ArgoCD + SOPS/age** | 外部の秘密ストアに依存せず Git だけで完結する |
-| [0007](adr/0007-dual-nic-topology.md) | ノードに **デュアル NIC**（VLAN40 + VLAN20） | ストレージ I/O を家庭用ルータ経由にしない |
+| ~~[0007](adr/0007-dual-nic-topology.md)~~ | ~~デュアル NIC（VLAN40 + VLAN20）~~ | ⛔ **Superseded** — ADR-0009 により置き換え |
 | [0008](adr/0008-backup-strategy.md) | **3 階層バックアップ**（etcd / Velero / PBS） | 冗長化はバックアップではない。障害の種類ごとに手段を分ける |
+| [0009](adr/0009-drop-ceph-adopt-longhorn.md) | **Ceph を廃止し Longhorn へ** | 実測で SSD の性能不足が判明。維持には 10〜20 万円の換装が必要で、利用実態に見合わなかった |
 
 ## コンポーネント別の手順書
 
@@ -34,6 +35,7 @@
 | ドキュメント | 内容 |
 | --- | --- |
 | [kubernetes/infra/monitoring/README.md](../kubernetes/infra/monitoring/README.md) | Grafana 管理者パスワードの設定（**必須**。未設定だと Grafana が起動しない） |
+| [kubernetes/infra/longhorn/README.md](../kubernetes/infra/longhorn/README.md) | Longhorn のバックアップ先の設定（**重要**）と Talos 側の前提確認 |
 | [kubernetes/infra/velero/README.md](../kubernetes/infra/velero/README.md) | バックアップ先（外部オブジェクトストレージ）の設定 |
 | [kubernetes/infra/cloudflared/generated/README.md](../kubernetes/infra/cloudflared/generated/README.md) | OpenTofu が生成する ingress 設定の扱い |
 | [workers/example-origin-api/README.md](../workers/example-origin-api/README.md) | Workers から Access 経由で呼び出す実装 |
@@ -53,5 +55,5 @@
 
 | # | 項目 | 状態 |
 | --- | --- | --- |
-| 1 | Ceph の `HEALTH_WARN` の原因究明 | **未着手**（構築前に必須） |
+| 1 | Longhorn のバックアップ先（外部 S3）の設定 | **未着手**（本番データを載せる前に必須） |
 | 2 | Git 履歴に残る平文 SSH パスワードの除去 | **未着手**（公開前に必須） |
