@@ -126,16 +126,24 @@ grafana:
   enabled: true
 
   # -------------------------------------------------------------------------
-  # ⚠️ 管理者パスワード
+  # 管理者パスワード
   #
-  # 既定の admin/prom-operator のまま運用しないこと。
-  # SOPS で暗号化した Secret を作り、admin.existingSecret で参照する:
+  # values に平文で書かない。また `adminPassword` を未指定にすると
+  # chart の既定値（admin / prom-operator）で起動してしまい、
+  # 「気づかないうちに既知のパスワードで動いている」状態になる。
   #
+  # そこで existingSecret を必須にする。Secret が無ければ Grafana は
+  # 起動しないため、設定漏れが**明確な失敗**として現れる。
+  # これは「静かに安全でない状態になる」より遥かに良い。
+  #
+  # Secret は SOPS で暗号化して Git 管理する:
   #   kubernetes/infra/monitoring/grafana-admin.sops.yaml
-  #
-  # 初期構築時は下記のまま起動するが、必ず変更すること。
+  # 作成手順は同ディレクトリの README.md を参照。
   # -------------------------------------------------------------------------
-  adminPassword: "CHANGE_ME_BEFORE_USE"
+  admin:
+    existingSecret: grafana-admin
+    userKey: admin-user
+    passwordKey: admin-password
 
   persistence:
     enabled: true

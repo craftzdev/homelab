@@ -52,15 +52,20 @@ configuration:
   #
   # ceph-csi の VolumeSnapshot を使う。CSI スナップショットは
   # Ceph 内に作られるため、これ単体では Ceph 障害に耐えられない。
-  # そのため下の fileSystemBackup（データを実際にオブジェクトストレージへ
-  # 転送する方式）を併用する。
+  # そのため下の defaultVolumesToFsBackup（データを実際に
+  # オブジェクトストレージへ転送する方式）を併用する。
   # -------------------------------------------------------------------------
   volumeSnapshotLocation:
     - name: default
       provider: csi
 
-  features: EnableCSI
+  # ⚠️ `features: EnableCSI` は設定しない。
+  #    CSI サポートは Velero v1.14 でコアに統合され、既定で有効になった。
+  #    古い記事の多くはこのフラグを指定しているが、現在は不要である。
 
+  # PVC の中身をファイル単位でオブジェクトストレージへ転送する。
+  # これにより Ceph が全損しても復旧できる（CSI スナップショットだけでは
+  # Ceph 内にしかデータが無いため復旧できない）。
   defaultVolumesToFsBackup: true
 
   # バックアップの既定保持期間
@@ -70,15 +75,18 @@ configuration:
 
 # ---------------------------------------------------------------------------
 # プラグイン
+#
+# ⚠️ velero-plugin-for-csi は不要である。
+#    Velero v1.14 で CSI プラグインが velero 本体にマージされ、
+#    内部プラグインとして既定で導入されるようになった。
+#    別途 initContainer で入れると重複して問題を起こす。
+#
+# velero-plugin-for-aws のバージョンは Velero 本体と対応関係がある:
+#   plugin v1.14.x ↔ Velero v1.18.x（chart 12.1.0 = appVersion 1.18.1）
 # ---------------------------------------------------------------------------
 initContainers:
   - name: velero-plugin-for-aws
-    image: velero/velero-plugin-for-aws:v1.13.0
-    volumeMounts:
-      - mountPath: /target
-        name: plugins
-  - name: velero-plugin-for-csi
-    image: velero/velero-plugin-for-csi:v0.7.1
+    image: velero/velero-plugin-for-aws:v1.14.2
     volumeMounts:
       - mountPath: /target
         name: plugins

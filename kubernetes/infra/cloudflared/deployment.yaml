@@ -95,10 +95,12 @@ spec:
             # GitOps で管理するため、プロセスが勝手にバイナリを
             # 差し替えることは避ける（サプライチェーンの観点でも重要）。
             - --no-autoupdate
+            # トンネル ID と credentials-file のパスは config.yaml 側に
+            # 記載されている（tofu/20-cloudflare が生成）。
+            # 引数と設定ファイルに分散させると、片方だけ更新して
+            # 不整合が起きるため config.yaml に集約している。
             - --config
             - /etc/cloudflared/config/config.yaml
-            - --credentials-file
-            - /etc/cloudflared/creds/credentials.json
             - run
 
           ports:

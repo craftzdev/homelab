@@ -41,15 +41,17 @@ repoServer:
   # -------------------------------------------------------------------------
   initContainers:
     - name: install-ksops
-      image: viaductoss/ksops:v4.3.3
-      command: ["/bin/sh", "-c"]
-      args:
-        - |
-          set -e
-          echo "Installing KSOPS and kustomize into /custom-tools ..."
-          cp /usr/local/bin/ksops /custom-tools/
-          cp /usr/local/bin/kustomize /custom-tools/
-          echo "Done."
+      image: viaductoss/ksops:v4.5.1
+      # ---------------------------------------------------------------------
+      # ksops 公式が提供する install サブコマンドを使う。
+      #
+      # 単にバイナリを cp するのではなく install を使う理由:
+      #   ksops は kustomize の exec プラグイン API に依存しており、
+      #   動作確認された組み合わせの kustomize を同梱している。
+      #   `--with-kustomize` はその kustomize も一緒に配置するため、
+      #   バージョンの不整合による「プラグインが読み込まれない」事故を防げる。
+      # ---------------------------------------------------------------------
+      command: ["/usr/local/bin/ksops", "install", "--with-kustomize", "/custom-tools"]
       volumeMounts:
         - name: custom-tools
           mountPath: /custom-tools

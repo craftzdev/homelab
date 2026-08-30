@@ -372,11 +372,12 @@ spec:
         releaseName: kube-prometheus-stack
         valueFiles:
           - $values/kubernetes/infra/monitoring/values.yaml
+    # namespace / NetworkPolicy / アラート / Grafana の認証情報（KSOPS）。
+    # directory.include を指定すると kustomization.yaml が無視され
+    # KSOPS が動かないため、kustomize として扱わせる。
     - repoURL: https://github.com/craftzdev/homelab.git
       targetRevision: main
       path: kubernetes/infra/monitoring
-      directory:
-        include: "{namespace-and-policy.yaml,alerts.yaml}"
     - repoURL: https://github.com/craftzdev/homelab.git
       targetRevision: main
       ref: values

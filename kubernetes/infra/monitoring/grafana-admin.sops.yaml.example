@@ -1,0 +1,15 @@
+# ===========================================================================
+# Grafana 管理者アカウント（テンプレート）
+#
+# ⚠️ このファイルを埋めてリネームしないこと。平文でコミットされてしまう。
+#    README.md の手順に従って生成・暗号化すること。
+# ===========================================================================
+apiVersion: v1
+kind: Secret
+metadata:
+  name: grafana-admin
+  namespace: monitoring
+type: Opaque
+stringData:
+  admin-user: admin
+  admin-password: "REPLACE_ME"

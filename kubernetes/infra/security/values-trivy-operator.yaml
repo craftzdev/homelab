@@ -56,10 +56,19 @@ trivy:
     limits:
       memory: 1Gi
 
-  # 脆弱性 DB を PVC に永続化し、再起動のたびにダウンロードしないようにする
-  # （外部への通信を減らすことはセキュリティ上も望ましい）
-  storageClassName: ceph-rbd
-  storageSize: "5Gi"
+  # ---------------------------------------------------------------------------
+  # 脆弱性 DB の永続化について
+  #
+  # ⚠️ chart の `trivy.storageClassName` / `trivy.storageSize` は
+  #    **trivy server モード（StatefulSet）専用**の設定であり、
+  #    既定の standalone モードでは PVC が作られない。
+  #    ここに書いても効果が無いため設定しない。
+  #
+  # standalone モードでは各スキャンジョブが DB をダウンロードする。
+  # 外部への通信が発生するが、頻度は限定的（DB のキャッシュ有効期間内は再利用）。
+  # スキャン対象が増えて通信量が問題になったら、
+  # `trivy.mode: ClientServer` に切り替えて server モードを検討すること。
+  # ---------------------------------------------------------------------------
 
 serviceMonitor:
   enabled: true

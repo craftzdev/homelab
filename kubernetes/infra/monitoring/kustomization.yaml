@@ -1,0 +1,18 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: monitoring
+
+resources:
+  - namespace-and-policy.yaml
+  - alerts.yaml
+
+# ---------------------------------------------------------------------------
+# Grafana の管理者パスワードを SOPS 暗号化された Secret から生成する。
+#
+# ⚠️ grafana-admin.sops.yaml が存在しないと Grafana は起動しない。
+#    これは意図的な設計である（README.md 参照）。既定パスワードで
+#    静かに起動してしまうより、明確に失敗する方が安全なため。
+# ---------------------------------------------------------------------------
+generators:
+  - secret-generator.yaml

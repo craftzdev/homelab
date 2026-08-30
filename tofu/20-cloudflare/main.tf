@@ -180,6 +180,18 @@ resource "local_sensitive_file" "cloudflared_credentials" {
 # ---------------------------------------------------------------------------
 locals {
   cloudflared_config = {
+    # -------------------------------------------------------------------------
+    # どのトンネルを、どの認証情報で張るか
+    #
+    # config_src = "local" のトンネルは、この 2 つが揃って初めて接続できる。
+    # コマンドライン引数ではなく config.yaml に書くことで、
+    # 「この ConfigMap を見れば接続先が分かる」状態にしている。
+    # credentials-file の中身は Secret としてマウントされる
+    # （kubernetes/infra/cloudflared/deployment.yaml）。
+    # -------------------------------------------------------------------------
+    "tunnel"           = cloudflare_zero_trust_tunnel_cloudflared.this.id
+    "credentials-file" = "/etc/cloudflared/creds/credentials.json"
+
     # メトリクスは Prometheus が取得する
     "metrics" = "0.0.0.0:2000"
     # ログレベル。debug にすると URL やヘッダが記録されるため info を既定とする

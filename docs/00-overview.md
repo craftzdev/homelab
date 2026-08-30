@@ -71,6 +71,7 @@
 | クラスタ構築 | **siderolabs/talos provider** | machine config 生成〜bootstrap〜kubeconfig 取得までコード化できる | [ADR-0002](adr/0002-opentofu.md) |
 | CNI | **Cilium v1.20.1**（kube-proxy 置換） | eBPF による高性能・L3-L7 ポリシー・Hubble による可視化・L2 Announcement で MetalLB 不要 | [ADR-0003](adr/0003-cilium.md) |
 | ストレージ | **ceph-csi v3.17.1**（外部 Ceph） | 既存 Proxmox Ceph をそのまま利用。Rook を挟まず運用主体を Proxmox 側に一本化 | [ADR-0004](adr/0004-ceph-csi.md) |
+| スナップショット | **external-snapshotter v8.6.0** | VolumeSnapshot は Kubernetes のコア API ではなく CRD であり、別途導入が必要。Velero の CSI 連携の前提 | [ADR-0008](adr/0008-backup-strategy.md) |
 | 外部公開 | **Cloudflare Tunnel + Access** | インバウンド開放ゼロ。認可を Cloudflare エッジで完結でき、監査ログも残る | [ADR-0005](adr/0005-cloudflare-zero-trust.md) |
 | GitOps | **ArgoCD v3.5.2** | 宣言的同期・差分可視化・自己修復。既存リポジトリの資産とも整合 | [ADR-0006](adr/0006-argocd-sops.md) |
 | 秘密管理 | **SOPS v3.13 + age** | 外部の秘密ストアに依存せず、Git だけで完結する。ホームラボの規模に最適 | [ADR-0006](adr/0006-argocd-sops.md) |
