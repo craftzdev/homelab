@@ -83,8 +83,25 @@
 - **RBAC**: ArgoCD / 監視 / CSI などのサービスアカウントは、必要な verb と
   resource のみに絞る。`cluster-admin` の付与は ArgoCD の Application コントローラ
   以外に行わない。
-- **anonymous-auth の無効化**、kubelet の `readOnlyPort = 0`、
-  `authorization-mode = Webhook` を Talos の machine config で強制する。
+- **kube-apiserver / kubelet の基本的なハードニング**
+  （`anonymous-auth=false`、kubelet の `readOnlyPort=0`、
+  `authorization-mode=Webhook`、`--profiling=false` 等）。
+
+  > **正確に記す**: このうち `anonymous-auth` / `readOnlyPort` /
+  > `authorization-mode` は **Talos が既定で設定している**ものであり、
+  > 本リポジトリでは上書きしていない。これが Talos を選んだ理由そのもの
+  > （[ADR-0001](adr/0001-talos-linux.md)）である。同じ値を `extraArgs` に
+  > 重複して書くと、Talos 側の設定と衝突する可能性があるため書いていない。
+  >
+  > 本リポジトリが明示的に追加しているのは、Talos の既定に含まれない
+  > `profiling=false` / `service-account-lookup=true` / 監査ポリシー /
+  > Pod Security Admission の `restricted` 化である
+  > （`talos/patches/controlplane.yaml.tftpl`）。
+  >
+  > 実際の設定値は次のコマンドで確認できる。
+  > ```bash
+  > talosctl -n 172.16.40.11 get machineconfig -o yaml
+  > ```
 - **監査ログ**: kube-apiserver の audit policy を有効化し、
   Secret へのアクセスや RBAC の変更を Metadata レベル以上で記録する。
 - **イメージ**: Helm chart のバージョンと OCI イメージの**タグを固定**し、

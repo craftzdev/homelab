@@ -76,27 +76,48 @@
 
 ## クイックスタート
 
-前提ツールの導入と全手順は [docs/50-operations.md](docs/50-operations.md) を参照。
+前提ツールの導入と各手順の詳細は [docs/50-operations.md](docs/50-operations.md) を参照。
+**順序に意味があります**（CNI が無いとノードが Ready にならない、
+Ceph の認証情報が無いと PVC が作れない、等）。
 
 ```bash
-# 0. 前提チェック（Proxmox / Ceph / ネットワークの健全性を検証）
+# 0. 前提チェック — Proxmox / Ceph / ネットワーク / IP 重複 / VMID 衝突
+#    ⚠️ Ceph が HEALTH_WARN なら失敗する（意図的）
 ./scripts/preflight.sh
 
-# 1. Ceph に Kubernetes 用の最小権限ユーザーを作成
-./scripts/ceph-create-k8s-user.sh
+# 1. 旧クラスタの VM を削除（dry-run で確認してから --yes）
+./scripts/destroy-legacy-vms.sh
+./scripts/destroy-legacy-vms.sh --yes
 
 # 2. Proxmox 上に Talos VM を作成し、Kubernetes を bootstrap
 cd tofu/10-proxmox-talos
 cp terraform.tfvars.example terraform.tfvars   # 環境に合わせて編集
-tofu init && tofu apply
+tofu init && tofu plan && tofu apply
+cd ../..
+#    → この時点ではまだ CNI が無いので全ノードが NotReady
 
-# 3. Cloudflare 側のリソース（Tunnel / Access / Service Token）を作成
-cd ../20-cloudflare
-cp terraform.tfvars.example terraform.tfvars
-tofu init && tofu apply
+# 3. Cilium を導入してノードを Ready にする
+./scripts/bootstrap-cluster.sh
 
-# 4. ArgoCD を導入し、以降は GitOps で収束させる
+# 4. Ceph に最小権限ユーザーを作成し、認証情報を SOPS 暗号化してコミット
+./scripts/ceph-create-k8s-user.sh
+
+# 5. Grafana の管理者パスワードを SOPS で用意する
+#    （未設定だと Grafana は起動しない ＝ 既定パスワードで動く事故を防ぐ）
+#    手順: kubernetes/infra/monitoring/README.md
+
+# 6. ArgoCD を導入し、以降は GitOps で収束させる
 ./scripts/bootstrap-argocd.sh
+
+# 7. Cloudflare 側のリソース（Tunnel / Access / Service Token）を作成
+cd tofu/20-cloudflare
+cp terraform.tfvars.example terraform.tfvars
+export TF_VAR_cloudflare_api_token='...'
+tofu init && tofu apply
+cd ../..
+
+# 8. Tunnel の認証情報を SOPS 暗号化して Git へ入れる
+./scripts/sync-cloudflare-secrets.sh
 ```
 
 ---
