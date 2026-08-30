@@ -26,32 +26,36 @@ variable "proxmox_api_token" {
   }
 }
 
+variable "proxmox_pool_id" {
+  description = <<-EOT
+    Kubernetes ノード VM を所属させる Proxmox のリソースプール。
+
+    API トークンの ACL をこのプールに限定することで、トークンが漏洩しても
+    Kubernetes 以外の VM やストレージには手が出せないようにしている。
+    事前に `pveum pool add k8s` で作成しておくこと
+    （手順は docs/50-operations.md §2.2）。
+  EOT
+  type        = string
+  default     = "k8s"
+}
+
 variable "proxmox_insecure" {
   description = "Proxmox の TLS 証明書検証をスキップするか（自己署名証明書の場合のみ true）"
   type        = bool
   default     = false
 }
 
-variable "proxmox_ssh_username" {
-  description = "snippets 配置に使う SSH ユーザー（Proxmox ホスト上）"
-  type        = string
-  default     = "root"
-}
-
-variable "proxmox_ssh_agent" {
-  description = "ssh-agent を使うか"
-  type        = bool
-  default     = true
-}
-
-variable "proxmox_ssh_private_key" {
-  description = "ssh-agent を使わない場合の秘密鍵パス（空文字なら未使用）"
-  type        = string
-  default     = ""
-}
+# ---------------------------------------------------------------------------
+# ⚠️ SSH 関連の変数は意図的に持たせていない
+#
+# 本構成は Proxmox API のみで完結する（snippets を使わない設計のため）。
+# provider に SSH 設定を渡すと「OpenTofu 実行環境 = Proxmox root SSH が
+# 使える環境」になり、API トークンの権限を絞る意味が薄れる。
+# 詳細は providers.tf のコメントを参照。
+# ---------------------------------------------------------------------------
 
 variable "proxmox_nodes" {
-  description = "Proxmox クラスタのノード一覧（SSH 接続先の解決に使う）"
+  description = "Proxmox クラスタのノード一覧（VM の配置先ノード名の参照に使う）"
   type = list(object({
     name    = string
     address = string
@@ -284,4 +288,29 @@ variable "output_dir" {
   description = "kubeconfig / talosconfig の出力先ディレクトリ（.gitignore 済み）"
   type        = string
   default     = "../../_out"
+}
+
+# ===========================================================================
+# ステート暗号化
+# ===========================================================================
+variable "state_encryption_passphrase" {
+  description = <<-EOT
+    OpenTofu のステート/プランを暗号化するパスフレーズ（16 文字以上）。
+
+    環境変数で渡すこと:
+      export TF_VAR_state_encryption_passphrase="$(openssl rand -base64 32)"
+
+    ⚠️ このパスフレーズを失うとステートを復号できなくなる。
+       age 秘密鍵と同様、パスワードマネージャへ必ず保管すること。
+
+    ⚠️ tfvars ファイルに書かないこと。ステートを守るための鍵が
+       ステートと同じディレクトリに平文で置かれては意味がない。
+  EOT
+  type        = string
+  sensitive   = true
+
+  validation {
+    condition     = length(var.state_encryption_passphrase) >= 16
+    error_message = "state_encryption_passphrase は 16 文字以上である必要があります（PBKDF2 の要件）。"
+  }
 }

@@ -23,18 +23,52 @@ terraform {
   }
 
   # ---------------------------------------------------------------------------
-  # ⚠️ ステートの取り扱いについて（重要）
+  # ステートの暗号化（必須）
   #
-  # このステートには talos_machine_secrets が生成した **Kubernetes / etcd / Talos
-  # の CA 秘密鍵が平文で** 含まれる。ステートを奪われることは、クラスタを完全に
-  # 掌握されることと同義である。
+  # ⚠️ このステートには talos_machine_secrets が生成した
+  #    **Kubernetes / etcd / Talos の CA 秘密鍵**が含まれる。
+  #    ステートを奪われることは、クラスタを完全に掌握されることと同義である。
   #
-  # 既定ではローカルステートを使う（.gitignore で除外済み）。以下のいずれかを
-  # 必ず満たすこと:
-  #   (a) FileVault 等でディスク暗号化された端末上でのみ扱う
-  #   (b) 暗号化・バージョニング有効なリモートバックエンドへ移行する
+  # OpenTofu の state encryption により、ステートを **保存時点で暗号化** する。
+  # ディスク上・端末バックアップ上・（リモートバックエンド利用時は）
+  # オブジェクトストレージ上のいずれでも平文にならない。
   #
-  # (b) の例（Cloudflare R2 / MinIO などの S3 互換）:
+  # 使い方:
+  #   export TF_VAR_state_encryption_passphrase="$(openssl rand -base64 32)"
+  #
+  #   ⚠️ このパスフレーズを失うとステートを復号できなくなる。
+  #      age 秘密鍵と同様、パスワードマネージャへ必ず保管すること。
+  #
+  # `enforced = true` にしているため、パスフレーズが未設定なら
+  # **tofu は平文で書き込まずに失敗する**。
+  # 「暗号化し忘れて平文で保存されていた」という事故が起きない設計にしている。
+  # ---------------------------------------------------------------------------
+  encryption {
+    key_provider "pbkdf2" "state" {
+      passphrase = var.state_encryption_passphrase
+    }
+
+    method "aes_gcm" "state" {
+      keys = key_provider.pbkdf2.state
+    }
+
+    state {
+      method   = method.aes_gcm.state
+      enforced = true
+    }
+
+    plan {
+      method   = method.aes_gcm.state
+      enforced = true
+    }
+  }
+
+  # ---------------------------------------------------------------------------
+  # リモートバックエンドへの移行（推奨）
+  #
+  # 上記の暗号化に加え、バージョニングとロックのあるバックエンドへ
+  # 移行することを推奨する。端末の故障でステートを失うと、
+  # 既存リソースを OpenTofu の管理下へ戻す作業が非常に面倒になる。
   #
   #   backend "s3" {
   #     bucket                      = "homelab-tfstate"

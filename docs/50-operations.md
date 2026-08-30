@@ -25,28 +25,77 @@ chmod 600 ~/.config/sops/age/keys.txt
 
 ### 2.2 Proxmox API トークンの作成
 
-`root@pam` のパスワードは使いません。専用ユーザーのトークンを作ります。
+`root@pam` のパスワードは使いません。**権限を絞った**専用ユーザーのトークンを作ります。
 
 ```bash
 ssh root@172.16.10.11
 
+# --- 1) 専用ユーザー ---
 pveum user add tofu@pve
 
+# --- 2) 必要な権限だけを持つロール ---
 pveum role add TofuProvisioner -privs \
   "VM.Allocate,VM.Clone,VM.Config.CDROM,VM.Config.CPU,VM.Config.Cloudinit,\
 VM.Config.Disk,VM.Config.HWType,VM.Config.Memory,VM.Config.Network,\
 VM.Config.Options,VM.Monitor,VM.Audit,VM.PowerMgmt,\
 Datastore.AllocateSpace,Datastore.AllocateTemplate,Datastore.Audit,Sys.Audit"
 
-pveum aclmod / -user tofu@pve -role TofuProvisioner
+# --- 3) Kubernetes ノード専用のリソースプールを作る ---
+#     VM をプールに入れることで、ACL の適用範囲をそのプールに限定できる。
+pveum pool add k8s
 
-# トークンを発行（表示される値は一度しか見られない）
-pveum user token add tofu@pve provider --privsep 0
+# --- 4) ACL を「必要な範囲」だけに付ける（/ には付けない）---
+#     ⚠️ `pveum aclmod / ...` としてしまうと、このトークンで
+#        Proxmox 上のあらゆる VM・ストレージを操作できてしまう。
+#        Kubernetes と無関係な VM（OpenClaw 等）まで巻き込む事故を防ぐため、
+#        プールと使用するストレージにだけ権限を与える。
+pveum aclmod /pool/k8s              -user tofu@pve -role TofuProvisioner
+pveum aclmod /storage/cephrdb_k8s   -user tofu@pve -role TofuProvisioner
+pveum aclmod /storage/cephfs01      -user tofu@pve -role TofuProvisioner
+
+#     VM の作成にはノードへの参照権限も要る（PVEAuditor で十分）
+pveum aclmod /nodes -user tofu@pve -role PVEAuditor
+
+# --- 5) トークンを発行する ---
+#     ⚠️ --privsep 1（既定）にすること。
+#        --privsep 0 は「ユーザーの全権限をそのままトークンへ与える」設定で、
+#        トークン単位で権限を絞れなくなる。
+pveum user token add tofu@pve provider --privsep 1
+
+#     privsep 1 のトークンには、トークン自身にも ACL が必要
+pveum aclmod /pool/k8s            -token 'tofu@pve!provider' -role TofuProvisioner
+pveum aclmod /storage/cephrdb_k8s -token 'tofu@pve!provider' -role TofuProvisioner
+pveum aclmod /storage/cephfs01    -token 'tofu@pve!provider' -role TofuProvisioner
+pveum aclmod /nodes               -token 'tofu@pve!provider' -role PVEAuditor
 ```
 
-出力された `tofu@pve!provider=<uuid>` を控えます。
+出力された `tofu@pve!provider=<uuid>` を控えます（表示は一度きりです）。
 
-### 2.3 前提チェック
+> **⚠️ 権限が足りずに `tofu apply` が失敗した場合**
+> エラーメッセージに不足している権限が出ます。`/` へ ACL を付けて
+> 済ませるのではなく、**必要な権限を特定してから**該当スコープに追加してください。
+> 「面倒だから全権限」は、この構成でトークンを分けた意味を失わせます。
+
+> **SSH は不要です。** 本構成は Proxmox API のみで完結する設計にしており
+> （machine config は snippets ではなく Talos API 経由で適用）、
+> OpenTofu 実行環境に Proxmox の root SSH 権限を持たせません。
+
+### 2.3 ステート暗号化のパスフレーズ
+
+OpenTofu のステートには Kubernetes / etcd / Talos の CA 秘密鍵や
+Cloudflare の TunnelSecret が含まれます。**平文で保存させない**ため、
+state encryption を必須（`enforced = true`）にしています。
+
+```bash
+export TF_VAR_state_encryption_passphrase="$(openssl rand -base64 32)"
+echo "$TF_VAR_state_encryption_passphrase"   # パスワードマネージャへ保管する
+```
+
+> ⚠️ このパスフレーズを失うとステートを復号できません。age 秘密鍵と同様に
+> オフラインでバックアップしてください。
+> 未設定のまま `tofu apply` すると、平文で書き込まれるのではなく**失敗します**。
+
+### 2.4 前提チェック
 
 ```bash
 ./scripts/preflight.sh
@@ -59,7 +108,7 @@ Kubernetes の PV はこの Ceph の上に載るため、ストレージ層の�
 
 承知の上で進める場合のみ `--skip-ceph-health` を付けます。
 
-### 2.4 旧クラスタの VM を削除する
+### 2.5 旧クラスタの VM を削除する
 
 ```bash
 ./scripts/destroy-legacy-vms.sh          # dry-run（一覧表示のみ）

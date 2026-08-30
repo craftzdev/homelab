@@ -137,3 +137,28 @@ variable "credentials_output_path" {
   type        = string
   default     = "../../_out/cloudflared-credentials.json"
 }
+
+# ===========================================================================
+# ステート暗号化
+# ===========================================================================
+variable "state_encryption_passphrase" {
+  description = <<-EOT
+    OpenTofu のステート/プランを暗号化するパスフレーズ（16 文字以上）。
+
+    環境変数で渡すこと:
+      export TF_VAR_state_encryption_passphrase="$(openssl rand -base64 32)"
+
+    ⚠️ このパスフレーズを失うとステートを復号できなくなる。
+       age 秘密鍵と同様、パスワードマネージャへ必ず保管すること。
+
+    ⚠️ tfvars ファイルに書かないこと。ステートを守るための鍵が
+       ステートと同じディレクトリに平文で置かれては意味がない。
+  EOT
+  type        = string
+  sensitive   = true
+
+  validation {
+    condition     = length(var.state_encryption_passphrase) >= 16
+    error_message = "state_encryption_passphrase は 16 文字以上である必要があります（PBKDF2 の要件）。"
+  }
+}

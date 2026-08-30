@@ -2,14 +2,26 @@
 # Proxmox VE プロバイダ
 #
 # 認証は **API トークン** を使う。root@pam のパスワードを使わない理由:
-#   - トークンは権限を絞れる（PVEVMAdmin + PVEDatastoreUser 程度で足りる）
+#   - トークンは権限を絞れる
 #   - 失効・ローテーションがパスワード変更より安全かつ容易
 #   - ステートやログに平文パスワードが残るリスクを避けられる
 #
-# SSH 接続が必要な理由:
-#   Proxmox API には snippets をアップロードするエンドポイントが存在しないため、
-#   bpg プロバイダは SSH/SFTP 経由でファイルを配置する。machine config を
-#   cloud-init の user-data として渡す本構成では SSH が必須になる。
+# ---------------------------------------------------------------------------
+# ⚠️ SSH 設定を意図的に持たせていない
+# ---------------------------------------------------------------------------
+# bpg プロバイダは snippets のアップロード等で SSH/SFTP を使う。しかし
+# 本構成は **machine config を snippets に置かない**（Talos API 経由で
+# 適用する）設計であり、使うのは
+#   - ISO のダウンロード（proxmox_download_file）
+#   - VM の作成・設定（proxmox_virtual_environment_vm）
+# だけで、いずれも Proxmox API で完結する。
+#
+# ここに SSH 設定を書くと、「OpenTofu を実行できる環境」が
+# 「Proxmox 3 ノードの root SSH 鍵を使える環境」になってしまう。
+# API トークンの権限を絞る意味が薄れるため、SSH は設定しない。
+#
+# もし将来 snippets が必要になったら、その時点で ssh ブロックを追加し、
+# 「なぜ必要か」をここに書き残すこと。
 # ---------------------------------------------------------------------------
 provider "proxmox" {
   endpoint  = var.proxmox_endpoint
@@ -18,22 +30,6 @@ provider "proxmox" {
   # 自己署名証明書を使っている場合のみ true。可能なら false にし、
   # Proxmox に正式な証明書を入れること。
   insecure = var.proxmox_insecure
-
-  ssh {
-    agent    = var.proxmox_ssh_agent
-    username = var.proxmox_ssh_username
-
-    # ssh-agent を使わない場合は秘密鍵のパスを指定する
-    private_key = var.proxmox_ssh_private_key != "" ? file(var.proxmox_ssh_private_key) : null
-
-    dynamic "node" {
-      for_each = var.proxmox_nodes
-      content {
-        name    = node.value.name
-        address = node.value.address
-      }
-    }
-  }
 }
 
 provider "talos" {}

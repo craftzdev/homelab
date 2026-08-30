@@ -18,6 +18,16 @@ resource "proxmox_virtual_environment_vm" "node" {
   node_name = each.value.pve_node
   vm_id     = each.value.vmid
 
+  # ---------------------------------------------------------------------------
+  # リソースプール
+  #
+  # API トークンの ACL を `/pool/k8s` に限定しているため、VM は必ず
+  # このプールに属している必要がある（docs/50-operations.md §2.2）。
+  # これにより、トークンが漏洩しても Kubernetes 以外の VM
+  # （OpenClaw 等）には手が出せない。
+  # ---------------------------------------------------------------------------
+  pool_id = var.proxmox_pool_id
+
   # Proxmox が VM を止めるときに ACPI シャットダウンを待つ。
   # Talos は正常にシャットダウンできるため、いきなり電源断にしない。
   stop_on_destroy = false
