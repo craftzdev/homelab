@@ -71,6 +71,7 @@
 | CNI | **Cilium v1.20.1**（kube-proxy 置換） | eBPF による高性能・L3-L7 ポリシー・Hubble による可視化・L2 Announcement で MetalLB 不要 | [ADR-0003](adr/0003-cilium.md) |
 | ストレージ | **Longhorn v1.12.1** | Ceph を廃止し K8s 内で 3 レプリカを持つ。追加投資ゼロで冗長性を維持 | [ADR-0009](adr/0009-drop-ceph-adopt-longhorn.md) |
 | スナップショット | **external-snapshotter v8.6.0** | VolumeSnapshot は Kubernetes のコア API ではなく CRD であり、別途導入が必要。Velero の CSI 連携の前提 | [ADR-0008](adr/0008-backup-strategy.md) |
+| HTTP ルーティング | **Cilium Gateway API** | ingress-nginx が EOL のため移行。既に Cilium があるためコンポーネントが増えない | [ADR-0010](adr/0010-gateway-api.md) |
 | 外部公開 | **Cloudflare Tunnel + Access** | インバウンド開放ゼロ。認可を Cloudflare エッジで完結でき、監査ログも残る | [ADR-0005](adr/0005-cloudflare-zero-trust.md) |
 | GitOps | **ArgoCD v3.5.2** | 宣言的同期・差分可視化・自己修復。既存リポジトリの資産とも整合 | [ADR-0006](adr/0006-argocd-sops.md) |
 | 秘密管理 | **SOPS v3.13 + age** | 外部の秘密ストアに依存せず、Git だけで完結する。ホームラボの規模に最適 | [ADR-0006](adr/0006-argocd-sops.md) |

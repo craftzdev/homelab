@@ -93,15 +93,18 @@ spec:
             - port: "443"
               protocol: UDP # QUIC
 
-    # --- Origin（クラスタ内の Ingress Controller）への転送 ---
+    # --- Origin（Gateway）への転送 ---
     #
-    # cloudflared が到達してよいのは Ingress Controller だけである。
+    # cloudflared が到達してよいのは Gateway だけである。
     # 個別の Service へ直接転送させない。これにより、公開範囲の管理を
-    # Ingress リソース側に一元化できる。
-    - toEndpoints:
-        - matchLabels:
-            io.kubernetes.pod.namespace: ingress-nginx
-            app.kubernetes.io/name: ingress-nginx
+    # Gateway / HTTPRoute 側に一元化できる。
+    #
+    # ⚠️ Cilium の Gateway API は独立した Pod ではなく **cilium-agent 内の
+    #    Envoy** として動作する。そのため toEndpoints では選択できず、
+    #    host / remote-node エンティティへの通信として許可する必要がある。
+    - toEntities:
+        - host
+        - remote-node
       toPorts:
         - ports:
             - port: "80"

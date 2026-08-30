@@ -95,7 +95,7 @@ variable "published_services" {
   default = {
     "internal-api" = {
       hostname       = "api.internal.example.com"
-      origin_service = "http://ingress-nginx-controller.ingress-nginx.svc.cluster.local:80"
+      origin_service = "http://cilium-gateway-external.gateway.svc.cluster.local:80"
     }
   }
 

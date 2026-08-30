@@ -28,7 +28,6 @@ spec:
     # Helm chart のリポジトリ（明示的に列挙する）
     - https://helm.cilium.io/
     - https://charts.longhorn.io
-    - https://kubernetes.github.io/ingress-nginx
     - https://charts.jetstack.io
     - https://prometheus-community.github.io/helm-charts
     - https://vmware-tanzu.github.io/helm-charts
@@ -48,7 +47,7 @@ spec:
     - server: https://kubernetes.default.svc
       namespace: longhorn-system
     - server: https://kubernetes.default.svc
-      namespace: ingress-nginx
+      namespace: gateway
     - server: https://kubernetes.default.svc
       namespace: cloudflared
     - server: https://kubernetes.default.svc
@@ -123,9 +122,10 @@ spec:
     - group: snapshot.storage.k8s.io
       kind: VolumeSnapshotClass
 
-    # --- ネットワーク（ingress-nginx / Cilium）---
-    - group: networking.k8s.io
-      kind: IngressClass
+    # --- ネットワーク（Gateway API / Cilium）---
+    #     CustomResourceDefinition は上の「Kubernetes コア」で許可済み
+    - group: gateway.networking.k8s.io
+      kind: GatewayClass
     - group: cilium.io
       kind: CiliumClusterwideNetworkPolicy
     - group: cilium.io

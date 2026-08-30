@@ -6,10 +6,11 @@
 # ---------------------------------------------------------------------------
 #   -20  policies        : クラスタ全体のネットワークポリシー
 #   -10  cilium          : CNI。これが無いと他の Pod が起動しない
+#   -15  gateway-api-crds : Gateway API の CRD（Cilium より先に必要）
 #    -5  snapshot-controller : VolumeSnapshot の CRD
 #     0  longhorn        : 分散ブロックストレージ（PV の供給元）
 #     2  cert-manager    : 証明書管理（他が依存する）
-#     3  ingress-nginx   : HTTP ルーティング
+#     3  gateway         : HTTP ルーティング（Cilium Gateway API）
 #     4  cloudflared     : 外部公開（ingress-nginx が先に必要）
 #     5  monitoring      : 監視
 #     6  security        : Trivy / kubelet 証明書承認
@@ -238,12 +239,55 @@ spec:
 
 ---
 # ---------------------------------------------------------------------------
-# ingress-nginx
+# Gateway API の CRD
+#
+# ⚠️ Cilium より先に適用する必要がある（sync-wave -15）。
+#    CRD が無い状態で gatewayAPI.enabled: true の Cilium を起動すると、
+#    operator が Gateway API のリソースを watch できずエラーを繰り返す。
 # ---------------------------------------------------------------------------
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: ingress-nginx
+  name: gateway-api-crds
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-15"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: infrastructure
+  source:
+    repoURL: https://github.com/craftzdev/homelab.git
+    targetRevision: main
+    path: kubernetes/infra/gateway-api
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kube-system
+  syncPolicy:
+    automated:
+      # CRD を prune で消すと全ての Gateway / HTTPRoute が失われる
+      prune: false
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+
+---
+# ---------------------------------------------------------------------------
+# Gateway（外部公開の入口）
+#
+# ⚠️ ingress-nginx から移行した。
+#    ingress-nginx は 2026 年 3 月で保守終了しており、今後
+#    セキュリティ修正が提供されない。外部公開経路の入口に
+#    修正されないコンポーネントを置くことは本構成の要件に反する。
+#    詳細は kubernetes/infra/gateway-api/kustomization.yaml を参照。
+#
+# Cilium が GatewayClass "cilium" を提供するため、
+# 新しいコントローラを追加する必要はない。
+# ---------------------------------------------------------------------------
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: gateway
   namespace: argocd
   annotations:
     argocd.argoproj.io/sync-wave: "3"
@@ -251,29 +295,19 @@ metadata:
     - resources-finalizer.argocd.argoproj.io
 spec:
   project: infrastructure
-  sources:
-    - repoURL: https://kubernetes.github.io/ingress-nginx
-      chart: ingress-nginx
-      targetRevision: 4.15.1
-      helm:
-        releaseName: ingress-nginx
-        valueFiles:
-          - $values/kubernetes/infra/ingress-nginx/values.yaml
-    - repoURL: https://github.com/craftzdev/homelab.git
-      targetRevision: main
-      path: kubernetes/infra/ingress-nginx
-      directory:
-        include: "namespace-and-policy.yaml"
-    - repoURL: https://github.com/craftzdev/homelab.git
-      targetRevision: main
-      ref: values
+  source:
+    repoURL: https://github.com/craftzdev/homelab.git
+    targetRevision: main
+    path: kubernetes/infra/gateway
   destination:
     server: https://kubernetes.default.svc
-    namespace: ingress-nginx
+    namespace: gateway
   syncPolicy:
     automated:
       prune: true
       selfHeal: true
+    syncOptions:
+      - CreateNamespace=false
 
 ---
 # ---------------------------------------------------------------------------
@@ -282,6 +316,7 @@ spec:
 # ⚠️ このアプリが同期されると、設定された公開ホスト名が
 #    インターネットから（Access の認可を経て）到達可能になる。
 #    ingress ConfigMap は tofu/20-cloudflare が生成する。
+#    転送先は Gateway の ClusterIP Service。
 # ---------------------------------------------------------------------------
 apiVersion: argoproj.io/v1alpha1
 kind: Application

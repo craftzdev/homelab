@@ -1,0 +1,123 @@
+# ===========================================================================
+# Gateway — 外部公開の入口
+#
+# cloudflared からのリクエストを受け、HTTPRoute の定義に従って
+# 各アプリの Service へ振り分ける。ingress-nginx の役割を引き継ぐ。
+#
+# ---------------------------------------------------------------------------
+# Ingress との違いと、それが嬉しい理由
+# ---------------------------------------------------------------------------
+# Ingress は「1 つのリソースにルーティングも TLS も annotation による
+# 独自拡張も全部詰め込む」設計だった。誰が何を変更してよいかが曖昧で、
+# annotation 経由の設定注入が脆弱性の温床にもなっていた
+# （ingress-nginx の snippet annotation 関連の CVE 群）。
+#
+# Gateway API は役割を分離する:
+#   - Gateway   … 基盤チームが管理。どのポートを開き、どの namespace から
+#                  ルートを受け付けるかを決める（このファイル）
+#   - HTTPRoute … アプリチームが管理。自分の namespace 内でパスと
+#                  バックエンドを定義する
+#
+# 「Ingress を作れる権限」が「任意の内部サービスを公開できる権限」に
+# なっていた問題が、構造的に解消される。
+# ===========================================================================
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: gateway
+  labels:
+    # Cilium の Envoy は cilium-agent の一部として動くため、
+    # この namespace には Gateway リソースしか存在しない。
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+
+    app.kubernetes.io/name: gateway
+    app.kubernetes.io/part-of: external-access
+
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: external
+  namespace: gateway
+  labels:
+    app.kubernetes.io/part-of: external-access
+  annotations:
+    # -------------------------------------------------------------------------
+    # ⚠️ Service の type を ClusterIP にする
+    #
+    # 既定では Gateway は LoadBalancer Service を作る。しかしそれは
+    # VLAN40 へ L2 公開されることを意味し、**Cloudflare Access を迂回できる
+    # 第 2 の入口**になる（旧 ingress-nginx で実際に作ってしまっていた穴）。
+    #
+    # cloudflared は同じクラスタ内にいるので ClusterIP で十分到達できる。
+    # 「外部公開は Cloudflare Tunnel のみ」を構成そのもので保証する。
+    # -------------------------------------------------------------------------
+    io.cilium/lb-mode: "clusterip"
+spec:
+  gatewayClassName: cilium
+
+  listeners:
+    # -------------------------------------------------------------------------
+    # HTTP のみ。TLS 終端は Cloudflare エッジで行う。
+    #
+    # cloudflared → Gateway はクラスタ内部の通信であり、
+    # Cilium の WireGuard でノード間は暗号化されている。
+    # ここで TLS を終端すると証明書の管理が増えるだけで、
+    # 守られる範囲は変わらない。
+    # -------------------------------------------------------------------------
+    - name: http
+      protocol: HTTP
+      port: 80
+
+      # -----------------------------------------------------------------------
+      # ⚠️ どの namespace から HTTPRoute を受け付けるかを制限する
+      #
+      # `from: All` にすると、任意の namespace の誰でも
+      # 「この Gateway 経由で自分のサービスを公開する」ことができてしまう。
+      # ラベルで明示的に許可した namespace だけに限定する。
+      #
+      # 公開したい namespace には次のラベルを付ける:
+      #   kubectl label namespace <ns> homelab.io/gateway-access=external
+      # -----------------------------------------------------------------------
+      allowedRoutes:
+        namespaces:
+          from: Selector
+          selector:
+            matchLabels:
+              homelab.io/gateway-access: external
+        kinds:
+          - kind: HTTPRoute
+
+---
+# ===========================================================================
+# 既定の応答（catch-all）
+#
+# どの HTTPRoute にも一致しないリクエストに 404 を返す。
+# これが無いと Gateway の既定応答が露出し、内部構成の手がかりを与えうる。
+# ===========================================================================
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: default-404
+  namespace: gateway
+  labels:
+    app.kubernetes.io/part-of: external-access
+spec:
+  parentRefs:
+    - name: external
+      namespace: gateway
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      filters:
+        - type: RequestRedirect
+          requestRedirect:
+            # 意図しないホスト名でのアクセスに情報を返さない
+            statusCode: 302
+            hostname: cloudflare.com

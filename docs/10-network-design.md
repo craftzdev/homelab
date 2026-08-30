@@ -54,13 +54,16 @@ NIC は VLAN40 の 1 枚のみ（Ceph 廃止により VLAN20 への接続は不�
 | --- | --- | --- | --- |
 | 172.16.40.201 | Grafana | 宅内のみ | `kubernetes/infra/monitoring/values.yaml` |
 
-> **ingress-nginx には LoadBalancer IP を割り当てていません。**
-> 当初は 172.16.40.200 で L2 公開していましたが、それは
+> **Gateway には LoadBalancer IP を割り当てていません。**
+> 当初は ingress-nginx を 172.16.40.200 で L2 公開していましたが、それは
 > **Cloudflare Access を迂回できる第 2 の入口**を作ることを意味していました。
 > VLAN40 に到達できる者が Host ヘッダを指定すれば、Access の認可も
 > cloudflared の JWT 検証も通らずにアプリへ到達できます。
 > 「外部公開は Cloudflare Tunnel のみ」を構成そのもので保証するため
-> ClusterIP に変更しました。
+> ClusterIP にしています。
+>
+> なお ingress-nginx は 2026 年 3 月に保守終了したため、
+> Cilium の Gateway API へ移行しました（[ADR-0010](adr/0010-gateway-api.md)）。
 
 > **固定 IP を使う理由**: Cilium の IP プールは動的に払い出せるが、
 > ブックマークや監視設定が IP に依存するため、人が直接アクセスする
@@ -96,9 +99,9 @@ Cloudflare Tunnel エッジ
   ▼
 cloudflared Pod（k8s 内、2 レプリカ）
   │ ① originRequest.access で JWT を再検証（多層防御）
-  │ ② http://ingress-nginx-internal.ingress-nginx.svc.cluster.local へ転送
+  │ ② http://cilium-gateway-external.gateway.svc.cluster.local へ転送
   ▼
-Ingress → Service → アプリ Pod
+Gateway → HTTPRoute → アプリ Pod
 ```
 
 **この経路で自宅側に開くポートは 0 個**。cloudflared からの outbound（UDP/443, TCP/443）

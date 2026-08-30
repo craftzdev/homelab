@@ -48,7 +48,7 @@ service_token_secret_version = 0
 published_services = {
   "internal-api" = {
     hostname       = "api.internal.example.com"
-    origin_service = "http://ingress-nginx-controller.ingress-nginx.svc.cluster.local:80"
+    origin_service = "http://cilium-gateway-external.gateway.svc.cluster.local:80"
     # Access のセッション有効期間。API 用途なので短めにする。
     session_duration = "30m"
   }
@@ -56,6 +56,6 @@ published_services = {
   # 追加例:
   # "reports" = {
   #   hostname       = "reports.internal.example.com"
-  #   origin_service = "http://ingress-nginx-controller.ingress-nginx.svc.cluster.local:80"
+  #   origin_service = "http://cilium-gateway-external.gateway.svc.cluster.local:80"
   # }
 }

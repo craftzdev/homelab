@@ -46,10 +46,10 @@
 ┌────────────────────────────────────────────┐
 │ cloudflared Deployment (replicas: 2)       │
 │  originRequest.access.required = true      │◀── R6: JWT 再検証
-│  → http://ingress-nginx-controller...      │
+│  → http://cilium-gateway-external... │
 └───────────┬────────────────────────────────┘
             ▼
-     Ingress → Service → アプリ Pod
+     Gateway → HTTPRoute → アプリ Pod
 ```
 
 ## 3. なぜこの構成なのか（代替案との比較）
@@ -105,7 +105,7 @@ cloudflared 自身が Access の JWT を検証できる。`config.yaml` にこ�
 ```yaml
 ingress:
   - hostname: api.internal.example.com
-    service: http://ingress-nginx-controller.ingress-nginx.svc.cluster.local:80
+    service: http://cilium-gateway-external.gateway.svc.cluster.local:80
     originRequest:
       access:
         required: true
@@ -146,7 +146,7 @@ const res = await fetch(`https://${env.ORIGIN_HOST}/v1/items`, {
 
 1. **認可が必要ないほど無害ではない**（= Access で守る意味がある）
 2. **管理平面ではない**（Kubernetes API, Talos API, ArgoCD UI, Proxmox は公開しない）
-3. **NetworkPolicy で ingress 元を cloudflared に限定できる**
+3. **Gateway の HTTPRoute で公開範囲を明示的に制御できる**
 4. **障害時に外部 SaaS 側で degrade できる**（自宅が落ちても SaaS が死なない）
 
 初期構成では `api.internal.example.com` の 1 本のみを公開する。

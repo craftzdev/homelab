@@ -152,6 +152,34 @@ k8sClientRateLimit:
 policyEnforcementMode: default
 
 # ---------------------------------------------------------------------------
+# Gateway API
+#
+# ⚠️ ingress-nginx の代替として採用した。
+#
+# ingress-nginx は **2026 年 3 月で保守終了**（best-effort maintenance が終了し、
+# 以後はバグ修正もセキュリティ修正も提供されない）。外部公開経路の入口に
+# 修正されないコンポーネントを置くことは「セキュアに構築する」という
+# 本構成の最優先要件に反するため移行した。
+#
+# Cilium の Gateway API を選んだ理由:
+#   - **新しいコンポーネントが増えない**。既に Cilium を使っており、
+#     Envoy も L7 プロキシとして同梱されている
+#   - Gateway API は Ingress の後継として Kubernetes 標準になっている
+#   - Ingress より権限分離が明確（Gateway は基盤側、HTTPRoute はアプリ側）
+#
+# 前提（いずれも本構成で満たしている）:
+#   - kubeProxyReplacement: true
+#   - l7Proxy: true（既定）
+#   - Gateway API CRD v1.6.1（kubernetes/infra/gateway-api/ で導入）
+# ---------------------------------------------------------------------------
+gatewayAPI:
+  enabled: true
+
+# L7 プロキシ（Envoy）。Gateway API と L7 NetworkPolicy に必要。
+# 既定で true だが、Gateway API の前提なので明示する。
+l7Proxy: true
+
+# ---------------------------------------------------------------------------
 # Hubble — 通信の可視化
 #
 # default-deny を運用する上での必須要件。「何が落ちているか分からない」
