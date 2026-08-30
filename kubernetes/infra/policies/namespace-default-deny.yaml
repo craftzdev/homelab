@@ -1,0 +1,236 @@
+# ===========================================================================
+# 各 namespace の default-deny
+#
+# ---------------------------------------------------------------------------
+# なぜテンプレートではなく実体が必要なのか
+# ---------------------------------------------------------------------------
+# 当初は default-deny-template.yaml を「コピーして使う雛形」として置いていたが、
+# codex のレビューで次を指摘された。
+#
+#   [HIGH]「全namespace default-deny」は実装されていない
+#     policyEnforcementMode: default なので、ポリシー未選択の Endpoint は
+#     許可状態になる。default-deny テンプレートは Kustomization から
+#     除外されており、argocd / cert-manager / default 等に
+#     完全な default-deny が存在しない。
+#     → 設計文書の「外部通信は限定コンポーネントのみ」と一致しない。
+#
+# 指摘の通りだった。**雛形を置いただけでは何も守られていない。**
+# ここで実体を定義する。
+#
+# ---------------------------------------------------------------------------
+# なぜ policyEnforcementMode: always にしないのか
+# ---------------------------------------------------------------------------
+# `always` にすればクラスタ全体が自動的に default-deny になる。しかし
+#
+#   - ポリシーの書き漏れが即座にクラスタ全体の停止につながる
+#   - bootstrap 中（Cilium 自身がまだ起動していない段階）に
+#     CoreDNS や apiserver への通信が落ちて詰む
+#   - 「どの namespace が保護されているか」がマニフェストから読めなくなる
+#
+# namespace ごとに明示的な default-deny を置く方式なら、
+# 保護の有無が Git 上で一目で分かり、段階的に適用範囲を広げられる。
+#
+# ---------------------------------------------------------------------------
+# ⚠️ 新しい namespace を作ったら、ここに追加すること
+# ---------------------------------------------------------------------------
+# 追加を忘れると、その namespace は「何でも通る」状態のままになる。
+# CI で検出する仕組みは無いため、レビューで確認する。
+# ===========================================================================
+
+---
+# ---------------------------------------------------------------------------
+# argocd
+#
+# ⚠️ ArgoCD はクラスタに何でもデプロイできる権限を持つ。侵害された場合の
+#    影響が最も大きい namespace の 1 つであり、default-deny の価値が高い。
+# ---------------------------------------------------------------------------
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: default-deny
+  namespace: argocd
+spec:
+  endpointSelector: {}
+  ingress: []
+  egress: []
+
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: argocd-rules
+  namespace: argocd
+spec:
+  endpointSelector: {}
+
+  egress:
+    # --- DNS ---
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+
+    # --- kube-apiserver（同期対象の適用に必須）---
+    - toEntities:
+        - kube-apiserver
+
+    # --- argocd namespace 内（server / repo-server / controller / redis 間）---
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: argocd
+
+    # -----------------------------------------------------------------------
+    # --- Git リポジトリと Helm chart リポジトリ（HTTPS）---
+    #
+    # repo-server が GitHub や各 chart リポジトリからマニフェストを取得する。
+    # 宅内ネットワークへは出さない（クラスタワイドの egressDeny でも
+    # 二重に塞いでいる）。
+    # -----------------------------------------------------------------------
+    - toCIDRSet:
+        - cidr: 0.0.0.0/0
+          except:
+            - 172.16.0.0/12
+            - 10.0.0.0/8
+            - 192.168.0.0/16
+            - 100.64.0.0/10
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+
+  ingress:
+    # --- argocd namespace 内 ---
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: argocd
+
+    # --- 運用者の port-forward（apiserver 経由で来る）---
+    - fromEntities:
+        - kube-apiserver
+
+    # --- kubelet の probe / メトリクス取得 ---
+    - fromEntities:
+        - host
+        - remote-node
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: monitoring
+
+---
+# ---------------------------------------------------------------------------
+# cert-manager
+# ---------------------------------------------------------------------------
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: default-deny
+  namespace: cert-manager
+spec:
+  endpointSelector: {}
+  ingress: []
+  egress: []
+
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: cert-manager-rules
+  namespace: cert-manager
+spec:
+  endpointSelector: {}
+
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+
+    - toEntities:
+        - kube-apiserver
+
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: cert-manager
+
+    # ACME（Let's Encrypt）や DNS-01 チャレンジ用の外部通信。
+    # 現状 ACME は使っていないが、将来有効化したときに
+    # 「なぜか証明書が取れない」で悩まないよう許可しておく。
+    - toCIDRSet:
+        - cidr: 0.0.0.0/0
+          except:
+            - 172.16.0.0/12
+            - 10.0.0.0/8
+            - 192.168.0.0/16
+            - 100.64.0.0/10
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: cert-manager
+    # webhook は apiserver から呼ばれる
+    - fromEntities:
+        - kube-apiserver
+    - fromEntities:
+        - host
+        - remote-node
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: monitoring
+
+---
+# ---------------------------------------------------------------------------
+# default namespace
+#
+# ⚠️ ここに一般のワークロードを置かない運用だが、「気づいたら何か動いていた」
+#    ときに無防備にならないよう default-deny を敷いておく。
+#    アプリを置く場合は専用 namespace を作ること。
+# ---------------------------------------------------------------------------
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: default-deny
+  namespace: default
+spec:
+  endpointSelector: {}
+  ingress: []
+  egress: []
+
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: default-baseline
+  namespace: default
+spec:
+  endpointSelector: {}
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+  ingress:
+    - fromEntities:
+        - host
+        - remote-node

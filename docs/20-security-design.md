@@ -65,8 +65,22 @@
 
 ### L3: ネットワーク（→ T2, T3, T8）
 
-- **Cilium の default-deny**: 全 namespace に「同一 namespace 内と DNS 以外は拒否」の
+- **Cilium の default-deny**: 各 namespace に「同一 namespace 内と DNS 以外は拒否」の
   `CiliumNetworkPolicy` を敷き、必要な通信だけを明示的に許可する。
+
+  > **実装状況を正確に記す**: `policyEnforcementMode` は `default`（ポリシーが
+  > 紐づいていない Endpoint は許可）であり、**自動的に全 namespace が
+  > 守られるわけではない**。`kubernetes/infra/policies/namespace-default-deny.yaml`
+  > と各コンポーネントの `networkpolicy.yaml` で、namespace ごとに明示的に
+  > 定義している。
+  >
+  > `always` にしない理由は、ポリシーの書き漏れが即座にクラスタ全体の停止に
+  > つながることと、bootstrap 中に CoreDNS / apiserver への通信が落ちて
+  > 詰むことを避けるため。代わりに「どの namespace が保護されているか」が
+  > Git 上で読める形にしている。
+  >
+  > ⚠️ **新しい namespace を作ったら default-deny の追加を忘れないこと。**
+  > 追加を忘れるとその namespace は無防備なままになる。
 - **Talos ingressFirewall**: `NetworkDefaultActionConfig.ingress = block` を既定とし、
   Talos API(50000) / kube-apiserver(6443) / etcd(2379-2380) / kubelet(10250) を
   それぞれ必要最小の送信元 CIDR にのみ開ける（[docs/10-network-design.md](10-network-design.md) §5）。

@@ -3,9 +3,13 @@ kind: Kustomization
 
 resources:
   - clusterwide-egress-deny.yaml
+  - namespace-default-deny.yaml
 
 # ---------------------------------------------------------------------------
-# default-deny-template.yaml は「テンプレート」であり、
+# default-deny-template.yaml は「新しい namespace を作るときの雛形」であり、
 # <NAMESPACE> というプレースホルダを含むため resources に入れない。
-# 新しい namespace を作る際に手動でコピーして使う。
+#
+# ⚠️ 実際に適用される default-deny は namespace-default-deny.yaml にある。
+#    雛形を置いただけでは何も守られない（codex のレビューで指摘された）。
+#    新しい namespace を作ったら namespace-default-deny.yaml に追記すること。
 # ---------------------------------------------------------------------------
