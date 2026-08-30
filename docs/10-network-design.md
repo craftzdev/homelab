@@ -46,9 +46,14 @@ vmbr1 : enp1s0 (10GbE) → vlan-aware, bridge-vids 20 30 40
 
 ### 割当済み LoadBalancer IP（固定）
 
-| IP | サービス | 公開範囲 |
-| --- | --- | --- |
-| 172.16.40.200 | `ingress-nginx-internal` | 宅内のみ。cloudflared の origin もここを向く |
+| IP | サービス | 公開範囲 | 定義箇所 |
+| --- | --- | --- | --- |
+| 172.16.40.200 | ingress-nginx | 宅内のみ。cloudflared の origin もここを向く | `kubernetes/infra/ingress-nginx/values.yaml` |
+| 172.16.40.201 | Grafana | 宅内のみ | `kubernetes/infra/monitoring/values.yaml` |
+
+> **固定 IP を使う理由**: Cilium の IP プールは動的に払い出せるが、
+> ブックマークや監視設定が IP に依存するため、人が直接アクセスする
+> サービスは固定する。新しく固定 IP を割り当てたら、必ずこの表に追記すること。
 
 > **重要**: cloudflared は Kubernetes 内の Pod として動作し、Ingress へは
 > ClusterIP / 内部 LB 経由で到達する。**LoadBalancer IP をインターネットに

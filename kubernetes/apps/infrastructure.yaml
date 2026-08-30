@@ -99,6 +99,51 @@ spec:
 
 ---
 # ---------------------------------------------------------------------------
+# snapshot-controller（VolumeSnapshot の CRD とコントローラ）
+#
+# ⚠️ ceph-csi より先に導入する必要がある。
+#    VolumeSnapshot / VolumeSnapshotClass / VolumeSnapshotContent は
+#    Kubernetes のコア API ではなく CRD であり、Kubernetes 本体にも
+#    ceph-csi の chart にも含まれていない。これが無いと
+#    kubernetes/infra/ceph-csi/storageclass.yaml の VolumeSnapshotClass が
+#    適用できず、Velero の CSI 連携も機能しない。
+# ---------------------------------------------------------------------------
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: snapshot-controller
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-5"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: infrastructure
+  sources:
+    - repoURL: https://piraeus.io/helm-charts/
+      chart: snapshot-controller
+      targetRevision: 5.2.0
+      helm:
+        releaseName: snapshot-controller
+        valueFiles:
+          - $values/kubernetes/infra/snapshot-controller/values.yaml
+    - repoURL: https://github.com/craftzdev/homelab.git
+      targetRevision: main
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kube-system
+  syncPolicy:
+    automated:
+      # ⚠️ prune: false
+      #    CRD を prune で消すと、既存の VolumeSnapshot がすべて失われる。
+      prune: false
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+
+---
+# ---------------------------------------------------------------------------
 # ceph-csi の設定（namespace / StorageClass / Secret）
 #
 # Helm chart より先に適用する必要がある（namespace が無いと chart が失敗する）。
@@ -458,8 +503,14 @@ spec:
 # ---------------------------------------------------------------------------
 # Velero（バックアップ）
 #
-# ⚠️ バックアップ先の設定が済むまで同期が失敗する。
-#    kubernetes/infra/velero/README.md を参照。
+# ⚠️ バックアップ先（外部オブジェクトストレージ）の設定が済むまで
+#    同期は失敗する。これは想定通りの挙動である。
+#    セットアップ手順は kubernetes/infra/velero/README.md を参照。
+#
+# ⚠️ 認証情報（velero-credentials Secret）を KSOPS で管理する場合は、
+#    velero ディレクトリに kustomization.yaml を置いた上で、
+#    下の Git source から `directory.include` を削除すること。
+#    include を指定していると kustomization.yaml が無視される。
 # ---------------------------------------------------------------------------
 apiVersion: argoproj.io/v1alpha1
 kind: Application

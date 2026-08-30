@@ -35,6 +35,7 @@ spec:
     - https://aquasecurity.github.io/helm-charts/
     - https://backube.github.io/helm-charts/
     - https://alex1989hu.github.io/kubelet-serving-cert-approver
+    - https://piraeus.io/helm-charts/
 
   # -------------------------------------------------------------------------
   # デプロイ先の namespace
@@ -67,8 +68,21 @@ spec:
   #
   # 基盤コンポーネントは CRD / ClusterRole / StorageClass 等を必要とする。
   # ただし何でも許すのではなく、必要なものを列挙する。
+  #
+  # ⚠️ **メンテナンスの注意**
+  #    新しい Helm chart を追加すると、ここに無いクラスタスコープの
+  #    リソースを作ろうとして同期が失敗することがある。エラーメッセージは
+  #      "<kind> is not permitted in project infrastructure"
+  #    のようになる。その場合、chart が実際に作るものを確認してから追加する:
+  #      helm template <release> <repo>/<chart> --version <ver> -f <values> \
+  #        | yq 'select(.metadata.namespace == null) | .apiVersion + " " + .kind' \
+  #        | sort -u
+  #
+  #    「面倒だから "*" にする」ことはしない。Application を作れる者が
+  #    任意のクラスタリソースを作れる状態は、この Project を分けた意味を失わせる。
   # -------------------------------------------------------------------------
   clusterResourceWhitelist:
+    # --- Kubernetes コア ---
     - group: ""
       kind: Namespace
     - group: apiextensions.k8s.io
@@ -77,30 +91,60 @@ spec:
       kind: ClusterRole
     - group: rbac.authorization.k8s.io
       kind: ClusterRoleBinding
+    - group: scheduling.k8s.io
+      kind: PriorityClass
+    - group: node.k8s.io
+      kind: RuntimeClass
+    - group: apiregistration.k8s.io
+      kind: APIService
+
+    # --- Admission（各 chart の webhook）---
+    - group: admissionregistration.k8s.io
+      kind: ValidatingWebhookConfiguration
+    - group: admissionregistration.k8s.io
+      kind: MutatingWebhookConfiguration
+    # Kubernetes 1.30+ の宣言的バリデーション。
+    # 新しい chart が使い始めることがあるため許可しておく。
+    - group: admissionregistration.k8s.io
+      kind: ValidatingAdmissionPolicy
+    - group: admissionregistration.k8s.io
+      kind: ValidatingAdmissionPolicyBinding
+
+    # --- ストレージ（ceph-csi / snapshot-controller）---
     - group: storage.k8s.io
       kind: StorageClass
     - group: storage.k8s.io
       kind: CSIDriver
     - group: snapshot.storage.k8s.io
       kind: VolumeSnapshotClass
-    - group: admissionregistration.k8s.io
-      kind: ValidatingWebhookConfiguration
-    - group: admissionregistration.k8s.io
-      kind: MutatingWebhookConfiguration
-    - group: apiregistration.k8s.io
-      kind: APIService
+
+    # --- ネットワーク（ingress-nginx / Cilium）---
+    - group: networking.k8s.io
+      kind: IngressClass
     - group: cilium.io
       kind: CiliumClusterwideNetworkPolicy
     - group: cilium.io
       kind: CiliumLoadBalancerIPPool
     - group: cilium.io
       kind: CiliumL2AnnouncementPolicy
-    - group: scheduling.k8s.io
-      kind: PriorityClass
-    - group: policy
-      kind: PodSecurityPolicy
-    - group: node.k8s.io
-      kind: RuntimeClass
+
+    # --- cert-manager ---
+    - group: cert-manager.io
+      kind: ClusterIssuer
+
+    # --- Trivy Operator（クラスタスコープのレポート CRD）---
+    - group: aquasecurity.github.io
+      kind: ClusterComplianceReport
+    - group: aquasecurity.github.io
+      kind: ClusterConfigAuditReport
+    - group: aquasecurity.github.io
+      kind: ClusterInfraAssessmentReport
+    - group: aquasecurity.github.io
+      kind: ClusterRbacAssessmentReport
+    - group: aquasecurity.github.io
+      kind: ClusterVulnerabilityReport
+    - group: aquasecurity.github.io
+      kind: ClusterSbomReport
 
   # -------------------------------------------------------------------------
   # 名前空間スコープで禁止するリソース

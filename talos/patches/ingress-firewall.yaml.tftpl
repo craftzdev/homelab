@@ -142,19 +142,23 @@ portSelector:
 ingress:
 ${management_ingress}
 
----
 # ---------------------------------------------------------------------------
-# ICMP — 疎通確認のために許可する
+# ICMP について（意図的に許可していない）
 #
-# ping が通ることは運用上の切り分けで大きな価値がある。
-# ICMP 自体は情報漏洩のリスクが小さく、宅内セグメントに限定する。
+# 運用の切り分けでは ping が通ると便利だが、Talos の NetworkRuleConfig が
+# icmp プロトコルをどう扱うか（portSelector が必要か、そもそも対応するか）が
+# 公式ドキュメントで明示されていない。
+#
+# ingressFirewall の設定ミスはノードへの到達不能に直結し、Talos には SSH が
+# 無いため復旧の手間が大きい。**確実に動く設定だけを書く**方針を取り、
+# 不確実な ICMP ルールは追加しない。
+#
+# なお VLAN40 内（node-to-node ルール）からの通信は全許可しているため、
+# ノード同士および VLAN40 内の端末からの ping は通る。
+# 管理セグメントからの疎通確認は ping ではなく talosctl を使うこと:
+#
+#   talosctl -n 172.16.40.11 version
+#
+# 将来 ICMP を許可したくなった場合は、まず 1 ノードだけに適用して
+# 到達性を確認してから全ノードへ展開すること。
 # ---------------------------------------------------------------------------
-apiVersion: v1alpha1
-kind: NetworkRuleConfig
-name: icmp
-portSelector:
-  ports:
-    - 1-65535
-  protocol: icmp
-ingress:
-${management_ingress}

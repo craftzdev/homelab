@@ -87,9 +87,15 @@
   `authorization-mode = Webhook` を Talos の machine config で強制する。
 - **監査ログ**: kube-apiserver の audit policy を有効化し、
   Secret へのアクセスや RBAC の変更を Metadata レベル以上で記録する。
-- **イメージ**: Helm chart のバージョンと OCI イメージのタグを固定し、
-  Renovate で更新を PR として受ける（`latest` を使わない）。
+- **イメージ**: Helm chart のバージョンと OCI イメージの**タグを固定**し、
+  Renovate で更新を PR として受ける（`latest` は使わない）。
   クラスタ内では Trivy Operator が稼働イメージを継続スキャンする。
+
+  > **現状の限界を明記する**: 現時点ではタグ固定であり、**ダイジェスト固定
+  > （`@sha256:...`）には至っていない**。タグは再割り当てが可能なため、
+  > 供給元が改竄された場合に同じタグで別のイメージを引く余地が残る。
+  > Renovate はダイジェストの付与・更新に対応しているため、
+  > 運用が安定した段階で `pinDigests: true` を有効化して移行する。
 
 ### L5: ノード OS（→ T4, T5）
 

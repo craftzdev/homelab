@@ -40,6 +40,8 @@ wrangler r2 bucket create homelab-velero
 #      s3Url:  https://<account-id>.r2.cloudflarestorage.com
 
 # 4) 認証情報を SOPS で暗号化して配置する
+#    ⚠️ 一時ファイルは必ず削除すること。平文が残ると意味がない。
+umask 077
 cat > /tmp/velero-creds <<'EOF'
 [default]
 aws_access_key_id=<R2 の Access Key ID>
@@ -54,16 +56,51 @@ kubectl create secret generic velero-credentials \
 sops --encrypt --config ../../../.sops.yaml /tmp/velero-secret.yaml \
   > credentials.sops.yaml
 
-shred -u /tmp/velero-creds /tmp/velero-secret.yaml 2>/dev/null \
-  || rm -f /tmp/velero-creds /tmp/velero-secret.yaml
+rm -f /tmp/velero-creds /tmp/velero-secret.yaml
 
-# 5) KSOPS ジェネレータを有効化する
-#    kustomization.yaml を作成し、generators に secret-generator.yaml を追加する
-#    （cloudflared / ceph-csi と同じ構成）
+# 5) 暗号化されていることを確認する（保険）
+grep -q 'ENC\[' credentials.sops.yaml && echo "OK: 暗号化されています"
 
-git add credentials.sops.yaml
+git add credentials.sops.yaml kustomization.yaml secret-generator.yaml
 git commit -m "feat(velero): バックアップ先の認証情報を追加（SOPS 暗号化済み）"
 ```
+
+### KSOPS で Secret を生成する構成にする
+
+`credentials.sops.yaml` を ArgoCD に復号させるため、
+cloudflared / ceph-csi と同じ構成のファイルを 2 つ作ります。
+
+**`kustomization.yaml`**
+
+```yaml
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: velero
+resources:
+  - namespace-and-policy.yaml
+  - schedules.yaml
+generators:
+  - secret-generator.yaml
+```
+
+**`secret-generator.yaml`**
+
+```yaml
+apiVersion: viaduct.ai/v1
+kind: ksops
+metadata:
+  name: velero-secret-generator
+  annotations:
+    config.kubernetes.io/function: |
+      exec:
+        path: ksops
+files:
+  - credentials.sops.yaml
+```
+
+あわせて `kubernetes/apps/infrastructure.yaml` の velero Application で、
+Git 側 source の `directory.include` を外して kustomize として扱わせます
+（`include` を指定していると kustomization.yaml が無視されます）。
 
 ## 4. 動作確認
 

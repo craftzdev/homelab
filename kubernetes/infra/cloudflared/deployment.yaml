@@ -41,13 +41,21 @@ spec:
         app.kubernetes.io/name: cloudflared
         app.kubernetes.io/part-of: external-access
       annotations:
-        # ConfigMap / Secret が変わったら Pod を再起動させる。
-        # cloudflared は設定のホットリロードに対応していないため、
-        # これが無いと ingress ルールの変更が反映されない。
-        # （値は kustomize の configMapGenerator ではなく手動更新のため、
-        #   ArgoCD の sync 時に検知させる目的でチェックサムを使わず
-        #   Reloader 相当の運用を docs に記載する）
-        prometheus.io/scrape: "false" # ServiceMonitor で取得するため
+        # ---------------------------------------------------------------
+        # ⚠️ cloudflared は config.yaml のホットリロードに対応していない
+        #
+        # ingress ルール（ConfigMap）を変更しても、Pod を再起動しない限り
+        # 反映されない。ConfigMap は tofu が生成するため kustomize の
+        # configMapGenerator によるハッシュ付与も使えない。
+        #
+        # そのため ingress を変更したら明示的に再起動する:
+        #   kubectl -n cloudflared rollout restart deployment/cloudflared
+        #
+        # この手順は scripts/sync-cloudflare-secrets.sh の出力と
+        # docs/40-external-access.md に記載している。
+        # maxUnavailable: 0 のローリング更新なので無停止で切り替わる。
+        # ---------------------------------------------------------------
+        homelab/config-reload: "manual-restart-required"
 
     spec:
       # -----------------------------------------------------------------------

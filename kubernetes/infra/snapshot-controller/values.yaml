@@ -1,0 +1,79 @@
+# ===========================================================================
+# snapshot-controller (kubernetes-csi/external-snapshotter)
+#
+# ---------------------------------------------------------------------------
+# なぜ必要なのか
+# ---------------------------------------------------------------------------
+# Kubernetes の VolumeSnapshot / VolumeSnapshotClass / VolumeSnapshotContent は
+# **コア API ではなく CRD** であり、Kubernetes 本体にも ceph-csi の Helm chart
+# にも含まれていない。別途 external-snapshotter を導入する必要がある。
+#
+# これが無いと:
+#   - kubernetes/infra/ceph-csi/storageclass.yaml の VolumeSnapshotClass が
+#     「CRD が存在しない」というエラーで適用できない
+#   - Velero の CSI スナップショット連携（features: EnableCSI）が機能しない
+#   - snapshot-controller が居ないため、VolumeSnapshot を作っても
+#     実体（VolumeSnapshotContent）が作られず永久に Pending になる
+#
+# ceph-csi 側の `snapshotter.enabled: true` は「CSI サイドカーを動かす」設定で
+# あって、CRD とコントローラを提供するものではない。ここを混同しやすい。
+# ===========================================================================
+
+# VolumeSnapshot 関連の CRD を導入する
+installCRDs: true
+
+controller:
+  enabled: true
+  replicaCount: 2
+
+  # 2 レプリカが同一ノードに載らないようにする
+  affinity:
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        - labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: snapshot-controller
+          topologyKey: kubernetes.io/hostname
+
+  # control-plane にも配置可能にする（system コンポーネントのため）
+  tolerations:
+    - key: node-role.kubernetes.io/control-plane
+      operator: Exists
+      effect: NoSchedule
+
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      memory: 128Mi
+
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    runAsNonRoot: true
+    capabilities:
+      drop: [ALL]
+    seccompProfile:
+      type: RuntimeDefault
+
+# ---------------------------------------------------------------------------
+# 変換 webhook
+#
+# v1beta1 の VolumeSnapshot API を使う古いクライアントとの互換のためのもの。
+# 本構成は v1 のみを使うため不要。webhook を増やすことは
+# 「apiserver がその Pod に依存する」ことを意味し、障害点が増えるため
+# 必要が無い限り有効化しない。
+# ---------------------------------------------------------------------------
+webhook:
+  enabled: false
+
+# ---------------------------------------------------------------------------
+# VolumeSnapshotClass はこの chart では定義しない。
+#
+# ceph-csi 用の VolumeSnapshotClass は
+# kubernetes/infra/ceph-csi/storageclass.yaml で定義しており、
+# 定義箇所を分散させると「どちらが正か」が分からなくなるため。
+# ---------------------------------------------------------------------------
+volumeSnapshotClasses: []
+volumeGroupSnapshotClasses: []

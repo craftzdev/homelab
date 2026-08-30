@@ -88,6 +88,16 @@ ConfigMap として ArgoCD 管理下に入り、**アプリを 1 つ増やす変
 代償として、トンネルの認証情報を `credentials.json` の形で Kubernetes Secret に
 渡す必要がある。これは OpenTofu が生成し、SOPS で暗号化してコミットする。
 
+> ⚠️ **cloudflared は config.yaml のホットリロードに対応していない。**
+> ingress ルールを変更して ArgoCD が ConfigMap を更新しても、それだけでは
+> 反映されない。以下で明示的に再起動すること
+> （`maxUnavailable: 0` のローリング更新なので無停止で切り替わる）。
+>
+> ```bash
+> kubectl -n cloudflared rollout restart deployment/cloudflared
+> kubectl -n cloudflared rollout status deployment/cloudflared
+> ```
+
 ## 5. Origin 側の JWT 再検証（多層防御）
 
 cloudflared 自身が Access の JWT を検証できる。`config.yaml` にこう書く。

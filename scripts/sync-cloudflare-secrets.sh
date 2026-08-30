@@ -109,6 +109,13 @@ cat <<EOF
     git commit -m "feat(cloudflared): Tunnel の認証情報と ingress 設定を更新"
     git push
 
+  ⚠️ ingress ルールを変更した場合は、ArgoCD の同期後に cloudflared を
+     再起動してください。cloudflared は config.yaml のホットリロードに
+     対応していないため、ConfigMap を更新しただけでは反映されません。
+
+    kubectl -n cloudflared rollout restart deployment/cloudflared
+    kubectl -n cloudflared rollout status deployment/cloudflared
+
   ---------------------------------------------------------------------
   Workers 側の設定（SaaS から Access を通すために必要）
   ---------------------------------------------------------------------
