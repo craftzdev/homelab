@@ -27,6 +27,17 @@
 | [0007](adr/0007-dual-nic-topology.md) | ノードに **デュアル NIC**（VLAN40 + VLAN20） | ストレージ I/O を家庭用ルータ経由にしない |
 | [0008](adr/0008-backup-strategy.md) | **3 階層バックアップ**（etcd / Velero / PBS） | 冗長化はバックアップではない。障害の種類ごとに手段を分ける |
 
+## コンポーネント別の手順書
+
+一部のコンポーネントは、構築時に個別の準備が必要です。
+
+| ドキュメント | 内容 |
+| --- | --- |
+| [kubernetes/infra/monitoring/README.md](../kubernetes/infra/monitoring/README.md) | Grafana 管理者パスワードの設定（**必須**。未設定だと Grafana が起動しない） |
+| [kubernetes/infra/velero/README.md](../kubernetes/infra/velero/README.md) | バックアップ先（外部オブジェクトストレージ）の設定 |
+| [kubernetes/infra/cloudflared/generated/README.md](../kubernetes/infra/cloudflared/generated/README.md) | OpenTofu が生成する ingress 設定の扱い |
+| [workers/example-origin-api/README.md](../workers/example-origin-api/README.md) | Workers から Access 経由で呼び出す実装 |
+
 ## この構成で「やっていないこと」
 
 セキュリティ設計において、**採用しなかった対策を明示すること**は

@@ -79,7 +79,9 @@ jobs:
 
       - uses: opentofu/setup-opentofu@v1
         with:
-          tofu_version: "1.10.6"
+          # ローカルでの検証に使ったバージョンと揃える。
+          # CI とローカルで結果が食い違うと、原因の切り分けが難しくなる。
+          tofu_version: "1.12.6"
 
       - name: フォーマットの確認
         run: tofu fmt -check -recursive ${{ matrix.dir }}
