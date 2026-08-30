@@ -1,0 +1,61 @@
+# ===========================================================================
+# Cilium L2 LoadBalancer — IP プールと ARP 広告ポリシー
+#
+# MetalLB の代替。Service type=LoadBalancer に IP を払い出し、
+# VLAN40 の L2 セグメントへ ARP で広告する。
+#
+# ⚠️ ここで払い出す IP は「宅内からアクセスできる」だけであり、
+#    インターネットには一切公開されない。外部公開は Cloudflare Tunnel
+#    のみで行う（docs/40-external-access.md）。
+# ===========================================================================
+---
+apiVersion: cilium.io/v2alpha1
+kind: CiliumLoadBalancerIPPool
+metadata:
+  name: vlan40-pool
+spec:
+  # docs/10-network-design.md §2 の予約表と一致させること。
+  # .240 以降は将来用に空けている。
+  blocks:
+    - start: "172.16.40.200"
+      stop: "172.16.40.239"
+
+  # ラベルセレクタを付けず、全 namespace の LoadBalancer Service を対象にする。
+  # 用途を分けたくなったら serviceSelector で絞り込む。
+  disabled: false
+
+---
+apiVersion: cilium.io/v2alpha1
+kind: CiliumL2AnnouncementPolicy
+metadata:
+  name: vlan40-l2-announcement
+spec:
+  # ---------------------------------------------------------------------------
+  # 広告を行うノードを worker に限定する。
+  #
+  # control-plane が LoadBalancer のトラフィックを受けると、
+  # データプレーンの負荷が etcd / apiserver に影響しうる。
+  # 役割を分離しておく。
+  # ---------------------------------------------------------------------------
+  nodeSelector:
+    matchExpressions:
+      - key: node-role.kubernetes.io/control-plane
+        operator: DoesNotExist
+
+  # ---------------------------------------------------------------------------
+  # 広告を出すインタフェースを VLAN40 側に限定する。
+  #
+  # ⚠️ これは重要な設定である。デュアル NIC 構成でインタフェースを
+  #    限定しないと、Ceph public network（VLAN20）側にも ARP 広告が
+  #    流れ、Ceph のネットワークに無関係なトラフィックが混入する。
+  #
+  # Talos の predictable interface name（ens18 / enp0s18 等）は環境で
+  # 変わりうるため、正規表現で「1 枚目の NIC」に一致させている。
+  # 実際の名前は次のコマンドで確認できる:
+  #   talosctl -n <node> get links
+  # ---------------------------------------------------------------------------
+  interfaces:
+    - "^(eth0|ens18|enp0s18|enp1s0)$"
+
+  externalIPs: true
+  loadBalancerIPs: true

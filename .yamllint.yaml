@@ -1,0 +1,57 @@
+# ===========================================================================
+# yamllint の設定
+#
+# 目的は「構文の壊れた YAML をマージしない」ことであり、
+# スタイルの統一が主目的ではない。過度に厳しくすると
+# 本質的でない指摘でレビューが埋まるため、実害のあるものに絞る。
+# ===========================================================================
+extends: default
+
+ignore: |
+  # SOPS 暗号化ファイルは行が非常に長く、整形もできない
+  *.sops.yaml
+  # OpenTofu のテンプレート（${...} を含むため素の YAML として不正）
+  *.tftpl
+  # tofu が生成するファイル
+  kubernetes/infra/cloudflared/generated/
+  # サンプル（プレースホルダを含む）
+  *.example
+
+rules:
+  # 設定ファイルでは長い行が自然に発生する（URL、ポリシー文字列など）
+  line-length: disable
+
+  # コメントのインデントは意図的に揃えている箇所がある
+  comments-indentation: disable
+
+  # ドキュメント区切りは複数リソースを 1 ファイルに書くために必須だが、
+  # 単一リソースのファイルでは不要
+  document-start: disable
+
+  # 真偽値は Kubernetes マニフェストで "true"/"false" の文字列を
+  # 使う場面がある（extraArgs 等）
+  truthy:
+    allowed-values: ["true", "false", "yes", "no"]
+    check-keys: false
+
+  # インデントは 2 スペースで統一するが、リストのインデントは
+  # スタイルが分かれるため許容する
+  indentation:
+    spaces: 2
+    indent-sequences: consistent
+
+  # 末尾の空白は実害があるので検出する
+  trailing-spaces: enable
+
+  # ファイル末尾の改行
+  new-line-at-end-of-file: enable
+
+  # 重複キーは確実にバグ
+  key-duplicates: enable
+
+  # 空行が続くのは可読性の問題だが、セクション区切りとして
+  # 意図的に使うことがあるため緩める
+  empty-lines:
+    max: 2
+    max-start: 0
+    max-end: 1

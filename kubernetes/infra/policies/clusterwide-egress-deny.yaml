@@ -1,0 +1,124 @@
+# ===========================================================================
+# クラスタ全体の egress 制限 — 宅内ネットワークへの横展開を防ぐ
+#
+# ---------------------------------------------------------------------------
+# 何を防ぐのか
+# ---------------------------------------------------------------------------
+# 脅威 T2/T3（公開サービス経由の侵入と横展開）において、攻撃者が最初に
+# 試すのは「この Pod からどこへ行けるか」の探索である。制限が無ければ、
+# 侵害された Pod から
+#
+#   - Proxmox の Web UI / API (172.16.10.0/24:8006)
+#   - Proxmox Backup Server (172.16.10.51:8007)
+#   - Ceph の MON/OSD (172.16.20.0/24, 172.16.30.0/24)
+#   - 家庭内の他の機器 (192.168.0.0/16)
+#   - ルータの管理画面
+#
+# へ自由に到達できてしまう。Kubernetes の侵害が「家全体の侵害」に
+# 直結する状態を避けるため、これらへの egress を明示的に拒否する。
+#
+# ---------------------------------------------------------------------------
+# なぜ egressDeny を使うのか
+# ---------------------------------------------------------------------------
+# Cilium の deny ポリシーは allow ポリシーより優先される。つまり
+# 個別の namespace で誤って広い allow を書いても、この deny が勝つ。
+# 「うっかり穴を開けてしまう」事故に対する保険になる。
+# ===========================================================================
+apiVersion: cilium.io/v2
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: deny-egress-to-home-network
+  annotations:
+    homelab/rationale: |
+      侵害された Pod から Proxmox / PBS / Ceph / 宅内機器への横展開を防ぐ。
+      例外が必要な場合は excludedNamespaces に追加し、その理由をここに記載すること。
+spec:
+  # ---------------------------------------------------------------------------
+  # 適用対象
+  #
+  # 除外している namespace とその理由:
+  #
+  #   ceph-csi   : Ceph MON/OSD（172.16.20.0/24）への接続が必須。
+  #                ただし ceph-csi 側の CiliumNetworkPolicy で
+  #                VLAN20 のみ・特定ポートのみに絞っている。
+  #
+  #   kube-system: CoreDNS が上流 DNS（172.16.40.1）へ問い合わせる。
+  #                また Cilium 自体のコンポーネントが含まれる。
+  #
+  #   velero     : PBS / 外部 S3 へのバックアップ転送で必要になる場合がある。
+  #                （バックアップ先を宅内に置く構成の場合のみ）
+  #
+  # ⚠️ ここに namespace を追加することは、その namespace の Pod に
+  #    宅内ネットワークへの到達を許すことを意味する。追加時は必ず
+  #    その namespace 内で個別の allow ポリシーを書き、範囲を絞ること。
+  # ---------------------------------------------------------------------------
+  endpointSelector:
+    matchExpressions:
+      - key: io.kubernetes.pod.namespace
+        operator: NotIn
+        values:
+          - ceph-csi
+          - kube-system
+          - velero
+
+  egressDeny:
+    - toCIDR:
+        # --- Proxmox 管理セグメント（Proxmox VE / PBS）---
+        - 172.16.10.0/24
+
+        # --- Ceph public network ---
+        # ceph-csi 以外の Pod が Ceph に直接触れる理由は無い
+        - 172.16.20.0/24
+
+        # --- Ceph cluster network ---
+        # OSD 間レプリケーション専用。いかなる Pod も接続してはならない
+        - 172.16.30.0/24
+
+        # --- その他の宅内セグメント ---
+        - 192.168.0.0/16
+
+        # --- Tailscale (CGNAT 帯) ---
+        # Pod から Tailnet 上の機器へ到達する必要は無い
+        - 100.64.0.0/10
+
+        # --- リンクローカル / メタデータサービス ---
+        # 169.254.169.254 はクラウドのメタデータエンドポイントとして
+        # 知られており、SSRF の常套手段。オンプレでも塞いでおく。
+        - 169.254.0.0/16
+
+---
+# ===========================================================================
+# kube-apiserver への直接アクセスを制限する
+#
+# 侵害された Pod が ServiceAccount トークンを使って Kubernetes API を
+# 叩くことは、権限昇格の典型的な経路である。RBAC で権限は絞られているが、
+# ネットワーク層でも「API を叩く必要のある Pod だけ」に限定する。
+#
+# ⚠️ このポリシーは影響が大きい。API アクセスが必要な新しいコンポーネントを
+#    追加したら、その namespace で kube-apiserver への egress を
+#    明示的に許可する必要がある。
+#    まずは監視のみ（このファイルを適用しない）で運用し、Hubble で
+#    実際に API を叩いている Pod を把握してから有効化することを推奨する。
+#
+# 有効化するには kustomization.yaml のコメントを外すこと。
+# ===========================================================================
+# apiVersion: cilium.io/v2
+# kind: CiliumClusterwideNetworkPolicy
+# metadata:
+#   name: restrict-apiserver-access
+# spec:
+#   endpointSelector:
+#     matchExpressions:
+#       - key: io.kubernetes.pod.namespace
+#         operator: NotIn
+#         values:
+#           - kube-system
+#           - argocd
+#           - ceph-csi
+#           - monitoring
+#           - velero
+#           - cert-manager
+#           - ingress-nginx
+#   egressDeny:
+#     - toEntities:
+#         - kube-apiserver

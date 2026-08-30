@@ -1,0 +1,85 @@
+# ===========================================================================
+# ceph-csi-cephfs — CephFS の CSI ドライバ（ReadWriteMany 用）
+#
+# RBD が ReadWriteOnce しか提供できないため、複数 Pod で共有する
+# ファイル領域が必要な場合にこちらを使う。
+#
+# ⚠️ 既存の cephfs01 は Proxmox が ISO / バックアップ置き場として
+#    使っている。Kubernetes 用には subvolumegroup `csi` を作成し、
+#    cephx の権限も `/volumes/csi` 配下に限定する
+#    （scripts/ceph-create-k8s-user.sh が実施）。
+#    これにより Kubernetes 側から Proxmox のデータには触れない。
+# ===========================================================================
+
+csiConfig:
+  - clusterID: "10f95430-060d-4bd2-9d93-db845d9c748f"
+    monitors:
+      - "172.16.20.11:3300"
+      - "172.16.20.12:3300"
+      - "172.16.20.13:3300"
+    cephFS:
+      # ここを指定しないと既定の "csi" が使われるが、明示しておく。
+      subvolumeGroup: "csi"
+
+storageClass:
+  create: false
+
+secret:
+  create: false
+
+provisioner:
+  replicaCount: 2
+
+  resizer:
+    enabled: true
+  snapshotter:
+    enabled: true
+
+  affinity:
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        - labelSelector:
+            matchExpressions:
+              - key: app
+                operator: In
+                values:
+                  - ceph-csi-cephfs-provisioner
+          topologyKey: kubernetes.io/hostname
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+
+nodeplugin:
+  registrar:
+    resources:
+      requests:
+        cpu: 10m
+        memory: 32Mi
+      limits:
+        memory: 128Mi
+  plugin:
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        memory: 512Mi
+
+  tolerations:
+    - key: node-role.kubernetes.io/control-plane
+      operator: Exists
+      effect: NoSchedule
+
+serviceMonitor:
+  enabled: true
+  namespace: ceph-csi
+  labels:
+    release: kube-prometheus-stack
+
+logLevel: 1
+
+driverName: cephfs.csi.ceph.com

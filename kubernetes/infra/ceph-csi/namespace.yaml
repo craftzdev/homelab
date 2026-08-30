@@ -1,0 +1,34 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ceph-csi
+  labels:
+    # -------------------------------------------------------------------------
+    # Pod Security Admission = privileged
+    #
+    # ⚠️ クラスタ既定は restricted であり、ここは意図的な例外である。
+    #
+    # 理由: ceph-csi の nodeplugin は以下を必要とする。
+    #   - privileged コンテナ（RBD デバイスのマップ）
+    #   - hostPID（デバイスの解放処理）
+    #   - mountPropagation: Bidirectional（kubelet へのマウント伝播）
+    #   - /dev, /sys のホストマウント
+    #
+    # これらは CSI ドライバの動作に本質的に必要であり、回避手段がない。
+    # 代わりに以下で影響を限定する:
+    #   1. cephx の権限を cephrdb_k8s プールのみに絞る
+    #      （client.admin は渡さない。docs/30-storage-design.md §4）
+    #   2. この namespace に一般のワークロードを置かない
+    #   3. CiliumNetworkPolicy で通信先を Ceph MON/OSD に限定する
+    #
+    # exemptions ではなく namespace ラベルで緩和しているのは、
+    # 「どの namespace がなぜ緩和されているか」を監査可能にするため。
+    # -------------------------------------------------------------------------
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/enforce-version: latest
+    # audit / warn は restricted のままにして、想定外の逸脱を検知できるようにする
+    pod-security.kubernetes.io/audit: baseline
+    pod-security.kubernetes.io/warn: baseline
+
+    app.kubernetes.io/name: ceph-csi
+    app.kubernetes.io/part-of: storage

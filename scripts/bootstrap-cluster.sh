@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+# ===========================================================================
+# Cilium を導入してクラスタを Ready にする
+#
+# tofu apply の直後、クラスタは以下の状態にある:
+#   - Talos と etcd は正常
+#   - kube-apiserver は応答する
+#   - しかし CNI が無いため全ノードが NotReady
+#
+# ここで Cilium を helm install し、ノードを Ready にする。
+# 以降の管理は ArgoCD が引き継ぐ（同じ values.yaml を参照するため
+# 引き継ぎ時に差分は出ない）。
+# ===========================================================================
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+KUBECONFIG_PATH="${KUBECONFIG:-${REPO_ROOT}/_out/kubeconfig}"
+CILIUM_VERSION="${CILIUM_VERSION:-1.20.1}"
+VALUES_FILE="${REPO_ROOT}/kubernetes/infra/cilium/values.yaml"
+
+readonly C_RED=$'\033[0;31m' C_GREEN=$'\033[0;32m' C_BLUE=$'\033[0;34m' C_RESET=$'\033[0m'
+info() { printf '%s[INFO]%s  %s\n' "${C_BLUE}"  "${C_RESET}" "$*"; }
+ok()   { printf '%s[OK]%s    %s\n' "${C_GREEN}" "${C_RESET}" "$*"; }
+die()  { printf '%s[ERROR]%s %s\n' "${C_RED}"   "${C_RESET}" "$*" >&2; exit 1; }
+
+command -v helm    >/dev/null || die "helm が見つかりません（brew install helm）"
+command -v kubectl >/dev/null || die "kubectl が見つかりません"
+
+[[ -f "${KUBECONFIG_PATH}" ]] || die "kubeconfig が見つかりません: ${KUBECONFIG_PATH}
+     先に tofu/10-proxmox-talos で apply を実行してください。"
+[[ -f "${VALUES_FILE}" ]] || die "values ファイルが見つかりません: ${VALUES_FILE}"
+
+export KUBECONFIG="${KUBECONFIG_PATH}"
+
+info "クラスタへの接続を確認しています..."
+kubectl version -o json >/dev/null 2>&1 \
+  || die "kube-apiserver へ接続できません。VIP (172.16.40.10) への到達性を確認してください。"
+ok "接続を確認しました"
+
+# ---------------------------------------------------------------------------
+# Cilium の導入
+#
+# --set ではなく values ファイルを使う理由:
+#   ArgoCD も同じファイルを参照するため、bootstrap と GitOps 管理の間で
+#   設定が食い違わない。--set で上書きすると、ArgoCD が引き継いだ瞬間に
+#   設定が巻き戻る。
+# ---------------------------------------------------------------------------
+info "Cilium ${CILIUM_VERSION} を導入しています..."
+helm repo add cilium https://helm.cilium.io/ >/dev/null 2>&1 || true
+helm repo update cilium >/dev/null
+
+helm upgrade --install cilium cilium/cilium \
+  --version "${CILIUM_VERSION}" \
+  --namespace kube-system \
+  --values "${VALUES_FILE}" \
+  --wait --timeout 10m
+
+ok "Cilium を導入しました"
+
+# ---------------------------------------------------------------------------
+# LoadBalancer IP プールと L2 広告ポリシー
+#
+# Cilium の CRD が登録された後でないと適用できないため、
+# helm install の完了を待ってから適用する。
+# ---------------------------------------------------------------------------
+info "LoadBalancer IP プールを設定しています..."
+kubectl apply -f "${REPO_ROOT}/kubernetes/infra/cilium/lb-ipam.yaml"
+ok "IP プールを設定しました"
+
+# ---------------------------------------------------------------------------
+# ノードが Ready になるまで待つ
+# ---------------------------------------------------------------------------
+info "全ノードが Ready になるまで待機しています（最大 5 分）..."
+if kubectl wait --for=condition=Ready nodes --all --timeout=300s; then
+  ok "全ノードが Ready になりました"
+else
+  die "ノードが Ready になりませんでした。
+     確認: kubectl get nodes
+           kubectl -n kube-system get pods -l k8s-app=cilium
+           kubectl -n kube-system logs -l k8s-app=cilium --tail=50"
+fi
+
+kubectl get nodes -o wide
+
+cat <<'EOF'
+
+┌──────────────────────────────────────────────────────────────────┐
+│ Cilium の導入が完了し、クラスタが利用可能になりました。            │
+└──────────────────────────────────────────────────────────────────┘
+
+  動作確認（任意、cilium CLI が必要）:
+    cilium status --wait
+    cilium connectivity test        # 数分かかる
+
+  次の手順:
+    ./scripts/ceph-create-k8s-user.sh    # Ceph の認証情報を作成
+    ./scripts/bootstrap-argocd.sh        # GitOps 基盤を導入
+
+EOF

@@ -1,0 +1,110 @@
+# ===========================================================================
+# ceph-csi の通信制限
+#
+# ---------------------------------------------------------------------------
+# ⚠️ このポリシーで守れる範囲と守れない範囲を正確に理解すること
+# ---------------------------------------------------------------------------
+# ceph-csi は 2 種類のコンポーネントで構成される。
+#
+#   provisioner (Deployment)  : Pod ネットワークで動く
+#                               → CiliumNetworkPolicy が有効
+#
+#   nodeplugin  (DaemonSet)   : hostNetwork: true で動く
+#                               → CiliumNetworkPolicy は **適用されない**
+#
+# さらに、RBD の実際のデータ転送は krbd（カーネルの RBD クライアント）が
+# 行うため、Pod のネットワーク名前空間を通らない。したがって
+# 「ノード → Ceph」の通信は NetworkPolicy では制御できない。
+#
+# この層を守っているのは NetworkPolicy ではなく、
+#
+#   1. cephx の最小権限（client.k8s-rbd は cephrdb_k8s プールのみ）
+#   2. Talos の ingressFirewall（VLAN20 からノードへの inbound を遮断）
+#   3. VLAN30（Ceph cluster network）に接続していないこと
+#
+# である。詳細は docs/adr/0007-dual-nic-topology.md を参照。
+# ===========================================================================
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: default-deny
+  namespace: ceph-csi
+spec:
+  endpointSelector: {}
+  ingress: []
+  egress: []
+
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: ceph-csi-egress
+  namespace: ceph-csi
+spec:
+  # namespace 内の全 Pod（provisioner 群）に適用する
+  endpointSelector: {}
+
+  egress:
+    # --- DNS ---
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+
+    # --- kube-apiserver ---
+    # provisioner は PVC / VolumeSnapshot を watch するため必須
+    - toEntities:
+        - kube-apiserver
+
+    # --- Ceph クラスタ（VLAN20）---
+    #
+    # 宛先を Ceph public network に限定する。
+    # ⚠️ VLAN30（172.16.30.0/24 = Ceph cluster network）は含めない。
+    #    OSD 間のレプリケーション経路にクライアントが触れる必要は無く、
+    #    接続できること自体が攻撃面になる。
+    - toCIDRSet:
+        - cidr: 172.16.20.0/24
+      toPorts:
+        - ports:
+            # MON: msgr2 / msgr1
+            - port: "3300"
+              protocol: TCP
+            - port: "6789"
+              protocol: TCP
+            # OSD / MDS が使用するポートレンジ
+            - port: "6800"
+              endPort: 7300
+              protocol: TCP
+
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: ceph-csi-ingress-metrics
+  namespace: ceph-csi
+spec:
+  endpointSelector: {}
+
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: monitoring
+            app.kubernetes.io/name: prometheus
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+            - port: "8681"
+              protocol: TCP
+
+    # kubelet からの probe
+    - fromEntities:
+        - host
+        - remote-node

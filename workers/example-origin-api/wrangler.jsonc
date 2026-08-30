@@ -1,0 +1,26 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "example-origin-api",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-01",
+
+  // ---------------------------------------------------------------------------
+  // 平文で置いてよい設定のみをここに書く。
+  //
+  // ⚠️ CF_ACCESS_CLIENT_ID / CF_ACCESS_CLIENT_SECRET は絶対に vars に
+  //    書かないこと。vars はダッシュボードに平文で表示され、
+  //    デプロイ成果物にも含まれる。必ず secret として登録する:
+  //
+  //      wrangler secret put CF_ACCESS_CLIENT_ID
+  //      wrangler secret put CF_ACCESS_CLIENT_SECRET
+  //
+  //    値は tofu/20-cloudflare の output から取得する。
+  // ---------------------------------------------------------------------------
+  "vars": {
+    "ORIGIN_HOST": "api.internal.example.com"
+  },
+
+  "observability": {
+    "enabled": true
+  }
+}

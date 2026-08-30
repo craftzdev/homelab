@@ -1,0 +1,165 @@
+# ===========================================================================
+# StorageClass 定義
+#
+# 設計は docs/30-storage-design.md §5 を参照。
+# ===========================================================================
+---
+# ---------------------------------------------------------------------------
+# ceph-rbd — 既定の StorageClass（ブロック / ReadWriteOnce）
+# ---------------------------------------------------------------------------
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: ceph-rbd
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+  labels:
+    app.kubernetes.io/part-of: storage
+provisioner: rbd.csi.ceph.com
+parameters:
+  # Ceph の fsid。values-rbd.yaml の csiConfig[].clusterID と一致必須。
+  clusterID: "10f95430-060d-4bd2-9d93-db845d9c748f"
+
+  # Kubernetes 専用のプール。Proxmox VM の cephrdb_vm には触らない。
+  pool: cephrdb_k8s
+
+  # -------------------------------------------------------------------------
+  # imageFeatures は layering のみ
+  #
+  # exclusive-lock / object-map / fast-diff / deep-flatten はカーネル RBD
+  # クライアント（krbd）の対応状況がカーネルバージョンに依存する。
+  # 互換性の問題でマウントに失敗すると Pod が起動しないため、
+  # 全環境で確実に動く layering に限定する。
+  # （スナップショットの差分転送効率は落ちるが、確実性を優先する）
+  # -------------------------------------------------------------------------
+  imageFeatures: layering
+
+  csi.storage.k8s.io/provisioner-secret-name: csi-rbd-secret
+  csi.storage.k8s.io/provisioner-secret-namespace: ceph-csi
+  csi.storage.k8s.io/controller-expand-secret-name: csi-rbd-secret
+  csi.storage.k8s.io/controller-expand-secret-namespace: ceph-csi
+  csi.storage.k8s.io/node-stage-secret-name: csi-rbd-secret
+  csi.storage.k8s.io/node-stage-secret-namespace: ceph-csi
+
+  # ext4 を使う理由: xfs はオンライン縮小ができず、メタデータ破損時の
+  # 復旧手段も限られる。汎用用途では ext4 の方が扱いやすい。
+  csi.storage.k8s.io/fstype: ext4
+
+reclaimPolicy: Delete
+allowVolumeExpansion: true
+
+# Pod のスケジュール先が決まってからボリュームを作成する。
+# 先にボリュームを作ると、そのボリュームに引きずられて
+# Pod のスケジューリングが制約される。
+volumeBindingMode: WaitForFirstConsumer
+
+mountOptions:
+  # ジャーナルの書き込みを緩めて I/O を減らす。
+  # 電源断時に最大 5 秒分のメタデータ更新を失う可能性があるが、
+  # Ceph 側で replica 3 を持つためリスクは限定的。
+  - discard
+
+---
+# ---------------------------------------------------------------------------
+# ceph-rbd-retain — PVC を消しても PV とデータを残す
+#
+# データベースなど「消えては困る」ものに使う。
+# PVC の削除でボリュームが即座に消えないため、誤操作からの復旧余地がある。
+# （不要になった PV は手動で削除すること。放置すると容量を食い続ける）
+# ---------------------------------------------------------------------------
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: ceph-rbd-retain
+  labels:
+    app.kubernetes.io/part-of: storage
+provisioner: rbd.csi.ceph.com
+parameters:
+  clusterID: "10f95430-060d-4bd2-9d93-db845d9c748f"
+  pool: cephrdb_k8s
+  imageFeatures: layering
+  csi.storage.k8s.io/provisioner-secret-name: csi-rbd-secret
+  csi.storage.k8s.io/provisioner-secret-namespace: ceph-csi
+  csi.storage.k8s.io/controller-expand-secret-name: csi-rbd-secret
+  csi.storage.k8s.io/controller-expand-secret-namespace: ceph-csi
+  csi.storage.k8s.io/node-stage-secret-name: csi-rbd-secret
+  csi.storage.k8s.io/node-stage-secret-namespace: ceph-csi
+  csi.storage.k8s.io/fstype: ext4
+
+reclaimPolicy: Retain
+allowVolumeExpansion: true
+volumeBindingMode: WaitForFirstConsumer
+mountOptions:
+  - discard
+
+---
+# ---------------------------------------------------------------------------
+# ceph-fs — 共有ファイルシステム（ReadWriteMany）
+#
+# 複数 Pod から同時に読み書きしたい場合のみ使う。
+# RBD より性能が出ないため、単一 Pod で足りるなら ceph-rbd を選ぶこと。
+# ---------------------------------------------------------------------------
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: ceph-fs
+  labels:
+    app.kubernetes.io/part-of: storage
+provisioner: cephfs.csi.ceph.com
+parameters:
+  clusterID: "10f95430-060d-4bd2-9d93-db845d9c748f"
+
+  # Proxmox が使っている既存の CephFS。
+  # ただし cephx の権限で /volumes/csi 配下に限定されているため、
+  # Proxmox の ISO / バックアップ領域には到達できない。
+  fsName: cephfs01
+
+  csi.storage.k8s.io/provisioner-secret-name: csi-cephfs-secret
+  csi.storage.k8s.io/provisioner-secret-namespace: ceph-csi
+  csi.storage.k8s.io/controller-expand-secret-name: csi-cephfs-secret
+  csi.storage.k8s.io/controller-expand-secret-namespace: ceph-csi
+  csi.storage.k8s.io/node-stage-secret-name: csi-cephfs-secret
+  csi.storage.k8s.io/node-stage-secret-namespace: ceph-csi
+
+reclaimPolicy: Delete
+allowVolumeExpansion: true
+volumeBindingMode: Immediate
+
+---
+# ===========================================================================
+# VolumeSnapshotClass
+#
+# Velero の CSI スナップショット連携と snapscheduler が使う。
+# ===========================================================================
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshotClass
+metadata:
+  name: ceph-rbd-snapshot
+  annotations:
+    snapshot.storage.kubernetes.io/is-default-class: "true"
+  labels:
+    # Velero に「これが CSI スナップショット用」と認識させる
+    velero.io/csi-volumesnapshot-class: "true"
+driver: rbd.csi.ceph.com
+parameters:
+  clusterID: "10f95430-060d-4bd2-9d93-db845d9c748f"
+  csi.storage.k8s.io/snapshotter-secret-name: csi-rbd-secret
+  csi.storage.k8s.io/snapshotter-secret-namespace: ceph-csi
+
+# スナップショットを消したら Ceph 側の実体も消す
+deletionPolicy: Delete
+
+---
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshotClass
+metadata:
+  name: ceph-fs-snapshot
+  labels:
+    velero.io/csi-volumesnapshot-class: "true"
+driver: cephfs.csi.ceph.com
+parameters:
+  clusterID: "10f95430-060d-4bd2-9d93-db845d9c748f"
+  fsName: cephfs01
+  csi.storage.k8s.io/snapshotter-secret-name: csi-cephfs-secret
+  csi.storage.k8s.io/snapshotter-secret-namespace: ceph-csi
+deletionPolicy: Delete

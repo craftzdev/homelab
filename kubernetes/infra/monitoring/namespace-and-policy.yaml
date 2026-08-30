@@ -1,0 +1,49 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring
+  labels:
+    # node-exporter がホストの /proc /sys をマウントするため
+    # restricted では動作できない。
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: baseline
+    pod-security.kubernetes.io/warn: baseline
+
+    app.kubernetes.io/name: monitoring
+    app.kubernetes.io/part-of: observability
+
+---
+# ===========================================================================
+# 監視スタックの通信制限
+#
+# Prometheus は「クラスタ内のあらゆるエンドポイントをスクレイプする」
+# 性質上、egress を厳密に絞ることが難しい。代わりに
+#   - ingress を厳しく制限する（誰が Prometheus/Grafana を見られるか）
+#   - 宅内ネットワークへの egress はクラスタワイドの deny で塞ぐ
+# という組み合わせで守る。
+# ===========================================================================
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: monitoring-ingress
+  namespace: monitoring
+spec:
+  endpointSelector: {}
+
+  ingress:
+    # --- 監視スタック内部の通信 ---
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: monitoring
+
+    # --- 宅内からの Grafana アクセス（LoadBalancer 経由）---
+    - fromEntities:
+        - host
+        - remote-node
+
+    # --- ArgoCD からのヘルスチェック ---
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: argocd

@@ -1,0 +1,61 @@
+# ===========================================================================
+# terraform.tfvars.example  (tofu/20-cloudflare)
+#
+#   cp terraform.tfvars.example terraform.tfvars
+#
+# ⚠️ cloudflare_api_token は機密。tfvars に書かず環境変数で渡すことを推奨:
+#      export TF_VAR_cloudflare_api_token='...'
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Cloudflare 認証
+#
+# API トークンは以下の最小権限で作成する（Global API Key は使わない）:
+#   Account | Cloudflare Tunnel         | Edit
+#   Account | Access: Apps and Policies | Edit
+#   Account | Access: Service Tokens    | Edit
+#   Zone    | DNS                       | Edit  （対象ゾーンのみ）
+# ---------------------------------------------------------------------------
+cloudflare_api_token  = "REPLACE_ME"
+cloudflare_account_id = "REPLACE_ME"
+cloudflare_zone_id    = "REPLACE_ME"
+
+# Zero Trust の team name（<team>.cloudflareaccess.com の <team> 部分）。
+# Zero Trust ダッシュボード → Settings → Custom Pages で確認できる。
+cloudflare_team_name = "REPLACE_ME"
+
+# ---------------------------------------------------------------------------
+# トンネル
+# ---------------------------------------------------------------------------
+tunnel_name = "homelab-k8s"
+
+# ---------------------------------------------------------------------------
+# Service Token
+# ---------------------------------------------------------------------------
+service_token_name     = "saas-worker"
+service_token_duration = "2160h" # 90 日。期限前にローテーションすること。
+
+# この数値を +1 して apply するとシークレットがローテーションされる
+service_token_secret_version = 0
+
+# ---------------------------------------------------------------------------
+# 公開するサービス
+#
+# ⚠️ ここに追加することは「インターネットからアクセス可能にする」ことを意味する。
+#    docs/40-external-access.md §7 の選定基準を満たすもののみ追加すること。
+#    管理平面（Kubernetes API / ArgoCD / Proxmox / Talos）は絶対に追加しない。
+# ---------------------------------------------------------------------------
+published_services = {
+  "internal-api" = {
+    hostname       = "api.internal.example.com"
+    origin_service = "http://ingress-nginx-controller.ingress-nginx.svc.cluster.local:80"
+    # Access のセッション有効期間。API 用途なので短めにする。
+    session_duration = "30m"
+  }
+
+  # 追加例:
+  # "reports" = {
+  #   hostname       = "reports.internal.example.com"
+  #   origin_service = "http://ingress-nginx-controller.ingress-nginx.svc.cluster.local:80"
+  # }
+}

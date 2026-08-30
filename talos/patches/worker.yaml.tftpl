@@ -1,0 +1,112 @@
+# ===========================================================================
+# Talos machine config パッチ — worker
+#
+# control-plane 用（controlplane.yaml.tftpl）との差分:
+#   - VIP を持たない
+#   - cluster.* の apiServer / etcd / admissionControl 等は設定しない
+#     （worker ではこれらのコンポーネントが動かないため）
+#
+# ⚠️ interfaces はリスト全体が置換されるため、control-plane 用と共通化せず
+#    それぞれのテンプレートで完全に記述している。部分的なマージに頼ると
+#    片方の NIC 定義が消えるという分かりにくい事故が起きる。
+# ===========================================================================
+machine:
+  install:
+    disk: /dev/sda
+    image: ${installer_image}
+    wipe: false
+
+  network:
+    hostname: ${hostname}
+    nameservers: ${nameservers}
+
+    interfaces:
+      # --- eth0 相当: VLAN40（Kubernetes 全般）---
+      - deviceSelector:
+          hardwareAddr: "${mac_k8s}"
+        addresses:
+          - ${ip}/24
+        routes:
+          - network: 0.0.0.0/0
+            gateway: ${gateway}
+        mtu: 1500
+        dhcp: false
+
+      # --- eth1 相当: VLAN20（Ceph public）---
+      # デフォルトゲートウェイは設定しない（同一 L2 で完結させる）
+      - deviceSelector:
+          hardwareAddr: "${mac_ceph}"
+        addresses:
+          - ${ceph_ip}/24
+        mtu: 1500
+        dhcp: false
+
+  time:
+    disabled: false
+    servers: ${ntp_servers}
+
+  # ceph-csi の nodeplugin が RBD をマップするために必要
+  kernel:
+    modules:
+      - name: rbd
+      - name: libceph
+
+  features:
+    rbac: true
+    # stableHostname は machine.network.hostname と排他のため設定しない
+    # （詳細は controlplane.yaml.tftpl のコメントを参照）
+    apidCheckExtKeyUsage: true
+    kubePrism:
+      enabled: true
+      port: 7445
+    hostDNS:
+      enabled: true
+      forwardKubeDNSToHost: true
+
+  # ディスク暗号化。worker の EPHEMERAL にはコンテナイメージと
+  # emptyDir が置かれるため、control-plane と同様に暗号化する。
+  systemDiskEncryption:
+    state:
+      provider: luks2
+      keys:
+        - nodeID: {}
+          slot: 0
+    ephemeral:
+      provider: luks2
+      keys:
+        - nodeID: {}
+          slot: 0
+
+  kubelet:
+    nodeIP:
+      validSubnets:
+        - ${k8s_subnet}
+    extraArgs:
+      rotate-server-certificates: "true"
+    extraConfig:
+      serverTLSBootstrap: true
+
+  sysctls:
+    net.ipv4.conf.all.log_martians: "1"
+    fs.inotify.max_user_watches: "524288"
+    fs.inotify.max_user_instances: "8192"
+
+cluster:
+  network:
+    cni:
+      name: none
+    podSubnets:
+      - ${pod_cidr}
+    serviceSubnets:
+      - ${service_cidr}
+
+  proxy:
+    disabled: true
+
+  discovery:
+    enabled: true
+    registries:
+      kubernetes:
+        disabled: false
+      service:
+        disabled: true

@@ -1,0 +1,164 @@
+# ===========================================================================
+# ingress-nginx — クラスタ内の HTTP ルーティング
+#
+# 役割:
+#   cloudflared から受けたリクエストを、Ingress リソースの定義に従って
+#   各アプリの Service へ振り分ける。
+#
+# なぜ cloudflared から直接 Service へ転送しないのか:
+#   ingress ルールを 1 箇所（Ingress リソース）に集約でき、
+#   「何が公開されているか」の見通しが良くなる。また、パスベースの
+#   ルーティングやヘッダ操作を Kubernetes 側で完結できる。
+# ===========================================================================
+
+controller:
+  replicaCount: 2
+
+  # -------------------------------------------------------------------------
+  # ⚠️ セキュリティ上の重要設定
+  #
+  # snippet annotation は Ingress リソースの annotation に生の nginx 設定を
+  # 書ける機能。これを許すと、Ingress を作成できる権限を持つ者が
+  # 任意の nginx 設定（Lua スクリプトを含む）を注入できてしまう。
+  # 過去に複数の CVE（CVE-2021-25742 等）の原因になっている。
+  #
+  # 本構成では必要が無いため無効化する。
+  # -------------------------------------------------------------------------
+  allowSnippetAnnotations: false
+
+  # 同様に、annotation 経由での設定値の注入を制限する
+  enableAnnotationValidations: true
+
+  config:
+    # -----------------------------------------------------------------------
+    # クライアント IP の伝播
+    #
+    # cloudflared が転送する際、実クライアントの IP は
+    # X-Forwarded-For に入る。これを信頼するのは
+    # 「送信元が cloudflared である場合のみ」に限定する必要がある。
+    #
+    # proxy-real-ip-cidr を Pod CIDR に限定することで、
+    # クラスタ外から偽の X-Forwarded-For を送られても無視される。
+    # -----------------------------------------------------------------------
+    use-forwarded-headers: "true"
+    proxy-real-ip-cidr: "10.244.0.0/16"
+    enable-real-ip: "true"
+
+    # -----------------------------------------------------------------------
+    # 情報漏洩の抑止
+    # nginx のバージョンやバックエンドの実装が漏れないようにする
+    # -----------------------------------------------------------------------
+    server-tokens: "false"
+    hide-headers: "Server,X-Powered-By,X-AspNet-Version"
+
+    # -----------------------------------------------------------------------
+    # TLS の終端は Cloudflare エッジで行う。
+    # cloudflared → ingress-nginx はクラスタ内部の通信であり、
+    # Cilium の WireGuard 暗号化で保護される。
+    # ここで HTTPS へリダイレクトするとループの原因になる。
+    # -----------------------------------------------------------------------
+    ssl-redirect: "false"
+
+    # リクエストボディのサイズ上限（DoS 対策）
+    proxy-body-size: "16m"
+
+    # タイムアウト。cloudflared 側の connectTimeout と整合させる
+    proxy-connect-timeout: "10"
+    proxy-read-timeout: "60"
+    proxy-send-timeout: "60"
+
+    # ログを JSON にして、Loki / Prometheus での解析を容易にする
+    log-format-escape-json: "true"
+    log-format-upstream: >-
+      {"time":"$time_iso8601","remote_addr":"$remote_addr","x_forwarded_for":"$proxy_add_x_forwarded_for",
+      "request_id":"$req_id","host":"$host","method":"$request_method","uri":"$uri",
+      "status":$status,"bytes_sent":$bytes_sent,"request_time":$request_time,
+      "upstream_addr":"$upstream_addr","upstream_status":"$upstream_status",
+      "user_agent":"$http_user_agent"}
+
+  # -------------------------------------------------------------------------
+  # Service
+  #
+  # LoadBalancer にして Cilium の L2 Announcement で固定 IP を払い出す。
+  #
+  # ⚠️ この IP（172.16.40.200）は **宅内からのみ** 到達可能である。
+  #    ルータでポートフォワードを設定しない限りインターネットには
+  #    公開されない。外部公開は Cloudflare Tunnel のみで行う。
+  #    docs/10-network-design.md §2 を参照。
+  # -------------------------------------------------------------------------
+  service:
+    enabled: true
+    type: LoadBalancer
+    loadBalancerIP: "172.16.40.200"
+    annotations: {}
+    externalTrafficPolicy: Local
+
+  # -------------------------------------------------------------------------
+  # 分散配置
+  # 2 レプリカが同一ノードに載ると、そのノードの障害で全断する。
+  # -------------------------------------------------------------------------
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: DoNotSchedule
+      labelSelector:
+        matchLabels:
+          app.kubernetes.io/name: ingress-nginx
+          app.kubernetes.io/component: controller
+
+  # ノードのドレイン時に全断しないようにする
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+
+  metrics:
+    enabled: true
+    serviceMonitor:
+      enabled: true
+      additionalLabels:
+        release: kube-prometheus-stack
+
+  # -------------------------------------------------------------------------
+  # IngressClass
+  #
+  # ingressClassResource.default: false にしている点が重要。
+  # 既定にしないことで、Ingress リソースに ingressClassName を
+  # 明示的に書くことを強制する。「知らないうちに公開されていた」
+  # という事故を防ぐ。
+  # -------------------------------------------------------------------------
+  ingressClassResource:
+    name: nginx
+    enabled: true
+    default: false
+
+  # 明示的に指定された Ingress のみを処理する
+  watchIngressWithoutClass: false
+
+  admissionWebhooks:
+    enabled: true
+    patch:
+      enabled: true
+
+# ---------------------------------------------------------------------------
+# デフォルトバックエンド
+#
+# どの Ingress ルールにも一致しないリクエストに 404 を返す。
+# 有効にしておくことで、nginx の既定ページ（バージョン情報を含む）が
+# 露出することを防ぐ。
+# ---------------------------------------------------------------------------
+defaultBackend:
+  enabled: true
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: 10m
+      memory: 16Mi
+    limits:
+      memory: 64Mi

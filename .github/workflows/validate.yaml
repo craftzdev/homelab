@@ -1,0 +1,123 @@
+# ===========================================================================
+# CI — コードの検証
+#
+# 目的:
+#   1. 平文の秘密がコミットされていないことを検査する（最優先）
+#   2. OpenTofu / YAML / シェルスクリプトの構文を検証する
+#
+# ⚠️ このリポジトリはインフラの完全な設計図であり、秘密の混入は
+#    そのままクラスタの侵害につながる。gitleaks の失敗は
+#    「マージしてはならない」ことを意味する。
+# ===========================================================================
+name: validate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # -------------------------------------------------------------------------
+  # 秘密情報の検出
+  # -------------------------------------------------------------------------
+  secrets-scan:
+    name: 平文の秘密がないか検査する
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # 履歴全体を検査するため
+          fetch-depth: 0
+
+      - name: gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: SOPS 暗号化ファイルが平文でないか確認する
+        run: |
+          set -euo pipefail
+          fail=0
+          while IFS= read -r -d '' f; do
+            # 暗号化されたファイルには必ず sops メタデータが含まれる
+            if ! grep -q 'sops:' "$f"; then
+              echo "::error file=$f::SOPS で暗号化されていません（平文の可能性）"
+              fail=1
+            fi
+            # ENC[...] 形式の暗号文が含まれているか
+            if ! grep -q 'ENC\[' "$f"; then
+              echo "::error file=$f::暗号化された値が見つかりません"
+              fail=1
+            fi
+          done < <(find . -name '*.sops.yaml' -not -name '*.example' -print0)
+          exit $fail
+
+      - name: プレースホルダのまま残っていないか確認する
+        run: |
+          set -euo pipefail
+          # .sops.yaml に公開鍵が設定されていないと、暗号化が機能しない
+          if grep -q 'REPLACE_WITH_YOUR_AGE_PUBLIC_KEY' .sops.yaml; then
+            echo "::warning file=.sops.yaml::age 公開鍵が未設定です（ローカル環境では設定が必要）"
+          fi
+
+  # -------------------------------------------------------------------------
+  # OpenTofu
+  # -------------------------------------------------------------------------
+  tofu:
+    name: OpenTofu の検証
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        dir: [tofu/10-proxmox-talos, tofu/20-cloudflare]
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: opentofu/setup-opentofu@v1
+        with:
+          tofu_version: "1.10.6"
+
+      - name: フォーマットの確認
+        run: tofu fmt -check -recursive ${{ matrix.dir }}
+
+      - name: 初期化（プロバイダのみ、バックエンドなし）
+        working-directory: ${{ matrix.dir }}
+        run: tofu init -backend=false
+
+      - name: 構文の検証
+        working-directory: ${{ matrix.dir }}
+        run: tofu validate
+
+  # -------------------------------------------------------------------------
+  # Kubernetes マニフェスト
+  # -------------------------------------------------------------------------
+  yaml:
+    name: YAML の検証
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: yamllint
+        run: |
+          pip install yamllint
+          # SOPS 暗号化ファイルと tftpl テンプレートは対象外
+          yamllint -c .yamllint.yaml \
+            kubernetes/ docs/ .github/ || exit 1
+
+  # -------------------------------------------------------------------------
+  # シェルスクリプト
+  # -------------------------------------------------------------------------
+  shell:
+    name: シェルスクリプトの検証
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: shellcheck
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y shellcheck
+          shellcheck -x scripts/*.sh

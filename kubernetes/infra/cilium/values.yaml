@@ -1,0 +1,225 @@
+# ===========================================================================
+# Cilium — CNI / kube-proxy 置換 / L2 LoadBalancer / 可視化
+#
+# 設計判断は docs/adr/0003-cilium.md を参照。
+#
+# ⚠️ このファイルは 2 箇所から参照される:
+#     1) scripts/bootstrap-cluster.sh  … 初回導入（ArgoCD より前）
+#     2) kubernetes/apps/cilium.yaml   … 以降の GitOps 管理
+#    どちらも同じファイルを使うため、設定が二重管理にならない。
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Talos との統合
+#
+# k8sServiceHost に KubePrism（localhost:7445）を指定する。
+#
+# なぜ VIP や apiserver の Service ではないのか:
+#   Cilium が kube-proxy を置き換える構成では、Cilium 自身が起動する時点で
+#   まだ Service の解決ができない（鶏と卵）。KubePrism は各ノード上で
+#   ローカルに動く apiserver へのロードバランサであり、CNI 起動前でも
+#   到達できる。加えて VIP が単一障害点にならない利点がある。
+# ---------------------------------------------------------------------------
+k8sServiceHost: localhost
+k8sServicePort: 7445
+
+# ---------------------------------------------------------------------------
+# Talos は read-only root filesystem かつ cgroup を独自にマウントするため、
+# Cilium 側の自動マウントを無効化し、必要な capability を明示する。
+# （Talos 公式ドキュメントの推奨値）
+# ---------------------------------------------------------------------------
+securityContext:
+  capabilities:
+    ciliumAgent:
+      - CHOWN
+      - KILL
+      - NET_ADMIN
+      - NET_RAW
+      - IPC_LOCK
+      - SYS_ADMIN
+      - SYS_RESOURCE
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETGID
+      - SETUID
+    cleanCiliumState:
+      - NET_ADMIN
+      - SYS_ADMIN
+      - SYS_RESOURCE
+
+cgroup:
+  autoMount:
+    enabled: false
+  hostRoot: /sys/fs/cgroup
+
+# ---------------------------------------------------------------------------
+# kube-proxy の置換
+#
+# Talos 側で cluster.proxy.disabled = true としているため、
+# kube-proxy は最初から存在しない。Service の解決は eBPF で行う。
+# iptables のルール爆発が起きず、Service 数が増えても性能が劣化しない。
+# ---------------------------------------------------------------------------
+kubeProxyReplacement: true
+
+# ---------------------------------------------------------------------------
+# ルーティング
+#
+# 全ノードが VLAN40 の同一 L2 セグメントにいるため、VXLAN などの
+# カプセル化は不要。native routing により MTU のオーバーヘッドが無くなり、
+# パケットの経路も追いやすくなる（トラブルシュートが容易）。
+#
+# autoDirectNodeRoutes により、ノード間の Pod CIDR 経路が自動設定される。
+# ---------------------------------------------------------------------------
+routingMode: native
+ipv4NativeRoutingCIDR: 10.244.0.0/16
+autoDirectNodeRoutes: true
+
+ipam:
+  # Talos の cluster.network.podSubnets を kube-controller-manager が
+  # 各ノードへ分配し、Cilium はそれを使う。
+  mode: kubernetes
+
+# Pod から外部へ出る通信のマスカレードを eBPF で行う（iptables を使わない）
+bpf:
+  masquerade: true
+
+enableIPv4Masquerade: true
+enableIPv6Masquerade: false
+ipv6:
+  enabled: false
+
+# ---------------------------------------------------------------------------
+# ノード間通信の暗号化（WireGuard）
+#
+# VLAN40 は宅内の L2 セグメントだが、将来ここに別の VM やデバイスが
+# 接続される可能性がある。その場合、暗号化していなければ Pod 間の
+# 全トラフィック（DB のクエリや Secret を含む）が盗聴可能になる。
+#
+# WireGuard による透過暗号化は設定 1 つで有効にでき、サービスメッシュを
+# 導入するより遥かに軽量である（docs/adr/0003-cilium.md 参照）。
+#
+# ⚠️ 性能への影響: 暗号化により CPU 負荷が増え、10GbE の帯域を
+#    使い切れなくなる可能性がある。ストレージ I/O は VLAN20 を通り
+#    Cilium を経由しないため影響を受けないが、Pod 間で大量の
+#    データを流す場合はベンチマークを取ること。
+#
+#    問題が出た場合は enabled: false に戻せる（ノードの再起動が必要）。
+# ---------------------------------------------------------------------------
+encryption:
+  enabled: true
+  type: wireguard
+  nodeEncryption: false
+
+# ---------------------------------------------------------------------------
+# L2 Announcement — MetalLB の代替
+#
+# Service type=LoadBalancer に払い出した IP を、ARP 応答によって
+# 同一 L2 セグメントへ広告する。コンポーネントを 1 つ減らせる。
+#
+# ⚠️ Lease を頻繁に更新するため、apiserver へのリクエストが増える。
+#    k8sClientRateLimit を引き上げないと "client rate limiter" の
+#    警告が出て、フェイルオーバーが遅延する。
+# ---------------------------------------------------------------------------
+l2announcements:
+  enabled: true
+  leaseDuration: 3s
+  leaseRenewDeadline: 1s
+  leaseRetryPeriod: 200ms
+
+k8sClientRateLimit:
+  qps: 50
+  burst: 100
+
+externalIPs:
+  enabled: true
+
+# ---------------------------------------------------------------------------
+# ネットワークポリシー
+#
+# policyEnforcementMode: default
+#   「ポリシーが 1 つも紐づいていない Endpoint は許可、
+#     1 つでも紐づいたら、そのポリシーで許可されたものだけ通す」挙動。
+#
+# "always"（全て default-deny）にしないのは、ポリシーの書き漏れが
+# 即座にクラスタ全体の停止につながるため。代わりに namespace ごとに
+# 明示的な default-deny ポリシーを配置する
+# （kubernetes/infra/policies/）。どの namespace が保護されているかが
+# マニフェスト上で読み取れる方が、運用上の安全性が高い。
+# ---------------------------------------------------------------------------
+policyEnforcementMode: default
+
+# ---------------------------------------------------------------------------
+# Hubble — 通信の可視化
+#
+# default-deny を運用する上での必須要件。「何が落ちているか分からない」
+# 状態でポリシーを書くのは危険であり、Hubble はその可視性を提供する。
+# ---------------------------------------------------------------------------
+hubble:
+  enabled: true
+  relay:
+    enabled: true
+    rollOutPods: true
+  ui:
+    enabled: true
+    rollOutPods: true
+    # ⚠️ Hubble UI は通信内容を閲覧できる管理ツールである。
+    #    Ingress で外部公開してはならない。参照は port-forward で行う:
+    #      kubectl -n kube-system port-forward svc/hubble-ui 12000:80
+    ingress:
+      enabled: false
+  metrics:
+    enabled:
+      - dns
+      - drop
+      - tcp
+      - flow
+      - port-distribution
+      - icmp
+      - "httpV2:exemplars=true;labelsContext=source_ip,source_namespace,source_workload,destination_ip,destination_namespace,destination_workload,traffic_direction"
+    serviceMonitor:
+      enabled: true
+    dashboards:
+      enabled: true
+      namespace: monitoring
+
+# ---------------------------------------------------------------------------
+# 可観測性
+# ---------------------------------------------------------------------------
+operator:
+  replicas: 2
+  rollOutPods: true
+  prometheus:
+    enabled: true
+    serviceMonitor:
+      enabled: true
+
+prometheus:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    trustCRDsExist: true
+
+dashboards:
+  enabled: true
+  namespace: monitoring
+
+# ---------------------------------------------------------------------------
+# 信頼性
+# ---------------------------------------------------------------------------
+rollOutCiliumPods: true
+
+# ノードが 1 台落ちても Cilium の制御が止まらないようにする
+priorityClassName: system-node-critical
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 512Mi
+
+# ---------------------------------------------------------------------------
+# 起動時の待機
+#
+# CNI が入るまで Pod がスケジュールされないよう、Talos の taint を尊重する。
+# ---------------------------------------------------------------------------
+tolerations:
+  - operator: Exists

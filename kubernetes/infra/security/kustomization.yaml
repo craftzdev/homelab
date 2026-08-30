@@ -1,0 +1,17 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - namespace.yaml
+
+# ---------------------------------------------------------------------------
+# kubelet-serving-cert-approver と trivy-operator は Helm chart として
+# 別の Application で導入する（kubernetes/apps/infrastructure.yaml）。
+#
+# ⚠️ kustomize の resources に外部 URL を書く方式は採用しない。
+#    ArgoCD の repo-server が任意の外部 URL からマニフェストを
+#    ダウンロードすることになり、供給元の改竄がそのまま
+#    クラスタへ反映されるリスクがあるため。
+#    Helm chart なら chart のバージョンを固定でき、
+#    Renovate による更新管理の対象にもできる。
+# ---------------------------------------------------------------------------

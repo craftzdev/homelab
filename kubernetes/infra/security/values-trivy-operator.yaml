@@ -1,0 +1,83 @@
+# ===========================================================================
+# Trivy Operator — 稼働中のイメージを継続的に脆弱性スキャンする
+#
+# 「デプロイ時にスキャンする」だけでは不十分である。脆弱性は
+# デプロイ後に公表されるため、稼働中のイメージを定期的に再評価する
+# 必要がある。Trivy Operator はそれを自動で行う。
+# ===========================================================================
+
+operator:
+  # 脆弱性スキャンを有効化
+  vulnerabilityScannerEnabled: true
+  # Kubernetes リソースの設定不備（CIS 相当）をチェック
+  configAuditScannerEnabled: true
+  # RBAC の過剰権限を検出
+  rbacAssessmentScannerEnabled: true
+  # Pod の実行時設定（特権等）を検査
+  infraAssessmentScannerEnabled: true
+  # ClusterComplianceReport（CIS Benchmark）
+  clusterComplianceEnabled: true
+
+  # 公開済みの脆弱性情報が更新されるため、定期的に再スキャンする
+  vulnerabilityScannerScanOnlyCurrentRevisions: true
+  scanJobsConcurrentLimit: 2
+
+  # スキャン結果の保持期間
+  scanJobTTL: "10m"
+
+  metricsFindingsEnabled: true
+
+# ---------------------------------------------------------------------------
+# 除外する namespace
+#
+# Trivy 自身と、スキャンしても意味の薄いものを除く。
+# ⚠️ kube-system は除外しない。基盤コンポーネントこそ
+#    脆弱性の影響が大きいため。
+# ---------------------------------------------------------------------------
+targetNamespaces: ""
+excludeNamespaces: "security"
+
+trivy:
+  # -------------------------------------------------------------------------
+  # 報告対象の深刻度
+  #
+  # LOW / MEDIUM まで含めると報告が膨大になり、本当に対処すべき
+  # CRITICAL / HIGH が埋もれる。まず HIGH 以上に絞る。
+  # -------------------------------------------------------------------------
+  severity: "HIGH,CRITICAL"
+
+  # 修正パッチが存在しない脆弱性は対処のしようがないため除外する
+  ignoreUnfixed: true
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+
+  # 脆弱性 DB を PVC に永続化し、再起動のたびにダウンロードしないようにする
+  # （外部への通信を減らすことはセキュリティ上も望ましい）
+  storageClassName: ceph-rbd
+  storageSize: "5Gi"
+
+serviceMonitor:
+  enabled: true
+  labels:
+    release: kube-prometheus-stack
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  capabilities:
+    drop: [ALL]
+  seccompProfile:
+    type: RuntimeDefault
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    memory: 512Mi

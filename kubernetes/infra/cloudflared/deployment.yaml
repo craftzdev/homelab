@@ -1,0 +1,185 @@
+# ===========================================================================
+# cloudflared — Cloudflare Tunnel のコネクタ
+#
+# 自宅側から Cloudflare エッジへ outbound の QUIC 接続を張る。
+# これにより、インバウンドのポートを 1 つも開けずに外部公開が成立する。
+#
+# 設計は docs/40-external-access.md、判断の経緯は
+# docs/adr/0005-cloudflare-zero-trust.md を参照。
+# ===========================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cloudflared
+  namespace: cloudflared
+  labels:
+    app.kubernetes.io/name: cloudflared
+    app.kubernetes.io/part-of: external-access
+spec:
+  # -------------------------------------------------------------------------
+  # 2 レプリカ構成
+  #
+  # cloudflared は複数のコネクタで同じトンネルを張れる。Cloudflare 側が
+  # 生きているコネクタへ振り分けるため、1 つ落ちてもサービスは継続する。
+  # ローリング更新中の瞬断も避けられる。
+  # -------------------------------------------------------------------------
+  replicas: 2
+
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cloudflared
+
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: cloudflared
+        app.kubernetes.io/part-of: external-access
+      annotations:
+        # ConfigMap / Secret が変わったら Pod を再起動させる。
+        # cloudflared は設定のホットリロードに対応していないため、
+        # これが無いと ingress ルールの変更が反映されない。
+        # （値は kustomize の configMapGenerator ではなく手動更新のため、
+        #   ArgoCD の sync 時に検知させる目的でチェックサムを使わず
+        #   Reloader 相当の運用を docs に記載する）
+        prometheus.io/scrape: "false" # ServiceMonitor で取得するため
+
+    spec:
+      # -----------------------------------------------------------------------
+      # ノード分散
+      #
+      # 2 レプリカが同じ物理ノードに載ると、そのノードの障害で
+      # 外部からのアクセスが完全に途絶える。必ず別ノードへ分散させる。
+      # DoNotSchedule（強制）にしている点が重要で、ScheduleAnyway では
+      # 分散が保証されない。
+      # -----------------------------------------------------------------------
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: cloudflared
+
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+
+      containers:
+        - name: cloudflared
+          # ⚠️ タグ固定。Renovate がダイジェスト付きへ更新する PR を出す。
+          #    latest は絶対に使わない（docs/20-security-design.md L4）。
+          image: docker.io/cloudflare/cloudflared:2026.8.2
+          imagePullPolicy: IfNotPresent
+
+          args:
+            - tunnel
+            # 自動更新を無効化する。コンテナのイメージ更新は Renovate と
+            # GitOps で管理するため、プロセスが勝手にバイナリを
+            # 差し替えることは避ける（サプライチェーンの観点でも重要）。
+            - --no-autoupdate
+            - --config
+            - /etc/cloudflared/config/config.yaml
+            - --credentials-file
+            - /etc/cloudflared/creds/credentials.json
+            - run
+
+          ports:
+            - name: metrics
+              containerPort: 2000
+              protocol: TCP
+
+          # ---------------------------------------------------------------
+          # ヘルスチェック
+          #
+          # /ready はエッジへの接続が確立しているかを返す。
+          # 接続が切れた Pod を Service から外す（＝ローリング更新時に
+          # 未接続の Pod へトラフィックが行かない）ために必須。
+          # ---------------------------------------------------------------
+          livenessProbe:
+            httpGet:
+              path: /ready
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 2
+
+          # ---------------------------------------------------------------
+          # Pod Security Standards "restricted" を満たす設定
+          # ---------------------------------------------------------------
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              # CPU の limit は設定しない。
+              # スロットリングによりトンネルの再接続が遅延するのを避けるため。
+              # （メモリは OOM で確実に止めたいので limit を設定する）
+              memory: 256Mi
+
+          volumeMounts:
+            - name: config
+              mountPath: /etc/cloudflared/config
+              readOnly: true
+            - name: creds
+              mountPath: /etc/cloudflared/creds
+              readOnly: true
+
+      volumes:
+        - name: config
+          configMap:
+            name: cloudflared-config
+            items:
+              - key: config.yaml
+                path: config.yaml
+        - name: creds
+          secret:
+            # SOPS で暗号化された credentials.sops.yaml から生成される。
+            # 中身は Tunnel の認証情報であり、これを持つ者は
+            # 同じトンネルを張れる。
+            secretName: cloudflared-credentials
+            defaultMode: 0400
+
+---
+# ===========================================================================
+# PodDisruptionBudget
+#
+# ノードのドレイン（Talos のアップグレード等）で 2 レプリカが同時に
+# 落ちると外部アクセスが途絶える。最低 1 つは維持させる。
+# ===========================================================================
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: cloudflared
+  namespace: cloudflared
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cloudflared

@@ -1,0 +1,133 @@
+# ===========================================================================
+# terraform.tfvars.example
+#
+# このファイルを terraform.tfvars にコピーして環境に合わせて編集する。
+# terraform.tfvars は .gitignore 済み（*.tfvars を除外、*.example のみ許可）。
+#
+#   cp terraform.tfvars.example terraform.tfvars
+#
+# ⚠️ proxmox_api_token は機密である。tfvars に直接書く代わりに
+#    環境変数で渡すこともできる:
+#      export TF_VAR_proxmox_api_token='tofu@pve!provider=xxxxxxxx-...'
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Proxmox 接続
+# ---------------------------------------------------------------------------
+proxmox_endpoint = "https://172.16.10.11:8006/"
+
+# 専用ユーザーの API トークンを使う（root@pam のパスワードは使わない）。
+# 作成手順は docs/50-operations.md §2 を参照。
+proxmox_api_token = "tofu@pve!provider=00000000-0000-0000-0000-000000000000"
+
+# Proxmox が自己署名証明書のままなら true。
+# 正式な証明書を入れたら false に戻すこと。
+proxmox_insecure = true
+
+# snippets 配置には SSH を使わない設計だが、bpg プロバイダは
+# 一部の操作で SSH を必要とするため接続情報を渡しておく。
+proxmox_ssh_username    = "root"
+proxmox_ssh_agent       = true
+proxmox_ssh_private_key = "" # ssh-agent を使わない場合のみ指定（例: "~/.ssh/id_ed25519"）
+
+# ---------------------------------------------------------------------------
+# バージョン
+#
+# Talos と Kubernetes の対応表:
+#   https://www.talos.dev/v1.13/introduction/support-matrix/
+# 対応外の組み合わせを指定すると bootstrap が失敗する。
+# ---------------------------------------------------------------------------
+talos_version      = "v1.13.9"
+kubernetes_version = "v1.34.3"
+
+cluster_name = "homelab"
+
+# ---------------------------------------------------------------------------
+# ストレージ
+# ---------------------------------------------------------------------------
+iso_datastore_id = "cephfs01"    # ISO 置き場（共有ストレージであること）
+vm_datastore_id  = "cephrdb_k8s" # VM ディスク（Ceph RBD）
+
+# ---------------------------------------------------------------------------
+# ネットワーク
+# ---------------------------------------------------------------------------
+network_bridge   = "vmbr1"
+vlan_k8s         = 40
+vlan_ceph_public = 20
+k8s_gateway      = "172.16.40.1"
+cluster_vip      = "172.16.40.10"
+
+nameservers = ["172.16.40.1", "1.1.1.1"]
+ntp_servers = ["ntp.nict.jp", "time.cloudflare.com"]
+
+pod_cidr     = "10.244.0.0/16"
+service_cidr = "10.96.0.0/12"
+
+# ---------------------------------------------------------------------------
+# 管理経路の制限（重要）
+#
+# Talos API (50000) と kube-apiserver (6443) にアクセスできる送信元。
+# ここを広げることは管理平面を露出させることと同義である。
+#
+#   172.16.40.0/24 : Kubernetes ノード自身（必須）
+#   172.16.10.0/24 : Proxmox 管理セグメント
+#   100.64.0.0/10  : Tailscale (CGNAT 帯) 経由の運用端末
+#
+# ⚠️ 0.0.0.0/0 を絶対に入れないこと。
+# ---------------------------------------------------------------------------
+management_cidrs = [
+  "172.16.40.0/24",
+  "172.16.10.0/24",
+  "100.64.0.0/10",
+]
+
+# ---------------------------------------------------------------------------
+# ノード定義
+#
+# 既定値（variables.tf）と同じ内容をここに明示しておく。
+# スペックを変える場合はこのブロックを編集する。
+#
+# ⚠️ MAC アドレスは Talos の machine config で NIC を識別するために
+#    使われる。変更する場合は重複しないよう注意すること。
+# ---------------------------------------------------------------------------
+control_plane_nodes = {
+  "k8s-cp-1" = {
+    vmid = 1001, pve_node = "sv-proxmox-01"
+    ip = "172.16.40.11", ceph_ip = "172.16.20.41"
+    mac_k8s = "BC:24:11:40:00:11", mac_ceph = "BC:24:11:20:00:11"
+    cores = 4, memory_mib = 8192, disk_gib = 60
+  }
+  "k8s-cp-2" = {
+    vmid = 1002, pve_node = "sv-proxmox-02"
+    ip = "172.16.40.12", ceph_ip = "172.16.20.42"
+    mac_k8s = "BC:24:11:40:00:12", mac_ceph = "BC:24:11:20:00:12"
+    cores = 4, memory_mib = 8192, disk_gib = 60
+  }
+  "k8s-cp-3" = {
+    vmid = 1003, pve_node = "sv-proxmox-03"
+    ip = "172.16.40.13", ceph_ip = "172.16.20.43"
+    mac_k8s = "BC:24:11:40:00:13", mac_ceph = "BC:24:11:20:00:13"
+    cores = 4, memory_mib = 8192, disk_gib = 60
+  }
+}
+
+worker_nodes = {
+  "k8s-wk-1" = {
+    vmid = 1101, pve_node = "sv-proxmox-01"
+    ip = "172.16.40.21", ceph_ip = "172.16.20.51"
+    mac_k8s = "BC:24:11:40:00:21", mac_ceph = "BC:24:11:20:00:21"
+    cores = 6, memory_mib = 20480, disk_gib = 120
+  }
+  "k8s-wk-2" = {
+    vmid = 1102, pve_node = "sv-proxmox-02"
+    ip = "172.16.40.22", ceph_ip = "172.16.20.52"
+    mac_k8s = "BC:24:11:40:00:22", mac_ceph = "BC:24:11:20:00:22"
+    cores = 6, memory_mib = 20480, disk_gib = 120
+  }
+  "k8s-wk-3" = {
+    vmid = 1103, pve_node = "sv-proxmox-03"
+    ip = "172.16.40.23", ceph_ip = "172.16.20.53"
+    mac_k8s = "BC:24:11:40:00:23", mac_ceph = "BC:24:11:20:00:23"
+    cores = 6, memory_mib = 20480, disk_gib = 120
+  }
+}

@@ -1,0 +1,19 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: ceph-csi
+
+resources:
+  - namespace.yaml
+  - storageclass.yaml
+  - networkpolicy.yaml
+
+# ---------------------------------------------------------------------------
+# Ceph の認証情報（SOPS 暗号化）
+#
+# scripts/ceph-create-k8s-user.sh が Ceph 上に最小権限ユーザーを作成し、
+# 得られたキーを暗号化して secrets.sops.yaml に書き出す。
+# 平文のキーはリポジトリに存在しない。
+# ---------------------------------------------------------------------------
+generators:
+  - secret-generator.yaml

@@ -1,0 +1,11 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - clusterwide-egress-deny.yaml
+
+# ---------------------------------------------------------------------------
+# default-deny-template.yaml は「テンプレート」であり、
+# <NAMESPACE> というプレースホルダを含むため resources に入れない。
+# 新しい namespace を作る際に手動でコピーして使う。
+# ---------------------------------------------------------------------------

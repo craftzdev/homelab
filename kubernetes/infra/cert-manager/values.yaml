@@ -1,0 +1,93 @@
+# ===========================================================================
+# cert-manager
+#
+# 用途:
+#   クラスタ内部で使う TLS 証明書の発行・更新を自動化する。
+#
+# ⚠️ 外部公開サービスの TLS は Cloudflare エッジで終端されるため、
+#    ACME（Let's Encrypt）による公開証明書の発行は必須ではない。
+#    必要になった場合は DNS-01 チャレンジ（Cloudflare DNS）を使うこと。
+#    HTTP-01 は「外部から自宅への到達」を前提とするため、
+#    ポート開放ゼロの本構成では成立しない。
+# ===========================================================================
+
+crds:
+  enabled: true
+  keep: true
+
+replicaCount: 2
+
+# ---------------------------------------------------------------------------
+# Pod Security Standards "restricted" 準拠
+# ---------------------------------------------------------------------------
+securityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: [ALL]
+
+resources:
+  requests:
+    cpu: 20m
+    memory: 64Mi
+  limits:
+    memory: 256Mi
+
+# ---------------------------------------------------------------------------
+# DNS の解決先
+#
+# 既定では cert-manager が ACME チャレンジの検証に
+# パブリック DNS を使う。内部 DNS を参照させたい場合に調整する。
+# ---------------------------------------------------------------------------
+extraArgs:
+  # ACME の DNS-01 チャレンジで自己解決ループを避ける
+  - --dns01-recursive-nameservers-only
+  - --dns01-recursive-nameservers=1.1.1.1:53,8.8.8.8:53
+
+webhook:
+  replicaCount: 2
+  securityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: [ALL]
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      memory: 128Mi
+
+cainjector:
+  replicaCount: 2
+  securityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: [ALL]
+  resources:
+    requests:
+      cpu: 10m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+
+prometheus:
+  enabled: true
+  servicemonitor:
+    enabled: true
+    labels:
+      release: kube-prometheus-stack
