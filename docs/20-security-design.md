@@ -85,8 +85,35 @@
   Talos API(50000) / kube-apiserver(6443) / etcd(2379-2380) / kubelet(10250) を
   それぞれ必要最小の送信元 CIDR にのみ開ける（[docs/10-network-design.md](10-network-design.md) §5）。
 - **egress の制御**: cloudflared 以外の Pod がインターネットへ出る必要は基本的に無い。
-  外部通信が必要なコンポーネント（cert-manager の ACME、cloudflared）に限り
-  明示的に egress を許可する。
+  外部通信が必要なコンポーネント（cert-manager の ACME、cloudflared、
+  Longhorn のバックアップ、Trivy の DB 取得）に限り明示的に egress を許可する。
+
+- ⚠️ **hostNetwork の Pod には CiliumNetworkPolicy が適用されない**
+
+  > codex のレビューで指摘された、この構成の**構造的な限界**である。正確に記す。
+  >
+  > `hostNetwork: true` で動く Pod（Longhorn の instance-manager、
+  > node-exporter、Cilium 自身など）は Pod のネットワーク名前空間を使わないため、
+  > 通常の `CiliumNetworkPolicy` / `CiliumClusterwideNetworkPolicy` の
+  > 対象外になる。**これらは NetworkPolicy を迂回してノードの
+  > 到達範囲へ通信できる。**
+  >
+  > 本構成でこの層を守っているのは NetworkPolicy ではなく、
+  >
+  > 1. **Talos の ingressFirewall** — VLAN40 以外からの inbound を既定で遮断
+  > 2. **VLAN40 に Kubernetes ノードしか置かない**というネットワーク設計
+  > 3. **Cilium の WireGuard** によるノード間通信の暗号化
+  >
+  > である。
+  >
+  > **より厳密にする方法**: Cilium の Host Firewall（`hostFirewall.enabled: true`）を
+  > 有効にすると、`CiliumClusterwideNetworkPolicy` を hostNetwork の
+  > ワークロードにも適用できる。
+  >
+  > 現時点で有効化していない理由は、**設定を誤るとノードへの到達性を失い、
+  > SSH の無い Talos では復旧が困難**なためである。導入する場合は
+  > Audit Mode（`policyAuditMode`）で実際の通信を数日収集し、
+  > 必要な許可を洗い出してから 1 ノードずつ適用すること。
 
 ### L4: ワークロード（→ T3, T7）
 
@@ -188,6 +215,8 @@ Talos Linux を選んだ最大の理由がここにある（[ADR-0001](adr/0001-
 | Falco 等のランタイム脅威検知 | 常時 CPU/メモリを消費する。まず Cilium の Hubble による通信可視化と Trivy の脆弱性検知を先に入れ、必要性が確認できた段階で追加する |
 | サービスメッシュ（Istio / Linkerd）による mTLS | Cilium の透過暗号化（WireGuard）で代替可能であり、運用複雑度に見合わない。宅内 L2 内の通信であることも考慮した |
 | Kubernetes API のインターネット公開（Cloudflare Tunnel 経由含む） | 管理平面をインターネットに近づける利益より、リスクが上回る。管理は Tailscale 経由に限定する |
+| Cilium Host Firewall（hostNetwork Pod へのポリシー適用） | 設定を誤るとノードへの到達性を失い、SSH の無い Talos では復旧が困難。まず Audit Mode で実通信を収集し、必要な許可を洗い出してから 1 ノードずつ適用すべきもの。現状は Talos の ingressFirewall + VLAN 分離で代替している（§3 L3 に限界を明記） |
+| age 鍵の分割（信頼境界ごとの鍵） | 3 ノードのホームラボで repo-server を複数運用する複雑さが、得られる分離に見合わない。ただし 1 本の鍵が全秘密を復号できることは事実であり、[ADR-0006](adr/0006-argocd-sops.md) に明記した |
 | イメージ署名の強制（Sigstore / Kyverno verifyImages） | 有効だが、まずダイジェスト固定と Trivy を優先。導入時は Kyverno のポリシーとして追加する |
 
 ## 5. 継続的な検証

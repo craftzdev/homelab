@@ -76,3 +76,25 @@ kustomization.yaml
   → `kubernetes/bootstrap/argocd/` で宣言的に構成する
 - ❌ 暗号化された値は「変更されたこと」しか差分で分からない
   → メタデータを平文にすることで最低限の可読性は確保する
+
+- ❌ **1 本の age 鍵が全ての秘密を復号できる**
+
+  > codex のレビューで指摘された点であり、事実として認める。
+  > Kubernetes の Secret も OpenTofu の変数も同じ age recipient を使い、
+  > その秘密鍵を ArgoCD の repo-server にマウントしている。
+  > **repo-server または argocd namespace の侵害は、Cloudflare の
+  > TunnelSecret も Grafana の認証情報も含む全秘密の漏洩を意味する。**
+  >
+  > 本来は信頼境界ごとに age 鍵を分割し、Application ごとに復号権限を
+  > 分けるべきである（別々の repo-server / CMP、あるいは外部の
+  > Secrets 管理基盤）。
+  >
+  > 現時点でそうしていない理由は、3 ノードのホームラボで
+  > 「repo-server を複数運用する」複雑さが、得られる分離に見合わないと
+  > 判断したためである。ただしこれは**規模に依存する判断**であり、
+  > 扱う秘密の重要度が上がったら見直すこと。
+  >
+  > 当面の緩和策:
+  >   - argocd namespace への RBAC を厳格に保つ
+  >   - argocd namespace に default-deny を敷く（実装済み）
+  >   - ArgoCD UI を外部公開しない（実装済み）

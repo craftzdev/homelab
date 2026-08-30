@@ -410,9 +410,14 @@ Git から再構築できます。ただし PVC の中身は Velero から復元
 
 > ⚠️ **リポジトリを公開する前に必ず実施してください。**
 
-このリポジトリの Git 履歴には、旧構成の Ansible インベントリに書かれていた
-平文の SSH パスワード（`ansible/hosts/k8s-servers/inventory` の `ansible_ssh_pass`）が
-残っています。
+このリポジトリの Git 履歴には、旧構成の**複数の平文認証情報**が残っています。
+
+| ファイル | 内容 |
+| --- | --- |
+| `ansible/hosts/k8s-servers/inventory` | ノードの SSH パスワード（`ansible_ssh_pass`） |
+| `k8s-manifests/apps/cluster-wide-app-resources/minio-for-velero/secret.yaml` | MinIO の管理者認証情報 |
+
+いずれも作業ツリーからは削除済みですが、**履歴には残っています**。
 
 ```bash
 # 1) バックアップを取る
@@ -420,15 +425,30 @@ git clone --mirror . ../homelab-backup.git
 
 # 2) 履歴から除去する
 pip install git-filter-repo
-git filter-repo --path ansible/hosts/k8s-servers/inventory --invert-paths
+git filter-repo \
+  --path ansible/hosts/k8s-servers/inventory \
+  --path k8s-manifests/apps/cluster-wide-app-resources/minio-for-velero/secret.yaml \
+  --invert-paths
 
-# 3) 強制プッシュする（履歴が書き換わるため、他のクローンは作り直しが必要）
+# 3) 除去できたことを確認する
+git log --all --oneline -- ansible/hosts/k8s-servers/inventory   # 何も出ないこと
+
+# 4) 強制プッシュする（履歴が書き換わるため、他のクローンは作り直しが必要）
 git push --force --all
 git push --force --tags
 ```
 
-**さらに重要**: 履歴から消しても、そのパスワードが他で使い回されている場合は
-意味がありません。該当のパスワードは変更してください。
+> ⚠️ **履歴から消すより先に、認証情報そのものを無効化してください。**
+>
+> 履歴の書き換えは「これから見る人」に対してしか効きません。既にクローン
+> された分、GitHub のキャッシュ、フォーク、CI のログには残り得ます。
+> 順序としては
+>
+>   1. 該当のパスワードを変更する（他で使い回していないかも確認する）
+>   2. MinIO のアクセスキーを再発行する
+>   3. その上で履歴を書き換える
+>
+> が正しい対処です。「消したから大丈夫」にはなりません。
 
 ### 7.3 OpenTofu ステートの保護
 
