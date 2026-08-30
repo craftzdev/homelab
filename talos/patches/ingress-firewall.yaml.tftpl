@@ -76,12 +76,18 @@ ingress:
 
 ---
 # ---------------------------------------------------------------------------
-# Pod / Service ネットワークからノードへの通信
+# Pod ネットワークからノードへの通信
 #
 # Cilium は native routing で動作するため、Pod のトラフィックが
 # ホストのネットワークスタックを通過する。hostNetwork の Pod や
 # health check がノード宛に通信するため、これを遮断すると
 # CNI が正常に動作しない。
+#
+# ⚠️ Service CIDR (${service_cidr}) は **送信元として指定しない**。
+#    Service の ClusterIP は宛先アドレスであり、パケットの送信元に
+#    現れることはない（DNAT 後の送信元は Pod IP のまま）。
+#    送信元 CIDR として書いても意味が無く、
+#    「許可されているつもり」の無効なルールが増えるだけになる。
 # ---------------------------------------------------------------------------
 apiVersion: v1alpha1
 kind: NetworkRuleConfig
@@ -92,7 +98,6 @@ portSelector:
   protocol: tcp
 ingress:
   - subnet: ${pod_cidr}
-  - subnet: ${service_cidr}
 
 ---
 apiVersion: v1alpha1
@@ -104,7 +109,6 @@ portSelector:
   protocol: udp
 ingress:
   - subnet: ${pod_cidr}
-  - subnet: ${service_cidr}
 
 ---
 # ---------------------------------------------------------------------------

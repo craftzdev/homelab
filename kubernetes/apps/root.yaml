@@ -17,7 +17,13 @@ metadata:
   finalizers:
     - resources-finalizer.argocd.argoproj.io
 spec:
-  project: default
+  # ⚠️ `default` プロジェクトは使わない。
+  #    ArgoCD の default プロジェクトは任意のリポジトリ・任意の namespace・
+  #    全リソース種別を許可する。app-of-apps の root は最も強い権限を持つ
+  #    ため、ここが無制限だと子 Application 側の制限を迂回できてしまう。
+  #    bootstrap プロジェクトは「Application / AppProject を argocd
+  #    namespace に作る」ことだけを許可する（project.yaml 参照）。
+  project: bootstrap
 
   source:
     repoURL: https://github.com/craftzdev/homelab.git

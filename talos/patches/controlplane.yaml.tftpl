@@ -30,7 +30,12 @@ machine:
   # MAC は tofu/10-proxmox-talos/variables.tf で固定的に払い出している。
   # -------------------------------------------------------------------------
   network:
-    hostname: ${hostname}
+    # ⚠️ hostname はここ（v1alpha1）には書かない。
+    #    Talos v1.13 では HostnameConfig ドキュメントが常に生成されるため、
+    #    v1alpha1 側に hostname があると
+    #      "static hostname is already set in v1alpha1 config"
+    #    で validate が失敗する（talosctl v1.13 で実測確認済み）。
+    #    ホスト名の扱いはこのファイル末尾の HostnameConfig を参照。
     nameservers: ${nameservers}
 
     interfaces:
@@ -88,12 +93,8 @@ machine:
     rbac: true
 
     # ⚠️ stableHostname は設定しない。
-    #    この機能は「DHCP や逆引きに依存せず、ノード ID から安定した
-    #    ホスト名を生成する」ためのもので、machine.network.hostname で
-    #    静的なホスト名を指定する構成とは排他である。
-    #    両方を設定すると talosctl validate が
-    #      "static hostname is already set in v1alpha1 config"
-    #    で失敗する。本構成では hostname を明示しているため不要。
+    #    Talos v1.13 ではホスト名の扱いが HostnameConfig ドキュメント
+    #    （このファイル末尾）へ移行しており、併用すると競合する。
 
     # クライアント証明書の ExtKeyUsage を検証する。
     # 無効にすると証明書の用途を偽装される余地が生まれる。
@@ -152,7 +153,7 @@ machine:
       # kubelet の serving 証明書を CSR 経由で発行・自動更新する。
       # これにより metrics-server が --kubelet-insecure-tls を使わずに済む。
       # CSR を承認するため kubelet-serving-cert-approver を別途デプロイする
-      # （kubernetes/infra/security/kubelet-serving-cert-approver）。
+      # （kubernetes/infra/kubelet-cert-approver/）。
       rotate-server-certificates: "true"
 
     extraConfig:
@@ -330,3 +331,39 @@ cluster:
   scheduler:
     extraArgs:
       profiling: "false"
+
+---
+# ===========================================================================
+# ホスト名（Talos v1.13 以降の指定方法）
+#
+# Talos v1.13 で hostname の設定が v1alpha1 の machine.network.hostname から
+# 独立した HostnameConfig ドキュメントへ移行した。
+# `talosctl gen config` は既定で `auto: stable`（マシン ID から安定した
+# ホスト名を生成）を出力するため、静的な名前を使いたい場合はここで上書きする。
+#
+# `hostname` と `auto` は排他である（両方指定すると競合する）。
+# ===========================================================================
+apiVersion: v1alpha1
+kind: HostnameConfig
+# ---------------------------------------------------------------------------
+# ホスト名（Talos v1.13 以降の指定方法）
+#
+# Talos v1.13 でホスト名の設定が v1alpha1 の machine.network.hostname から
+# 独立した HostnameConfig ドキュメントへ移行した。
+#
+# ⚠️ `auto` と `hostname` の関係に注意:
+#    `talosctl gen config`（および terraform-provider-talos）は既定で
+#    `auto: stable` を出力する。ここで `hostname` だけを足すと
+#      "HostnameConfig: 'auto' and 'hostname' cannot be set at the same time"
+#    で validate に失敗する。`auto: off`（自動生成を止める）と併記して
+#    初めて静的なホスト名を指定できる。
+#
+#    strategic merge patch では既存の `auto` を削除できないため
+#    （`auto: null` も `$patch: replace` も効かないことを talosctl v1.13 で
+#    実測確認済み）、値を `off` に上書きする形を取る。
+#
+# 検証コマンド:
+#   talosctl -n <node> get hostnamestatus
+# ---------------------------------------------------------------------------
+auto: off
+hostname: ${hostname}

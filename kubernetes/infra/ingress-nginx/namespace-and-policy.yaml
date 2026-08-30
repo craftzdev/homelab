@@ -55,20 +55,20 @@ spec:
             - port: "80"
               protocol: TCP
 
-    # --- 宅内からの直接アクセス（LoadBalancer IP 経由）---
+    # --- kubelet からの health probe のみ ---
     #
-    # Cilium の L2 Announcement で払い出した 172.16.40.200 に
-    # 宅内から到達するケース。ノード経由で入ってくるため
-    # host / remote-node エンティティとして扱われる。
+    # ⚠️ 以前はここで host / remote-node からの 80/443 を許可していたが、
+    #    それは Cloudflare Access を迂回する経路になっていた。
+    #    VLAN40 に到達できる者や侵害された hostNetwork Pod が、
+    #    Host ヘッダを指定して直接 Ingress を叩けてしまう。
+    #
+    #    Service を ClusterIP にしたこととあわせ、HTTP の入口は
+    #    cloudflared 経由だけに限定する。probe に必要な 10254 のみ許可する。
     - fromEntities:
         - host
         - remote-node
       toPorts:
         - ports:
-            - port: "80"
-              protocol: TCP
-            - port: "443"
-              protocol: TCP
             - port: "10254" # health / metrics
               protocol: TCP
 

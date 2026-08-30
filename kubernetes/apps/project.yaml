@@ -34,7 +34,6 @@ spec:
     - https://vmware-tanzu.github.io/helm-charts
     - https://aquasecurity.github.io/helm-charts/
     - https://backube.github.io/helm-charts/
-    - https://alex1989hu.github.io/kubelet-serving-cert-approver
     - https://piraeus.io/helm-charts/
 
   # -------------------------------------------------------------------------
@@ -62,6 +61,12 @@ spec:
       namespace: security
     - server: https://kubernetes.default.svc
       namespace: argocd
+    # kubelet-serving-cert-approver は上流マニフェストが専用 namespace を作る
+    - server: https://kubernetes.default.svc
+      namespace: kubelet-serving-cert-approver
+    # 同マニフェストが default namespace にも RoleBinding（events 用）を作る
+    - server: https://kubernetes.default.svc
+      namespace: default
 
   # -------------------------------------------------------------------------
   # クラスタスコープのリソース
@@ -164,3 +169,53 @@ spec:
       description: 参照のみ
       policies:
         - p, proj:infrastructure:readonly, applications, get, infrastructure/*, allow
+
+---
+# ===========================================================================
+# root Application 専用の AppProject
+#
+# ⚠️ なぜ root だけ別の Project が必要なのか
+#
+# 子 Application は infrastructure プロジェクトの制限（許可リポジトリ・
+# 許可 namespace・許可リソース種別）を受ける。しかし root 自身が
+# ArgoCD の `default` プロジェクトを使っていると、そこには
+# **何の制限も無い**（任意のリポジトリ・任意の namespace・全リソース種別）。
+#
+# つまり root Application の spec や参照先ディレクトリを変更できる経路が
+# あれば、infrastructure プロジェクトの制限を迂回して任意のリソースを
+# 展開できてしまう。app-of-apps 構成では root こそ最も強い権限を持つ。
+#
+# この Project は root がやるべきこと——「このリポジトリの
+# kubernetes/apps を読んで、argocd namespace に Application と
+# AppProject を作る」——だけに権限を絞る。
+# ===========================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: bootstrap
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  description: |
+    app-of-apps の root 専用。Application / AppProject の生成のみを許可する。
+
+  # このリポジトリ以外からは何も読み込ませない
+  sourceRepos:
+    - https://github.com/craftzdev/homelab.git
+
+  # argocd namespace 以外へは何もデプロイさせない
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: argocd
+
+  # クラスタスコープのリソースは一切作らせない
+  clusterResourceWhitelist: []
+
+  # 作ってよいのは Application と AppProject のみ。
+  # これにより root が Secret や Deployment を直接作ることはできない。
+  namespaceResourceWhitelist:
+    - group: argoproj.io
+      kind: Application
+    - group: argoproj.io
+      kind: AppProject

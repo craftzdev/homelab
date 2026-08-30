@@ -77,21 +77,28 @@ controller:
       "user_agent":"$http_user_agent"}
 
   # -------------------------------------------------------------------------
-  # Service
+  # Service — ClusterIP にする（LoadBalancer にしない）
   #
-  # LoadBalancer にして Cilium の L2 Announcement で固定 IP を払い出す。
+  # ⚠️ これは重要なセキュリティ上の判断である。
   #
-  # ⚠️ この IP（172.16.40.200）は **宅内からのみ** 到達可能である。
-  #    ルータでポートフォワードを設定しない限りインターネットには
-  #    公開されない。外部公開は Cloudflare Tunnel のみで行う。
-  #    docs/10-network-design.md §2 を参照。
+  # 当初は宅内からの直接アクセス用に LoadBalancer（172.16.40.200）で
+  # L2 公開していたが、それは **Cloudflare Access を迂回できる第 2 の
+  # 入口を作る** ことを意味していた。VLAN40 に到達できる者（侵害された
+  # hostNetwork Pod を含む）が Host ヘッダを指定して直接 Ingress を
+  # 叩けば、Access の認可も cloudflared の JWT 検証も通らずに
+  # アプリへ到達できてしまう。
+  #
+  # 「外部公開は Cloudflare Tunnel のみ」という設計方針を、コメントでは
+  # なく**構成そのもの**で保証するため ClusterIP にする。
+  # cloudflared は同じクラスタ内にいるので ClusterIP で十分到達できる。
+  #
+  # 宅内から Ingress 経由でアプリを見たい場合は port-forward を使う:
+  #   kubectl -n ingress-nginx port-forward svc/ingress-nginx-controller 8080:80
   # -------------------------------------------------------------------------
   service:
     enabled: true
-    type: LoadBalancer
-    loadBalancerIP: "172.16.40.200"
+    type: ClusterIP
     annotations: {}
-    externalTrafficPolicy: Local
 
   # -------------------------------------------------------------------------
   # 分散配置

@@ -20,8 +20,22 @@ spec:
     - start: "172.16.40.200"
       stop: "172.16.40.239"
 
-  # ラベルセレクタを付けず、全 namespace の LoadBalancer Service を対象にする。
-  # 用途を分けたくなったら serviceSelector で絞り込む。
+  # ---------------------------------------------------------------------------
+  # ⚠️ 明示的にラベルを付けた Service だけを対象にする
+  #
+  # セレクタを付けないと、**全 namespace のあらゆる LoadBalancer Service**
+  # に IP が払い出され、VLAN40 へ自動的に L2 広告される。
+  # 「うっかり type: LoadBalancer にしたら宅内へ公開されていた」という
+  # 事故が起きうる。
+  #
+  # 宅内へ公開してよいと判断した Service にだけ
+  #   homelab.io/lan-exposed: "true"
+  # を付ける運用にすることで、公開は必ず意図的な行為になる。
+  # ---------------------------------------------------------------------------
+  serviceSelector:
+    matchLabels:
+      homelab.io/lan-exposed: "true"
+
   disabled: false
 
 ---

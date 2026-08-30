@@ -246,10 +246,22 @@ RBD_KEY="$(get_ceph_key "${RBD_USER}")"
 CEPHFS_KEY=""
 if [[ "${CEPHFS_AVAILABLE}" == true ]]; then
   info "=== CephFS 用ユーザー ==="
+  # -------------------------------------------------------------------------
+  # ceph-csi が要求する caps に厳密に合わせる。
+  # https://github.com/ceph/ceph-csi/blob/devel/docs/capabilities.md
+  #
+  # 過不足があると症状が分かりにくい形で失敗する:
+  #   - mds に親 /volumes の `r` が無い     → subvolume の作成が失敗する
+  #   - mds に `s`（snapshot）が無い        → VolumeSnapshot が失敗する
+  #   - osd に metadata pool の `rwx` が無い → subvolume のメタデータ操作が失敗する
+  #
+  # いずれも "Operation not permitted" としか出ないため、
+  # 最初から公式の caps に合わせておくことが結局いちばん速い。
+  # -------------------------------------------------------------------------
   ensure_ceph_user "${CEPHFS_USER}" \
     mon "allow r fsname=${CEPHFS_NAME}" \
-    mds "allow rw fsname=${CEPHFS_NAME} path=/volumes/${CEPHFS_SUBVOLUMEGROUP}" \
-    osd "allow rw tag cephfs data=${CEPHFS_NAME}" \
+    mds "allow r fsname=${CEPHFS_NAME} path=/volumes, allow rws fsname=${CEPHFS_NAME} path=/volumes/${CEPHFS_SUBVOLUMEGROUP}" \
+    osd "allow rw tag cephfs metadata=${CEPHFS_NAME}, allow rw tag cephfs data=${CEPHFS_NAME}" \
     mgr "allow rw"
 
   CEPHFS_KEY="$(get_ceph_key "${CEPHFS_USER}")"
@@ -304,17 +316,38 @@ EOF
   fi
 } > "${TMP_FILE}"
 
+# ---------------------------------------------------------------------------
+# 暗号化して書き出す（atomic）
+#
+# ⚠️ `sops --encrypt ... > "${OUTPUT_FILE}"` と直接リダイレクトすると、
+#    シェルが先に出力ファイルを truncate してから sops を実行する。
+#    sops が失敗した場合、**既存の暗号化済み Secret が空ファイルとして
+#    破壊される**。復旧には Git の履歴が必要になる。
+#
+#    一時ファイルへ書いてから mv で置き換えることで、
+#    「成功したときだけ差し替わる」ようにする。
+# ---------------------------------------------------------------------------
 mkdir -p "$(dirname "${OUTPUT_FILE}")"
-sops --encrypt --config "${REPO_ROOT}/.sops.yaml" "${TMP_FILE}" > "${OUTPUT_FILE}"
+
+ENC_TMP="$(mktemp "${TMPDIR:-/tmp}/ceph-csi-secrets-enc.XXXXXX.yaml")"
+chmod 600 "${ENC_TMP}"
+cleanup() { rm -f "${TMP_FILE}" "${ENC_TMP}"; }
+trap cleanup EXIT INT TERM
+
+if ! sops --encrypt --config "${REPO_ROOT}/.sops.yaml" "${TMP_FILE}" > "${ENC_TMP}"; then
+  die "sops による暗号化に失敗しました。既存の ${OUTPUT_FILE} は変更していません。"
+fi
+
+# 平文が混入していないことを検証してから配置する（保険）
+if grep -qF "${RBD_KEY}" "${ENC_TMP}"; then
+  die "暗号化に失敗しています（平文のキーが出力に含まれています）。
+     既存の ${OUTPUT_FILE} は変更していません。"
+fi
+
+mv "${ENC_TMP}" "${OUTPUT_FILE}"
 chmod 600 "${OUTPUT_FILE}"
 
 ok "暗号化された Secret を書き出しました: ${OUTPUT_FILE}"
-
-# 平文が混入していないことを検証する（保険）
-if grep -qF "${RBD_KEY}" "${OUTPUT_FILE}"; then
-  rm -f "${OUTPUT_FILE}"
-  die "暗号化に失敗しています（平文のキーが出力に含まれています）。出力ファイルを削除しました。"
-fi
 ok "平文のキーが含まれていないことを確認しました"
 
 cat <<EOF

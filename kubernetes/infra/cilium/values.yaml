@@ -130,8 +130,11 @@ k8sClientRateLimit:
   qps: 50
   burst: 100
 
-externalIPs:
-  enabled: true
+# ⚠️ `externalIPs.enabled` は書かない。
+#    Cilium 1.19 で削除され、kubeProxyReplacement 側へ統合された。
+#    Helm は未知のキーを黙って無視するため、書いてあっても
+#    「有効化できているつもり」になるだけで実際には何も起きない。
+#    ExternalIP の処理は kubeProxyReplacement: true が唯一の制御点。
 
 # ---------------------------------------------------------------------------
 # ネットワークポリシー

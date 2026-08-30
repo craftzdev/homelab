@@ -78,16 +78,32 @@ stringData:
 $(printf '%s' "${CREDENTIALS_JSON}" | sed 's/^/    /')
 EOF
 
-sops --encrypt --config "${REPO_ROOT}/.sops.yaml" "${TMP_FILE}" > "${OUTPUT_FILE}"
-chmod 600 "${OUTPUT_FILE}"
+# ---------------------------------------------------------------------------
+# ⚠️ 直接リダイレクトしない（atomic に置き換える）
+#
+# `sops ... > "${OUTPUT_FILE}"` はシェルが先に出力先を truncate するため、
+# sops が失敗すると既存の暗号化済み Secret が空ファイルとして破壊される。
+# 一時ファイルへ書いて検証してから mv する。
+# ---------------------------------------------------------------------------
+ENC_TMP="$(mktemp "${TMPDIR:-/tmp}/cloudflared-secret-enc.XXXXXX.yaml")"
+chmod 600 "${ENC_TMP}"
+cleanup() { rm -f "${TMP_FILE}" "${ENC_TMP}"; }
+trap cleanup EXIT INT TERM
+
+if ! sops --encrypt --config "${REPO_ROOT}/.sops.yaml" "${TMP_FILE}" > "${ENC_TMP}"; then
+  die "sops による暗号化に失敗しました。既存の ${OUTPUT_FILE} は変更していません。"
+fi
 
 # 平文が漏れていないことを検証する（保険）
 TUNNEL_SECRET="$(printf '%s' "${CREDENTIALS_JSON}" \
   | sed -n 's/.*"TunnelSecret"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
-if [[ -n "${TUNNEL_SECRET}" ]] && grep -qF "${TUNNEL_SECRET}" "${OUTPUT_FILE}"; then
-  rm -f "${OUTPUT_FILE}"
-  die "暗号化に失敗しています（平文が出力に含まれています）。出力を削除しました。"
+if [[ -n "${TUNNEL_SECRET}" ]] && grep -qF "${TUNNEL_SECRET}" "${ENC_TMP}"; then
+  die "暗号化に失敗しています（平文が出力に含まれています）。
+     既存の ${OUTPUT_FILE} は変更していません。"
 fi
+
+mv "${ENC_TMP}" "${OUTPUT_FILE}"
+chmod 600 "${OUTPUT_FILE}"
 
 ok "暗号化された Secret を書き出しました: ${OUTPUT_FILE#"${REPO_ROOT}/"}"
 

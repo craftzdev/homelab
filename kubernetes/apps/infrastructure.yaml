@@ -431,8 +431,13 @@ spec:
 #    Prometheus が kubelet に接続できない。監視スタック（wave 5）より
 #    前に稼働している必要がある。
 #
-#    詳細は kubernetes/infra/security/values-cert-approver.yaml の
-#    冒頭コメントを参照。
+# ⚠️ このコンポーネントは **Helm chart を提供していない**（kustomize のみ）。
+#    そのため他のコンポーネントと異なり、kustomize の remote resource として
+#    タグ固定で取得する。判断の理由は
+#    kubernetes/infra/kubelet-cert-approver/kustomization.yaml を参照。
+#
+#    namespace は上流のマニフェストが作る `kubelet-serving-cert-approver` を
+#    そのまま使う（マニフェスト側で Namespace リソースが定義されている）。
 # ---------------------------------------------------------------------------
 apiVersion: argoproj.io/v1alpha1
 kind: Application
@@ -445,24 +450,19 @@ metadata:
     - resources-finalizer.argocd.argoproj.io
 spec:
   project: infrastructure
-  sources:
-    - repoURL: https://alex1989hu.github.io/kubelet-serving-cert-approver
-      chart: kubelet-serving-cert-approver
-      targetRevision: 0.12.0
-      helm:
-        releaseName: kubelet-serving-cert-approver
-        valueFiles:
-          - $values/kubernetes/infra/security/values-cert-approver.yaml
-    - repoURL: https://github.com/craftzdev/homelab.git
-      targetRevision: main
-      ref: values
+  source:
+    repoURL: https://github.com/craftzdev/homelab.git
+    targetRevision: main
+    path: kubernetes/infra/kubelet-cert-approver
   destination:
     server: https://kubernetes.default.svc
-    namespace: security
+    namespace: kubelet-serving-cert-approver
   syncPolicy:
     automated:
       prune: true
       selfHeal: true
+    syncOptions:
+      - CreateNamespace=false
 
 ---
 # ---------------------------------------------------------------------------

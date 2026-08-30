@@ -30,10 +30,66 @@ export interface Env {
    */
   CF_ACCESS_CLIENT_ID: string;
   CF_ACCESS_CLIENT_SECRET: string;
+
+  /**
+   * この Worker 自身の呼び出し元を認証するための共有シークレット。
+   *
+   * ⚠️⚠️ これが無いと、この Worker は「誰でも使える Access の代理」に
+   *      なってしまう。Cloudflare Access が認証しているのは
+   *      **この Worker** であって、**Worker の利用者**ではない。
+   *      workers.dev の URL は誰でも叩けるため、認証を入れなければ
+   *      インターネット上の任意の第三者が Access を通過できる。
+   *
+   *   wrangler secret put CLIENT_API_KEY
+   *   # 生成例: openssl rand -base64 32
+   */
+  CLIENT_API_KEY: string;
 }
 
 /** オリジンへの問い合わせのタイムアウト（ミリ秒） */
 const ORIGIN_TIMEOUT_MS = 8_000;
+
+/**
+ * オリジンへ転送を許可する HTTP メソッド。
+ *
+ * allowlist にする理由: 「危険なメソッドを denylist する」方式は
+ * 新しいメソッドが増えたときに漏れる。通す物だけを列挙する方が安全。
+ */
+const ALLOWED_METHODS = new Set(["GET", "HEAD", "POST"]);
+
+/**
+ * タイミング攻撃に耐える文字列比較。
+ *
+ * 素朴な `a === b` は先頭から比較して不一致で即座に返るため、
+ * 応答時間の差から 1 文字ずつシークレットを推測されうる。
+ * 長さの違いも情報になるため、まず長さを比較してから
+ * 全文字を走査する（早期 return しない）。
+ */
+function timingSafeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) {
+    diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return diff === 0;
+}
+
+/**
+ * この Worker の呼び出し元を認証する。
+ *
+ * ⚠️ 本番では共有シークレットではなく、利用者ごとの JWT 検証や
+ *    mTLS を使うべきである。ここでは「認証を入れる場所」を示すための
+ *    最小実装としている。
+ */
+function isAuthorizedCaller(request: Request, env: Env): boolean {
+  if (!env.CLIENT_API_KEY) return false;
+
+  const header = request.headers.get("Authorization") ?? "";
+  const prefix = "Bearer ";
+  if (!header.startsWith(prefix)) return false;
+
+  return timingSafeEqual(header.slice(prefix.length), env.CLIENT_API_KEY);
+}
 
 /**
  * Cloudflare Access で保護されたオリジンへリクエストを送る。
@@ -83,11 +139,42 @@ export default {
     if (url.pathname.startsWith("/api/")) {
       // 設定漏れを早期に検出する。Secret が未設定のまま動かすと
       // 全リクエストが 401 になり、原因の切り分けに時間を取られる。
-      if (!env.CF_ACCESS_CLIENT_ID || !env.CF_ACCESS_CLIENT_SECRET) {
-        console.error("Access Service Token が設定されていません");
+      if (
+        !env.CF_ACCESS_CLIENT_ID ||
+        !env.CF_ACCESS_CLIENT_SECRET ||
+        !env.CLIENT_API_KEY
+      ) {
+        console.error(
+          "必要な Secret が設定されていません " +
+            "(CF_ACCESS_CLIENT_ID / CF_ACCESS_CLIENT_SECRET / CLIENT_API_KEY)",
+        );
         return Response.json(
           { error: "service_misconfigured" },
           { status: 500 },
+        );
+      }
+
+      // ---------------------------------------------------------------
+      // ⚠️ 呼び出し元の認証（これが無いと Access の代理になる）
+      //
+      // Cloudflare Access が認証しているのは「この Worker」であって
+      // 「Worker の利用者」ではない。ここで呼び出し元を認証しないと、
+      // workers.dev の URL を知る誰もが Access を通過できてしまう。
+      // ---------------------------------------------------------------
+      if (!isAuthorizedCaller(request, env)) {
+        return Response.json({ error: "unauthorized" }, { status: 401 });
+      }
+
+      // ---------------------------------------------------------------
+      // メソッドの allowlist
+      //
+      // 任意のメソッドをそのまま転送すると、オリジン側が想定しない
+      // DELETE / PUT などを受け取ることになる。通す物だけを列挙する。
+      // ---------------------------------------------------------------
+      if (!ALLOWED_METHODS.has(request.method)) {
+        return Response.json(
+          { error: "method_not_allowed" },
+          { status: 405, headers: { Allow: [...ALLOWED_METHODS].join(", ") } },
         );
       }
 

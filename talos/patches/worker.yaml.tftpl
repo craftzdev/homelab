@@ -17,7 +17,11 @@ machine:
     wipe: false
 
   network:
-    hostname: ${hostname}
+    # ⚠️ hostname はここ（v1alpha1）には書かない。
+    #    Talos v1.13 ではホスト名の設定が HostnameConfig ドキュメント
+    #    （ファイル末尾）へ移行しており、併用すると
+    #      "static hostname is already set in v1alpha1 config"
+    #    で validate が失敗する。
     nameservers: ${nameservers}
 
     interfaces:
@@ -53,7 +57,7 @@ machine:
 
   features:
     rbac: true
-    # stableHostname は machine.network.hostname と排他のため設定しない
+    # stableHostname は HostnameConfig と排他のため設定しない
     # （詳細は controlplane.yaml.tftpl のコメントを参照）
     apidCheckExtKeyUsage: true
     kubePrism:
@@ -110,3 +114,34 @@ cluster:
         disabled: false
       service:
         disabled: true
+
+---
+# ===========================================================================
+# ホスト名（Talos v1.13 以降の指定方法）
+#
+# 詳細は controlplane.yaml.tftpl 末尾のコメントを参照。
+# ===========================================================================
+apiVersion: v1alpha1
+kind: HostnameConfig
+# ---------------------------------------------------------------------------
+# ホスト名（Talos v1.13 以降の指定方法）
+#
+# Talos v1.13 でホスト名の設定が v1alpha1 の machine.network.hostname から
+# 独立した HostnameConfig ドキュメントへ移行した。
+#
+# ⚠️ `auto` と `hostname` の関係に注意:
+#    `talosctl gen config`（および terraform-provider-talos）は既定で
+#    `auto: stable` を出力する。ここで `hostname` だけを足すと
+#      "HostnameConfig: 'auto' and 'hostname' cannot be set at the same time"
+#    で validate に失敗する。`auto: off`（自動生成を止める）と併記して
+#    初めて静的なホスト名を指定できる。
+#
+#    strategic merge patch では既存の `auto` を削除できないため
+#    （`auto: null` も `$patch: replace` も効かないことを talosctl v1.13 で
+#    実測確認済み）、値を `off` に上書きする形を取る。
+#
+# 検証コマンド:
+#   talosctl -n <node> get hostnamestatus
+# ---------------------------------------------------------------------------
+auto: off
+hostname: ${hostname}

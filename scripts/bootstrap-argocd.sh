@@ -106,9 +106,22 @@ ok "GitOps 管理を開始しました"
 
 # ---------------------------------------------------------------------------
 # 初期パスワードの案内
+#
+# ⚠️ パスワードそのものは **表示しない**。
+#
+#    スクリプトの標準出力は CI のログ、ターミナルの履歴、画面共有、
+#    セッション録画に残る。管理者パスワードがそれらに残ることは
+#    「一度きりの初期パスワードだから」では正当化できない。
+#
+#    代わりに、必要なときに利用者自身が取得するコマンドを案内する。
 # ---------------------------------------------------------------------------
-INITIAL_PASSWORD="$(kubectl -n argocd get secret argocd-initial-admin-secret \
-  -o jsonpath='{.data.password}' 2>/dev/null | base64 -d 2>/dev/null || echo "")"
+if kubectl -n argocd get secret argocd-initial-admin-secret >/dev/null 2>&1; then
+  PASSWORD_HINT="取得コマンド（必要なときに実行してください）:
+    kubectl -n argocd get secret argocd-initial-admin-secret \\
+      -o jsonpath='{.data.password}' | base64 -d; echo"
+else
+  PASSWORD_HINT="初期パスワードの Secret は存在しません（削除済み）。"
+fi
 
 cat <<EOF
 
@@ -122,11 +135,7 @@ cat <<EOF
 
   ログイン:
     ユーザー名: admin
-EOF
-
-if [[ -n "${INITIAL_PASSWORD}" ]]; then
-  cat <<EOF
-    初期パスワード: ${INITIAL_PASSWORD}
+    ${PASSWORD_HINT}
 
   ⚠️ 【必ず実施】初期パスワードを変更し、Secret を削除してください:
 
@@ -135,9 +144,6 @@ if [[ -n "${INITIAL_PASSWORD}" ]]; then
     kubectl -n argocd delete secret argocd-initial-admin-secret
 
 EOF
-else
-  printf '    初期パスワードの Secret が見つかりません（既に削除済み？）\n\n'
-fi
 
 cat <<'EOF'
   同期状況の確認:

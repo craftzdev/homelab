@@ -150,12 +150,22 @@ grafana:
     storageClassName: ceph-rbd
     size: 5Gi
 
+  # -------------------------------------------------------------------------
   # 宅内からアクセスできるように LoadBalancer で公開する。
+  #
   # ⚠️ この IP はインターネットには公開されない
   #    （ルータでポートフォワードしない限り到達不可）。
+  #
+  # `homelab.io/lan-exposed: "true"` ラベルが必須である。
+  # Cilium の IP プールはこのラベルを持つ Service だけを対象にしており、
+  # 「うっかり type: LoadBalancer にしたら宅内公開されていた」という
+  # 事故を防いでいる（kubernetes/infra/cilium/lb-ipam.yaml 参照）。
+  # -------------------------------------------------------------------------
   service:
     type: LoadBalancer
     loadBalancerIP: "172.16.40.201"
+    labels:
+      homelab.io/lan-exposed: "true"
 
   ingress:
     enabled: false
