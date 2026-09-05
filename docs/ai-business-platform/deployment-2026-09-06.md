@@ -13,12 +13,14 @@
 | Guest | Ubuntu 24.04 / QEMU Guest Agent | Running |
 | Gateway | FastAPI public and callback surfaces | Running |
 | Database | PostgreSQL 17 | Healthy |
-| Host firewall | deny incoming; management SSH and Tailscale only | Active |
+| Host firewall | deny incoming; management SSH/Tailscale ingress; management/Ceph/workload VLAN egress denied | Active |
 | HA resource | `vm:1200` | Started |
 | HA rule | `ai-gateway-placement` | In use |
 | Tailscale node | `ai-gateway-01` / `100.104.73.43` | Connected |
 | Tailscale HTTPS | `https://ai-gateway-01.tailb6c7d.ts.net` | Callback surface healthy |
-| Cloudflare hostname | `gateway.craftz.dev` | Not active; tunnel and DNS pending |
+| Cloudflare hostname | `https://gateway.craftz.dev` | Tunnel and DNS active; public health/API verified |
+| Cloudflare Tunnel | `ai-business-gateway` / `1cb360c1-26be-4f23-b3d3-728689073a04` | Connected over four QUIC sessions |
+| Tailscale policy | Gateway tag + deny-by-default Grants | Active |
 
 The HA node preference is `sv-proxmox-01:3`, `sv-proxmox-02:2`, and
 `sv-proxmox-03:1`, with strict placement, `max_restart=1`,
@@ -41,6 +43,16 @@ The HA node preference is `sv-proxmox-01:3`, `sv-proxmox-02:2`, and
   PostgreSQL instance.
 - Tailscale issued a valid HTTPS certificate and the Mac Studio reached the
   callback health endpoint over the Tailnet.
+- The dedicated Cloudflare Tunnel registered four QUIC connections and
+  `gateway.craftz.dev` reached the loopback-only public API. Public health,
+  HTTP 401 without a token, and authenticated Job creation were verified.
+- The Gateway is tagged `tag:ai-gateway`. Tailnet policy allows only HTTPS
+  between it and the current Mac Studio worker host (or future worker tags).
+  A Tailnet SSH connection to the Gateway was rejected while HTTPS remained
+  available.
+- The Gateway host firewall rejected new connections to the Proxmox management,
+  Ceph public, and Ceph cluster networks. Management SSH into the Gateway, DNS,
+  Cloudflare egress, and Tailscale HTTPS continued to work.
 - A snapshot backup was created on Proxmox local storage. It was restored to
   isolated VM `1299`; the guest agent, containers, API readiness, and restored
   PostgreSQL rows were checked. The temporary restore VM and its disks were
@@ -48,18 +60,15 @@ The HA node preference is `sv-proxmox-01:3`, `sv-proxmox-02:2`, and
 
 ## Open production gates
 
-1. The current Cloudflare login has no visible `craftz.dev` zone. Log in to the
-   account that owns the zone, authorize `cloudflared`, create the tunnel and
-   Access policy, and only then publish `gateway.craftz.dev`.
-2. The Tailnet still has its historical allow-all ACL. Apply tag ownership and
-   deny-by-default Grants before marking `ai-gateway-01` as
-   `tag:ai-gateway`. The Gateway is currently a user-owned device so that the
-   existing tailnet is not disrupted without a reviewed policy change.
-3. Proxmox Backup Server is reachable through the existing Tailscale node, but
+1. Cloudflare Access Service Auth and Gateway-side Access JWT validation are
+   not implemented yet. The public Job API still requires its independent
+   Bearer token, but completing Edge authentication is required before issuing
+   credentials to Grok Bot.
+2. Proxmox Backup Server is reachable through the existing Tailscale node, but
    no PBS storage or scheduled backup is registered in Proxmox. The temporary
    local backup is not a replacement for PBS.
-4. Ceph remains `HEALTH_WARN`: BlueStore slow-operation indications are now
+3. Ceph remains `HEALTH_WARN`: BlueStore slow-operation indications are now
    reported for `osd.0` and `osd.2`. Data placement is clean, but the device and
    I/O path warning must be investigated before production load is increased.
-5. The Mac Studio Worker API and its executors are a separate deployment step;
+4. The Mac Studio Worker API and its executors are a separate deployment step;
    this deployment validates the Proxmox Gateway and callback ingress only.

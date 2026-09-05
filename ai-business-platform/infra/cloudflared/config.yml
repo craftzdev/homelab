@@ -1,0 +1,10 @@
+tunnel: 1cb360c1-26be-4f23-b3d3-728689073a04
+credentials-file: /etc/cloudflared/1cb360c1-26be-4f23-b3d3-728689073a04.json
+
+metrics: 127.0.0.1:20241
+no-autoupdate: true
+
+ingress:
+  - hostname: gateway.craftz.dev
+    service: http://127.0.0.1:8080
+  - service: http_status:404

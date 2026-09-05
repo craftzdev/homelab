@@ -47,6 +47,12 @@ sudo ufw default allow outgoing
 sudo ufw allow from 172.16.10.0/24 to any port 22 proto tcp comment 'management SSH'
 sudo ufw allow in on tailscale0 comment 'Tailnet policy enforced by Tailscale'
 sudo ufw allow 41641/udp comment 'Tailscale direct connections'
+sudo ufw allow out to 172.16.40.1 port 53 proto udp comment 'Gateway DNS'
+sudo ufw allow out to 172.16.40.1 port 53 proto tcp comment 'Gateway DNS'
+sudo ufw deny out to 172.16.10.0/24 comment 'Block management VLAN'
+sudo ufw deny out to 172.16.20.0/24 comment 'Block Ceph public VLAN'
+sudo ufw deny out to 172.16.30.0/24 comment 'Block Ceph cluster VLAN'
+sudo ufw deny out to 172.16.40.0/24 comment 'Block direct workload VLAN access'
 sudo ufw --force enable
 
 docker --version

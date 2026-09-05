@@ -9,9 +9,10 @@ Phase 1 の最小Gateway実装。PostgreSQLをSystem of Recordとし、Job登録
 
 Public APIはcloudflared、callback APIはTailscale Serveからのみproxyする。
 
-The public listener intentionally remains on loopback until Cloudflare Tunnel,
-Access, and application-level request verification are configured. Do not bind
-port 8080 to a LAN address as a temporary workaround.
+The public listener intentionally remains on loopback. The deployed Cloudflare
+Tunnel exposes it at `https://gateway.craftz.dev`; the application Bearer token
+is active, while Cloudflare Access and Gateway-side Access JWT validation remain
+production gates. Do not bind port 8080 to a LAN address as a workaround.
 
 ## Local start
 
@@ -41,6 +42,11 @@ The deployed callback listener is available inside the Tailnet at:
 ```text
 https://ai-gateway-01.tailb6c7d.ts.net
 ```
+
+Infrastructure policy tracked in this repository:
+
+- `../infra/cloudflared/config.yml`
+- `../infra/tailscale/policy.hujson`
 
 Deployment evidence and outstanding production gates are recorded in
 `docs/ai-business-platform/deployment-2026-09-06.md`.

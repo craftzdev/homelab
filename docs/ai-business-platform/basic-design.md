@@ -3,11 +3,11 @@
 | 項目 | 内容 |
 |---|---|
 | 文書名 | AI自律事業運営基盤 基本設計書 |
-| バージョン | 0.3 |
+| バージョン | 0.4 |
 | 作成日 | 2026-09-06 |
 | 入力文書 | AI自律事業運営基盤 要件定義書 v1.0 |
 | 対象フェーズ | Phase 1 MVP |
-| ステータス | Gateway deployed / External ingress and Worker pending |
+| ステータス | Gateway and external tunnel deployed / Access and Worker pending |
 
 ## 1. 目的
 
@@ -77,7 +77,7 @@
 | Cluster | `homelab`、3 votes、quorum 2、Quorate | 正常 |
 | VM/LXC | VM `1200` `ai-gateway-01` を作成済み | 稼働中 |
 | `172.16.40.30` | Gateway VMの固定IPとして設定 | 稼働中 |
-| `gateway.craftz.dev` | A/AAAA/CNAME未登録、`craftz.dev` のNSはCloudflare | Tunnel hostnameとして採用 |
+| `gateway.craftz.dev` | 専用Cloudflare Tunnel経由でloopback APIへ接続 | 稼働中 |
 | Ceph OSD | 3 OSDすべて up/in、全129 PGが `active+clean` | データ整合性は正常 |
 | Ceph容量 | raw約3.07 TB、利用約30.3 GB、空き約3.04 TB | Gateway配置に十分 |
 | `cephrdb_vm` | 3ノードで active、shared、replica size 3 / min_size 2 | Gateway diskに採用 |
@@ -86,7 +86,7 @@
 | Proxmox HA | 3ノードのCRM/LRM/watchdog active、quorum OK | HA利用可能 |
 | HA設定 | `vm:1200` と Node Affinity Rule `ai-gateway-placement` を登録済み | `started` / `in use` |
 | PBS連携 | ProxmoxにPBS storage登録なし、backup jobなし | 本稼働前の必須作業 |
-| Tailscale | MagicDNS `tailb6c7d.ts.net`、Gateway `100.104.73.43` | Serve HTTPS稼働、tag/Grantsは未適用 |
+| Tailscale | MagicDNS `tailb6c7d.ts.net`、Gateway `100.104.73.43` | Serve HTTPS、Gateway tag、Grants稼働中 |
 | Gateway復旧試験 | live migration往復、再起動、local backupから隔離restore | 成功 |
 
 ### 4.3 確定値
@@ -100,14 +100,15 @@
 | Gateway primary node | `sv-proxmox-01` |
 | Gateway disk storage | `cephrdb_vm` |
 | Gateway public hostname | `gateway.craftz.dev` |
+| Cloudflare Tunnel | `ai-business-gateway` / `1cb360c1-26be-4f23-b3d3-728689073a04` |
 | Gateway external API backend | `http://127.0.0.1:8080`（cloudflared専用） |
-| Tailnet display name | `Craftz Infrastructure` |
-| Tailnet DNS name | 既存の `*.ts.net` 名を維持 |
+| Tailnet account name | `craftzdev.github` |
+| Tailnet DNS name | `tailb6c7d.ts.net` |
 | Gateway Tailnet node name | `ai-gateway-01` |
 | Gateway Tailnet node tag | `tag:ai-gateway` |
 | Gateway callback backend | `http://127.0.0.1:8081`（Tailscale Serve専用） |
-| Mac Studio Tailnet node name | `ai-worker-mac-01` |
-| Mac Studio Tailnet node tag | `tag:ai-worker-trusted` |
+| Mac Studio Tailnet node name | 現在 `macstudio`、Policy alias `ai-worker-mac-01` |
+| Mac Studio Tailnet identity | 現在はuser-owned端末のままhost aliasで限定。専用化時は `tag:ai-worker-trusted` |
 | 将来のProxmox Worker tag | `tag:ai-worker-sandbox` |
 | Worker API backend | `http://127.0.0.1:8080` |
 | Worker API endpoint | `https://ai-worker-mac-01.<tailnet>.ts.net:443` |
@@ -116,7 +117,7 @@
 | Worker→Gateway callback | `POST https://ai-gateway-01.<tailnet>.ts.net/v1/worker-events` |
 | タイムゾーン | DBはUTC、表示・予算日界はAsia/Tokyo |
 
-`<tailnet>` は Mac Studio を Tailnet に参加させた時点で実際の MagicDNS domain に置換する。`172.16.40.30` は本設計で予約済みとして扱い、DHCP pool から除外する。
+`<tailnet>` は実環境では `tailb6c7d` である。`172.16.40.30` は本設計で予約済みとして扱い、DHCP pool から除外する。
 
 ## 5. 全体アーキテクチャ
 
@@ -273,17 +274,20 @@ Gateway と Mac Studio の AI 用アカウントから、次の管理面への�
 - Tailscale Funnelは両ノードとも無効とし、Serveの公開範囲をTailnet内に限定する。
 - Mac StudioのWorker APIは `127.0.0.1:8080` だけでlistenし、Tailscale ServeがTailnet内のHTTPS `:443` としてproxyする。
 - Gatewayのcallback受信APIは外部APIと分離して `127.0.0.1:8081` だけでlistenし、Gateway上のTailscale ServeでTailnet内に公開する。このlistenerは `/v1/worker-events` 以外を提供しない。
-- `tag:ai-gateway` から `tag:ai-worker-trusted` のTCP/443をJob dispatch用に許可する。
-- `tag:ai-worker-trusted` から `tag:ai-gateway` のTCP/443をcallback用に許可する。
+- `tag:ai-gateway` から現Mac Studioのhost aliasおよびWorker tagのTCP/443をJob dispatch用に許可する。
+- 現Mac Studioのhost aliasおよびWorker tagから `tag:ai-gateway` のTCP/443をcallback用に許可する。
 - 将来のProxmox Worker VMには `tag:ai-worker-sandbox` を付与し、Proxmox host自体をAI実行経路へ参加させない。
 - 新規ポリシーは deny-by-default とし、Tailscale の現行推奨である Grants を優先する。
 - SSH、Screen Sharing、SMB、Worker API以外のポートは両方向とも許可しない。
 - タグ付き端末ではTailscale ServeのユーザーIdentity Headerに依存できないため、API Token認証を必須とする。
 
-初期Grantの概念構成は次のとおりとする。既存Tailnet policyへ統合する際は、既存のallow-all ruleが残っていないことも確認する。
+適用済みポリシーは `ai-business-platform/infra/tailscale/policy.hujson` を正とする。Mac Studioは管理用ワークステーションも兼ねるため、端末tagを付けるとuser identityを失う点を避け、現時点では固定Tailscale IPのhost aliasを使用する。Gatewayはtagged deviceとし、従来の全端末向けallow-all ACLは削除済みである。
 
 ```json
 {
+  "hosts": {
+    "ai-worker-mac-01": "100.105.200.6"
+  },
   "tagOwners": {
     "tag:ai-gateway": ["autogroup:admin"],
     "tag:ai-worker-trusted": ["autogroup:admin"],
@@ -292,11 +296,11 @@ Gateway と Mac Studio の AI 用アカウントから、次の管理面への�
   "grants": [
     {
       "src": ["tag:ai-gateway"],
-      "dst": ["tag:ai-worker-trusted"],
+      "dst": ["ai-worker-mac-01", "tag:ai-worker-trusted", "tag:ai-worker-sandbox"],
       "ip": ["tcp:443"]
     },
     {
-      "src": ["tag:ai-worker-trusted"],
+      "src": ["ai-worker-mac-01", "tag:ai-worker-trusted", "tag:ai-worker-sandbox"],
       "dst": ["tag:ai-gateway"],
       "ip": ["tcp:443"]
     }
@@ -307,7 +311,7 @@ Gateway と Mac Studio の AI 用アカウントから、次の管理面への�
 ### 7.4 外部公開方針
 
 - Router のポートフォワードおよび Gateway のグローバルIP直接公開は禁止する。
-- `cloudflared` が外向きに Tunnel を確立し、`gateway.craftz.dev` を同一VMの loopback listener に接続する。
+- 専用Tunnel `ai-business-gateway` が外向きに接続し、`gateway.craftz.dev` を同一VMの loopback listenerへproxyする。Tunnel、DNS、HTTPS疎通は構築済みである。
 - Bot 用 Access Application は `Service Auth` とし、Bot ごとに別 Service Token を発行する。
 - 人間用管理入口は別 Access Application または別 hostname に分離し、IdP + MFA を必須にする。
 - Mac Studio Worker APIはTailscale Serve以外では公開しない。LAN IPの直接利用はfallbackにも採用しない。
@@ -858,10 +862,10 @@ Event envelope は Adapter に依存しない形式とする。
 ### Step 0: 事前確認
 
 - 実機確認済みのProxmox cluster quorum、Ceph、HAの結果を記録する。
-- `osd.0` のBlueStore slow-op warningを再確認し、継続・増加時はI/O原因を解消する。
+- `osd.0` と `osd.2` のBlueStore slow-op warningを再確認し、継続・増加時はI/O原因を解消する。
 - PBS storageをProxmoxへ登録し、VM 1200向けbackup jobとrestore testを準備する。
-- Mac StudioとGatewayをTailnetへ参加させ、node名、tag、MagicDNS domainを確定する。
-- GitHub organizationとCloudflare Zoneを確定する。
+- Mac StudioとGatewayのTailnet参加、Gateway tag、Grants、MagicDNS domainは確定済み。
+- Cloudflare Zone、Tunnel、公開hostnameは確定・構築済み。
 - Grok Bot の外部HTTP、Webhook、定期 polling 能力を確認する。
 
 ### Step 1: Gateway 基盤
@@ -873,10 +877,10 @@ Event envelope は Adapter に依存しない形式とする。
 
 ### Step 2: セキュリティ境界
 
-- Cloudflare Tunnel、Access Service Auth、人間用 Access を設定する。
+- Cloudflare Tunnelは構築済み。Access Service Auth、人間用 Accessを設定する。
 - Bot HMAC、Worker/Callback API Token、replay 防止を実装する。
-- Tailscale Grants、Mac Studio/GatewayのTailscale Serveを設定する。
-- VLAN 10/20/30、PBS、Router、NAS への拒否を通信試験する。
+- Tailscale GrantsとGatewayのTailscale Serveは構築済み。Mac Studio Worker API構築時にWorker側Serveを設定する。
+- GatewayからVLAN 10/20/30への拒否は確認済み。Worker構築後にPBS、Router、NASを含む拒否を再試験する。
 
 ### Step 3: Job 基盤
 
@@ -968,17 +972,16 @@ Event envelope は Adapter に依存しない形式とする。
 
 ## 26. 実装前に確定する項目
 
-1. Tailscale tag ownership、Grants、およびMac Studioを個人管理端末とWorkerで兼用する場合の権限境界
-2. Mac Studioの同時実行上限
-3. Cloudflare account/zone と Service Token 運用者
-4. Grok Bot が利用できる outbound HTTP、Webhook、polling の仕様
-5. GitHub organization、対象 repository、GitHub App 権限
-6. Preview/Production の deploy platform と project ID
-7. Stripe、Analytics、Search Console の read-only scope
-8. 本番 Budget 値、日界、月界、通貨換算規則
-9. Human Approvalの担当者、連絡経路、応答期限
-10. Audit Log の正式な保存期間
-11. PBS server/datastore、fingerprint、backup実行時間
+1. Mac Studioの同時実行上限と専用ユーザーへの分離時期
+2. Cloudflare Access Service Token運用者、Audience、Gateway側JWT検証値
+3. Grok Bot が利用できる outbound HTTP、Webhook、polling の仕様
+4. GitHub organization、対象 repository、GitHub App 権限
+5. Preview/Production の deploy platform と project ID
+6. Stripe、Analytics、Search Console の read-only scope
+7. 本番 Budget 値、日界、月界、通貨換算規則
+8. Human Approvalの担当者、連絡経路、応答期限
+9. Audit Log の正式な保存期間
+10. PBS server/datastore、fingerprint、backup実行時間
 
 ## 27. 参考資料
 
