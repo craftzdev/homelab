@@ -11,8 +11,9 @@ Public APIはcloudflared、callback APIはTailscale Serveからのみproxyする
 
 The public listener intentionally remains on loopback. The deployed Cloudflare
 Tunnel exposes it at `https://gateway.craftz.dev`; the application Bearer token
-is active, while Cloudflare Access and Gateway-side Access JWT validation remain
-production gates. Do not bind port 8080 to a LAN address as a workaround.
+and Cloudflare Access Service Auth are active. The Gateway validates the Access
+JWT again at the application boundary. Do not bind port 8080 to a LAN address
+as a workaround.
 
 ## Local start
 
@@ -30,11 +31,13 @@ curl --fail http://127.0.0.1:8080/ready
 curl --fail http://127.0.0.1:8081/health
 ```
 
-On the Gateway VM, the authenticated job and callback smoke test can be rerun
-without printing credentials:
+The authenticated job and callback smoke test requires the Cloudflare Service
+Token at runtime when Access validation is enabled. Do not save those two values
+in the Gateway `.env` file:
 
 ```bash
-sudo /opt/ai-business-gateway/scripts/smoke-test.sh
+sudo --preserve-env=CF_ACCESS_CLIENT_ID,CF_ACCESS_CLIENT_SECRET \
+  /opt/ai-business-gateway/scripts/smoke-test.sh
 ```
 
 The deployed callback listener is available inside the Tailnet at:

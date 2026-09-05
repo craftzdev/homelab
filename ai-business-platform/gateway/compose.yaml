@@ -27,6 +27,9 @@ services:
       DATABASE_URL: postgresql://gateway:${POSTGRES_PASSWORD}@db:5432/gateway
       GATEWAY_API_TOKEN: ${GATEWAY_API_TOKEN}
       WORKER_CALLBACK_TOKEN: ${WORKER_CALLBACK_TOKEN}
+      CLOUDFLARE_ACCESS_REQUIRED: ${CLOUDFLARE_ACCESS_REQUIRED:-false}
+      CLOUDFLARE_ACCESS_TEAM_DOMAIN: ${CLOUDFLARE_ACCESS_TEAM_DOMAIN:-}
+      CLOUDFLARE_ACCESS_AUD: ${CLOUDFLARE_ACCESS_AUD:-}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/ready', timeout=2)"]
       interval: 10s
@@ -49,6 +52,7 @@ services:
       DATABASE_URL: postgresql://gateway:${POSTGRES_PASSWORD}@db:5432/gateway
       GATEWAY_API_TOKEN: ${GATEWAY_API_TOKEN}
       WORKER_CALLBACK_TOKEN: ${WORKER_CALLBACK_TOKEN}
+      CLOUDFLARE_ACCESS_REQUIRED: "false"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/ready', timeout=2)"]
       interval: 10s

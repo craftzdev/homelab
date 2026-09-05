@@ -11,20 +11,42 @@ set +a
 
 test_id="smoke-$(date -u +%Y%m%d%H%M%S)"
 payload='{"action":"test.run","project_id":"gateway-smoke","environment":"preview","parameters":{"suite":"deployment"},"limits":{"timeout_seconds":300}}'
+public_base=http://127.0.0.1:8080
+public_headers=()
+
+if [[ ${CLOUDFLARE_ACCESS_REQUIRED:-false} == true ]]; then
+  : "${CF_ACCESS_CLIENT_ID:?CF_ACCESS_CLIENT_ID is required}"
+  : "${CF_ACCESS_CLIENT_SECRET:?CF_ACCESS_CLIENT_SECRET is required}"
+  public_base=https://gateway.craftz.dev
+  public_headers=(
+    -H "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID"
+    -H "CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET"
+  )
+
+  edge_rejection=$(curl -sS -o /dev/null -w '%{http_code}' \
+    -X POST "$public_base/v1/jobs" \
+    -H 'Content-Type: application/json' \
+    -H "Idempotency-Key: $test_id-no-access" \
+    --data "$payload")
+  test "$edge_rejection" = 403
+fi
 
 unauthorized_code=$(curl -sS -o /dev/null -w '%{http_code}' \
-  -X POST http://127.0.0.1:8080/v1/jobs \
+  -X POST "$public_base/v1/jobs" \
+  "${public_headers[@]}" \
   -H 'Content-Type: application/json' \
   -H "Idempotency-Key: $test_id-unauthorized" \
   --data "$payload")
 test "$unauthorized_code" = 401
 
-response_one=$(curl -fsS -X POST http://127.0.0.1:8080/v1/jobs \
+response_one=$(curl -fsS -X POST "$public_base/v1/jobs" \
+  "${public_headers[@]}" \
   -H "Authorization: Bearer $GATEWAY_API_TOKEN" \
   -H 'Content-Type: application/json' \
   -H "Idempotency-Key: $test_id" \
   --data "$payload")
-response_two=$(curl -fsS -X POST http://127.0.0.1:8080/v1/jobs \
+response_two=$(curl -fsS -X POST "$public_base/v1/jobs" \
+  "${public_headers[@]}" \
   -H "Authorization: Bearer $GATEWAY_API_TOKEN" \
   -H 'Content-Type: application/json' \
   -H "Idempotency-Key: $test_id" \
@@ -35,7 +57,8 @@ job_two=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["job_id"])'
 test "$job_one" = "$job_two"
 
 mismatch_code=$(curl -sS -o /dev/null -w '%{http_code}' \
-  -X POST http://127.0.0.1:8080/v1/jobs \
+  -X POST "$public_base/v1/jobs" \
+  "${public_headers[@]}" \
   -H "Authorization: Bearer $GATEWAY_API_TOKEN" \
   -H 'Content-Type: application/json' \
   -H "Idempotency-Key: $test_id" \
@@ -58,7 +81,8 @@ duplicate_response=$(curl -fsS -X POST http://127.0.0.1:8081/v1/worker-events \
 duplicate=$(python3 -c 'import json,sys; print(str(json.loads(sys.argv[1])["duplicate"]).lower())' "$duplicate_response")
 test "$duplicate" = true
 
-job_response=$(curl -fsS "http://127.0.0.1:8080/v1/jobs/$job_one" \
+job_response=$(curl -fsS "$public_base/v1/jobs/$job_one" \
+  "${public_headers[@]}" \
   -H "Authorization: Bearer $GATEWAY_API_TOKEN")
 state=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["state"])' "$job_response")
 test "$state" = SUCCEEDED

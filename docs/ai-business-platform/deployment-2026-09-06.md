@@ -18,9 +18,13 @@
 | HA rule | `ai-gateway-placement` | In use |
 | Tailscale node | `ai-gateway-01` / `100.104.73.43` | Connected |
 | Tailscale HTTPS | `https://ai-gateway-01.tailb6c7d.ts.net` | Callback surface healthy |
-| Cloudflare hostname | `https://gateway.craftz.dev` | Tunnel and DNS active; public health/API verified |
+| Cloudflare hostname | `https://gateway.craftz.dev` | Tunnel, Access Service Auth, and Gateway JWT validation active |
 | Cloudflare Tunnel | `ai-business-gateway` / `1cb360c1-26be-4f23-b3d3-728689073a04` | Connected over four QUIC sessions |
+| Cloudflare Access app | `AI Business Gateway - Grok Service` / `63028f65-73a8-4319-a12e-96897bd23ac4` | Service token policy active |
 | Tailscale policy | Gateway tag + deny-by-default Grants | Active |
+| Mac Studio Worker | `business-worker` launchd daemon / `127.0.0.1:8080` | Running in self-test-only mode |
+| Worker Tailnet HTTPS | `https://macstudio.tailb6c7d.ts.net` | Tailscale Serve active |
+| Worker source | Local `ai-business-worker` repository / commit `ca4cbc1` | Six API tests passing; private GitHub publication pending |
 
 The HA node preference is `sv-proxmox-01:3`, `sv-proxmox-02:2`, and
 `sv-proxmox-03:1`, with strict placement, `max_restart=1`,
@@ -44,8 +48,21 @@ The HA node preference is `sv-proxmox-01:3`, `sv-proxmox-02:2`, and
 - Tailscale issued a valid HTTPS certificate and the Mac Studio reached the
   callback health endpoint over the Tailnet.
 - The dedicated Cloudflare Tunnel registered four QUIC connections and
-  `gateway.craftz.dev` reached the loopback-only public API. Public health,
-  HTTP 401 without a token, and authenticated Job creation were verified.
+  `gateway.craftz.dev` reached the loopback-only public API. Cloudflare Access
+  rejects requests without a Service Token with HTTP 403. A valid Service
+  Token reaches the Gateway, but Job creation still returns HTTP 401 without
+  the independent Gateway Bearer token. Supplying both credentials returns
+  HTTP 202.
+- The Gateway validates the `Cf-Access-Jwt-Assertion` signature, issuer,
+  audience, expiry, and issued-at claims. Direct-origin requests with a missing
+  or forged assertion returned HTTP 401.
+- The Mac Studio Worker runs as the login-disabled `business-worker` user under
+  launchd. Its API token is required, SQLite persists jobs, and the public
+  listener remains bound to loopback behind Tailscale Serve.
+- A real self-test job was sent from the Gateway VM through Tailscale HTTPS to
+  the Mac Studio. The Worker returned HTTP 202, completed successfully, and
+  delivered `accepted`, `started`, and `completed` events back to the Gateway.
+  PostgreSQL reached `SUCCEEDED` with event sequence 3 and the same Worker Job ID.
 - The Gateway is tagged `tag:ai-gateway`. Tailnet policy allows only HTTPS
   between it and the current Mac Studio worker host (or future worker tags).
   A Tailnet SSH connection to the Gateway was rejected while HTTPS remained
@@ -60,15 +77,15 @@ The HA node preference is `sv-proxmox-01:3`, `sv-proxmox-02:2`, and
 
 ## Open production gates
 
-1. Cloudflare Access Service Auth and Gateway-side Access JWT validation are
-   not implemented yet. The public Job API still requires its independent
-   Bearer token, but completing Edge authentication is required before issuing
-   credentials to Grok Bot.
-2. Proxmox Backup Server is reachable through the existing Tailscale node, but
+1. Proxmox Backup Server is reachable through the existing Tailscale node, but
    no PBS storage or scheduled backup is registered in Proxmox. The temporary
    local backup is not a replacement for PBS.
-3. Ceph remains `HEALTH_WARN`: BlueStore slow-operation indications are now
+2. Ceph remains `HEALTH_WARN`: BlueStore slow-operation indications are now
    reported for `osd.0` and `osd.2`. Data placement is clean, but the device and
    I/O path warning must be investigated before production load is increased.
-4. The Mac Studio Worker API and its executors are a separate deployment step;
-   this deployment validates the Proxmox Gateway and callback ingress only.
+3. The Worker is intentionally limited to `operation=self_test`. Codex,
+   Playwright, project test, and data executors; process isolation; callback
+   outbox/retry; and the Gateway scheduler remain implementation work.
+4. The new Worker repository exists and is committed locally. It should be
+   published as the private `craftzdev/ai-business-worker` repository after
+   GitHub authentication is configured on this Mac.

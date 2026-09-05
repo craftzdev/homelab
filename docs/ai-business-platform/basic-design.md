@@ -3,11 +3,11 @@
 | 項目 | 内容 |
 |---|---|
 | 文書名 | AI自律事業運営基盤 基本設計書 |
-| バージョン | 0.4 |
+| バージョン | 0.5 |
 | 作成日 | 2026-09-06 |
 | 入力文書 | AI自律事業運営基盤 要件定義書 v1.0 |
 | 対象フェーズ | Phase 1 MVP |
-| ステータス | Gateway and external tunnel deployed / Access and Worker pending |
+| ステータス | Gateway and external tunnel deployed / Access configured / Worker implementation in progress |
 
 ## 1. 目的
 
@@ -50,6 +50,17 @@
 - CEO Bot、複雑な Bot 間会話
 - 自動返金、銀行操作、無制限の価格変更、自動広告出稿
 - Micro SaaS 本番環境の自宅ホスティング
+
+### 3.3 リポジトリ境界
+
+| リポジトリ | 管理対象 |
+|---|---|
+| `craftzdev/homelab` | Proxmox、Gateway VM、Cloudflare Tunnel、Tailscale Grants、Gatewayの配置と運用 |
+| `craftzdev/ai-business-worker` | Mac Studio Worker API、executor、macOS常駐化、Workerのテストとリリース |
+
+WorkerはMac固有の権限、依存関係、リリース周期を持つため、Gatewayおよび
+インフラとは別リポジトリで管理する。Phase 1では共有ライブラリを作らず、
+Workerリポジトリから生成するOpenAPIをGateway→Worker API契約の正とする。
 
 ## 4. 実機確認結果と確定値
 
@@ -111,7 +122,7 @@
 | Mac Studio Tailnet identity | 現在はuser-owned端末のままhost aliasで限定。専用化時は `tag:ai-worker-trusted` |
 | 将来のProxmox Worker tag | `tag:ai-worker-sandbox` |
 | Worker API backend | `http://127.0.0.1:8080` |
-| Worker API endpoint | `https://ai-worker-mac-01.<tailnet>.ts.net:443` |
+| Worker API endpoint | `https://macstudio.<tailnet>.ts.net:443` |
 | Gateway→Worker transport | Tailscale Serve / HTTPS REST |
 | Gateway→Worker authentication | Tailscale Grant + Bearer API Token |
 | Worker→Gateway callback | `POST https://ai-gateway-01.<tailnet>.ts.net/v1/worker-events` |
@@ -574,7 +585,7 @@ stateDiagram-v2
 | POST | `/v1/jobs/{worker_job_id}/cancel` | 未開始または安全に停止可能なJobの取消し |
 | GET | `/health` | Worker APIとlocal queueのhealth |
 
-Worker APIは `127.0.0.1:8080` でlistenし、Tailscale Serveだけが `https://ai-worker-mac-01.<tailnet>.ts.net:443` としてproxyする。Job受付は `202 Accepted` と次の最小応答を返す。
+Worker APIは `127.0.0.1:8080` でlistenし、Tailscale Serveだけが `https://macstudio.<tailnet>.ts.net:443` としてproxyする。Job受付は `202 Accepted` と次の最小応答を返す。
 
 ```json
 {
@@ -690,7 +701,7 @@ limits:
 
 - macOS に `business-worker` 専用ユーザーを作成する。
 - Worker API は `launchd` で常時起動し、`127.0.0.1:8080` だけでlistenする。
-- Tailscale node名を `ai-worker-mac-01`、tagを `tag:ai-worker-trusted` とし、Tailscale ServeがWorker APIをTailnet内のHTTPS `:443` に公開する。
+- 現在のTailscale node名は `macstudio`、Policy上のhost aliasは `ai-worker-mac-01` とし、Tailscale ServeがWorker APIをTailnet内のHTTPS `:443` に公開する。専用端末へ分離する段階で `tag:ai-worker-trusted` を付与する。
 - Tailscale Funnelは有効化しない。
 - WorkerはJob状態をローカルSQLiteへ永続化し、再起動後も受付済みJobとdispatch重複判定を復元する。
 - Job は `/Users/business-worker/workspaces/<project_id>/<job_id>/` に分離する。
@@ -724,7 +735,9 @@ limits:
 - GitHub は project を限定した GitHub App installation token を優先する。
 - deploy、Analytics、Stripe は scope を絞った専用Credentialを利用する。
 - Gateway が短期Credentialまたは一回限りの参照tokenを発行し、Worker は memory または一時 Keychain に保持する。
-- Worker APIのdispatch tokenとGateway callback tokenはmacOS Keychainに別項目として保存する。
+- Worker APIのdispatch tokenとGateway callback tokenは、専用ユーザーだけが読める
+  mode `0600` のruntime設定へ別項目として保存する。対話ユーザーで動かすCredentialは
+  macOS Keychainを利用する。
 - Job 終了時に一時Credentialと作業環境を破棄する。
 
 ## 16. 外部サービス連携
@@ -877,9 +890,9 @@ Event envelope は Adapter に依存しない形式とする。
 
 ### Step 2: セキュリティ境界
 
-- Cloudflare Tunnelは構築済み。Access Service Auth、人間用 Accessを設定する。
+- Cloudflare Tunnel、Access Service Auth、Gateway側JWT検証は構築済み。人間用Accessは管理UI導入時に追加する。
 - Bot HMAC、Worker/Callback API Token、replay 防止を実装する。
-- Tailscale GrantsとGatewayのTailscale Serveは構築済み。Mac Studio Worker API構築時にWorker側Serveを設定する。
+- Tailscale Grants、GatewayとMac Studio双方のTailscale Serveは構築済み。
 - GatewayからVLAN 10/20/30への拒否は確認済み。Worker構築後にPBS、Router、NASを含む拒否を再試験する。
 
 ### Step 3: Job 基盤
@@ -890,7 +903,7 @@ Event envelope は Adapter に依存しない形式とする。
 
 ### Step 4: Mac Studio Worker
 
-- 専用ユーザー、launchd、workspace、container sandbox を設定する。
+- 専用ユーザー、launchd、Worker API、SQLite queue、Tailscale Serveは構築済み。workspaceとcontainer sandboxを追加する。
 - Builder、Test、Browser、Data の順で Executor を追加する。
 - GitHub の専用Credentialと branch protection を設定する。
 

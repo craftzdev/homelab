@@ -7,9 +7,12 @@ import os
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from functools import lru_cache
 from typing import Any, Literal
 
+import jwt
 from fastapi import Depends, FastAPI, Header, HTTPException, status
+from jwt import PyJWKClient
 from pydantic import BaseModel, Field
 from psycopg.errors import UniqueViolation
 from psycopg.rows import dict_row
@@ -20,6 +23,13 @@ API_SURFACE = os.environ.get("API_SURFACE", "public")
 DATABASE_URL = os.environ["DATABASE_URL"]
 GATEWAY_API_TOKEN = os.environ["GATEWAY_API_TOKEN"]
 WORKER_CALLBACK_TOKEN = os.environ["WORKER_CALLBACK_TOKEN"]
+CLOUDFLARE_ACCESS_REQUIRED = os.environ.get(
+    "CLOUDFLARE_ACCESS_REQUIRED", "false"
+).lower() in {"1", "true", "yes"}
+CLOUDFLARE_ACCESS_TEAM_DOMAIN = os.environ.get(
+    "CLOUDFLARE_ACCESS_TEAM_DOMAIN", ""
+).removeprefix("https://").rstrip("/")
+CLOUDFLARE_ACCESS_AUD = os.environ.get("CLOUDFLARE_ACCESS_AUD", "")
 
 pool = ConnectionPool(
     DATABASE_URL,
@@ -104,8 +114,50 @@ def _verify_bearer(authorization: str | None, expected: str) -> None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="unauthorized")
 
 
-def require_gateway_token(authorization: str | None = Header(default=None)) -> None:
+@lru_cache(maxsize=1)
+def _access_jwk_client() -> PyJWKClient:
+    return PyJWKClient(
+        f"https://{CLOUDFLARE_ACCESS_TEAM_DOMAIN}/cdn-cgi/access/certs",
+        cache_keys=True,
+        lifespan=300,
+    )
+
+
+def _verify_access_jwt(assertion: str | None) -> None:
+    if not CLOUDFLARE_ACCESS_REQUIRED:
+        return
+    if not CLOUDFLARE_ACCESS_TEAM_DOMAIN or not CLOUDFLARE_ACCESS_AUD:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Cloudflare Access verification is not configured",
+        )
+    if not assertion:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="unauthorized")
+
+    try:
+        signing_key = _access_jwk_client().get_signing_key_from_jwt(assertion)
+        jwt.decode(
+            assertion,
+            signing_key.key,
+            algorithms=["RS256"],
+            audience=CLOUDFLARE_ACCESS_AUD,
+            issuer=f"https://{CLOUDFLARE_ACCESS_TEAM_DOMAIN}",
+            options={"require": ["exp", "iat", "aud", "iss"]},
+        )
+    except jwt.PyJWTError as error:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="unauthorized"
+        ) from error
+
+
+def require_gateway_token(
+    authorization: str | None = Header(default=None),
+    cf_access_jwt_assertion: str | None = Header(
+        default=None, alias="Cf-Access-Jwt-Assertion"
+    ),
+) -> None:
     require_surface("public")
+    _verify_access_jwt(cf_access_jwt_assertion)
     _verify_bearer(authorization, GATEWAY_API_TOKEN)
 
 
