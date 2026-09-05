@@ -704,26 +704,27 @@ limits:
 - 現在のTailscale node名は `macstudio`、Policy上のhost aliasは `ai-worker-mac-01` とし、Tailscale ServeがWorker APIをTailnet内のHTTPS `:443` に公開する。専用端末へ分離する段階で `tag:ai-worker-trusted` を付与する。
 - Tailscale Funnelは有効化しない。
 - WorkerはJob状態をローカルSQLiteへ永続化し、再起動後も受付済みJobとdispatch重複判定を復元する。
-- Job は `/Users/business-worker/workspaces/<project_id>/<job_id>/` に分離する。
+- Job は `/Users/business-worker/workspaces/<job_id>/` に分離する。
 - 個人用ホーム、写真、Keychain、ブラウザプロファイルへのアクセスを与えない。
 - Job ごとに checkout または worktree を作り、終了後に保持Policyに従って削除する。
-- build/test/browser は可能な範囲で Docker 互換コンテナ内で実行する。
+- Builder Phase 1はCodex CLIの `workspace-write` sandboxと専用OSユーザーを併用する。
+  信頼できないrepositoryやtest commandを許可する前に、コンテナ境界を追加する。
 - macOS ホスト上で root command を実行する Action は提供しない。
 
 ### 15.2 Executor
 
 | Executor | Capability | 主なツール | 出力 |
 |---|---|---|---|
-| Builder | `code.build`, `code.fix` | Codex CLI、Git、Node.js、Python | commit、branch、PR、build summary |
+| Builder | `code.build`, `code.fix` | Codex CLI、Git、Python | 一時branch、patch、build summary、test log |
 | Browser | `browser.research`, `browser.verify` | Playwright | 構造化JSON、screenshot、E2E result |
 | Test | `test.run` | project固有 test runner | test report、coverage、artifact hash |
 | Data | `analytics.aggregate` | Python/Node、各種read-only API | KPI snapshot |
 
 ### 15.3 Sandbox と制限
 
-- Action ごとに許可 container image を固定し、`latest` tag は使わない。
+- 将来コンテナ化するActionでは許可imageを固定し、`latest` tag は使わない。
 - container は原則 read-only root filesystem、capability drop、host network 無効とする。
-- repository workspace と専用 temporary directory だけを mount する。
+- repository workspace と専用temporary directoryだけをmountする。
 - CPU、memory、disk、process、runtime に上限を設ける。
 - Playwright は事業専用 browser profile を使用し、個人ブラウザの cookie を流用しない。
 - 外部URLは Action の target allow/deny list で検査し、localhost、metadata endpoint、内部管理CIDRへの SSRF を拒否する。
@@ -738,6 +739,9 @@ limits:
 - Worker APIのdispatch tokenとGateway callback tokenは、専用ユーザーだけが読める
   mode `0600` のruntime設定へ別項目として保存する。対話ユーザーで動かすCredentialは
   macOS Keychainを利用する。
+- Codex CLIは専用の `CODEX_HOME=/Users/business-worker/.codex` を使う。Phase 1では
+  現在のChatGPT認証をmode `0600` で複製し、個人ホームを直接参照しない。本稼働では
+  Worker専用API project keyまたはworkload identityへの移行を検討する。
 - Job 終了時に一時Credentialと作業環境を破棄する。
 
 ## 16. 外部サービス連携

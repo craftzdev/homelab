@@ -22,9 +22,9 @@
 | Cloudflare Tunnel | `ai-business-gateway` / `1cb360c1-26be-4f23-b3d3-728689073a04` | Connected over four QUIC sessions |
 | Cloudflare Access app | `AI Business Gateway - Grok Service` / `63028f65-73a8-4319-a12e-96897bd23ac4` | Service token policy active |
 | Tailscale policy | Gateway tag + deny-by-default Grants | Active |
-| Mac Studio Worker | `business-worker` launchd daemon / `127.0.0.1:8080` | Running in self-test-only mode |
+| Mac Studio Worker | `business-worker:business-worker` launchd daemon / `127.0.0.1:8080` | Codex Builder active |
 | Worker Tailnet HTTPS | `https://macstudio.tailb6c7d.ts.net` | Tailscale Serve active |
-| Worker source | Local `ai-business-worker` repository / commit `ca4cbc1` | Six API tests passing; private GitHub publication pending |
+| Worker source | Private `craftzdev/ai-business-worker` / commit `0189afb` | Eight tests passing and pushed |
 
 The HA node preference is `sv-proxmox-01:3`, `sv-proxmox-02:2`, and
 `sv-proxmox-03:1`, with strict placement, `max_restart=1`,
@@ -59,10 +59,16 @@ The HA node preference is `sv-proxmox-01:3`, `sv-proxmox-02:2`, and
 - The Mac Studio Worker runs as the login-disabled `business-worker` user under
   launchd. Its API token is required, SQLite persists jobs, and the public
   listener remains bound to loopback behind Tailscale Serve.
-- A real self-test job was sent from the Gateway VM through Tailscale HTTPS to
-  the Mac Studio. The Worker returned HTTP 202, completed successfully, and
-  delivered `accepted`, `started`, and `completed` events back to the Gateway.
-  PostgreSQL reached `SUCCEEDED` with event sequence 3 and the same Worker Job ID.
+- A live `code.build` job was sent from the Gateway VM through Tailscale HTTPS
+  to the Mac Studio. Codex added a `multiply` function and unittest coverage in
+  an isolated clone, changed only the two requested files, and all four tests
+  passed. The Worker delivered `accepted`, `started`, and `completed` events;
+  Gateway PostgreSQL reached `SUCCEEDED` with the same Worker Job ID.
+- The live verification used Gateway Job
+  `7ae6d29d-7649-4d21-98cd-d432db49da21`, Worker Job
+  `wjob_0ee583cd9a964017acaaeffb5d360c2f`, and Codex Thread
+  `01a07293-d963-7e92-b55a-b1d29d697730`. The Tailnet-only signed review page
+  returned HTTP 200 and displayed the summary, changed files, tests, and artifacts.
 - The Gateway is tagged `tag:ai-gateway`. Tailnet policy allows only HTTPS
   between it and the current Mac Studio worker host (or future worker tags).
   A Tailnet SSH connection to the Gateway was rejected while HTTPS remained
@@ -83,9 +89,8 @@ The HA node preference is `sv-proxmox-01:3`, `sv-proxmox-02:2`, and
 2. Ceph remains `HEALTH_WARN`: BlueStore slow-operation indications are now
    reported for `osd.0` and `osd.2`. Data placement is clean, but the device and
    I/O path warning must be investigated before production load is increased.
-3. The Worker is intentionally limited to `operation=self_test`. Codex,
-   Playwright, project test, and data executors; process isolation; callback
-   outbox/retry; and the Gateway scheduler remain implementation work.
-4. The new Worker repository exists and is committed locally. It should be
-   published as the private `craftzdev/ai-business-worker` repository after
-   GitHub authentication is configured on this Mac.
+3. Codex Builder is active for registered projects with a dedicated account,
+   per-job clone, workspace-write sandbox, fixed test commands, time/output
+   limits, and review artifacts. Playwright and Data executors, durable callback
+   outbox/retry, automatic log secret redaction, and the Gateway scheduler remain
+   implementation work.
