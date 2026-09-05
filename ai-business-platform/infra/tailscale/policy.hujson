@@ -1,0 +1,68 @@
+{
+  "groups": {
+    "group:funnel": ["craftzdev@github"],
+  },
+
+  "hosts": {
+    // Mac Studio remains a user-owned admin workstation. Use a host alias rather
+    // than a device tag so applying this policy does not remove its user identity.
+    "ai-worker-mac-01": "100.105.200.6",
+  },
+
+  "tagOwners": {
+    "tag:ai-gateway": ["autogroup:admin"],
+    "tag:k8s-operator": ["autogroup:admin"],
+    "tag:ai-worker-trusted": ["autogroup:admin", "tag:k8s-operator"],
+    "tag:ai-worker-sandbox": ["autogroup:admin"],
+  },
+
+  "grants": [
+    // Preserve user-operated device access and the existing subnet-router use.
+    {
+      "src": ["autogroup:member"],
+      "dst": ["autogroup:member"],
+      "ip": ["*"],
+    },
+    {
+      "src": ["autogroup:member"],
+      "dst": ["172.16.10.0/24", "172.16.40.0/24"],
+      "ip": ["*"],
+    },
+
+    // The tagged Gateway can only use HTTPS when talking to AI workers.
+    {
+      "src": ["tag:ai-gateway"],
+      "dst": [
+        "ai-worker-mac-01",
+        "tag:ai-worker-trusted",
+        "tag:ai-worker-sandbox",
+      ],
+      "ip": ["tcp:443"],
+    },
+    {
+      "src": [
+        "ai-worker-mac-01",
+        "tag:ai-worker-trusted",
+        "tag:ai-worker-sandbox",
+      ],
+      "dst": ["tag:ai-gateway"],
+      "ip": ["tcp:443"],
+    },
+  ],
+
+  "ssh": [
+    {
+      "action": "check",
+      "src": ["autogroup:member"],
+      "dst": ["autogroup:self"],
+      "users": ["autogroup:nonroot", "root"],
+    },
+  ],
+
+  "nodeAttrs": [
+    {
+      "target": ["group:funnel"],
+      "attr": ["funnel"],
+    },
+  ],
+}

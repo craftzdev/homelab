@@ -1,0 +1,16 @@
+# OAuth client credentials are supplied out-of-band at install time and must
+# never be committed to this repository.
+operatorConfig:
+  defaultTags:
+    - tag:k8s-operator
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+
+# Every proxy created for this cluster represents the trusted AI Worker plane.
+# Tailnet Grants still limit it to HTTPS with the Business Gateway.
+proxyConfig:
+  defaultTags: tag:ai-worker-trusted

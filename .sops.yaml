@@ -23,14 +23,14 @@ creation_rules:
   - path_regex: kubernetes/.*\.sops\.ya?ml$
     encrypted_regex: '^(data|stringData)$'
     age: >-
-      REPLACE_WITH_YOUR_AGE_PUBLIC_KEY
+      age1mzq6plpzuyrzsp3l2gl6fnjxqztgmrk26ex923uxkj4khkzfdcuqjqjhcg
 
   # OpenTofu 変数ファイル用（ファイル全体を暗号化）
   - path_regex: tofu/.*\.sops\.ya?ml$
     age: >-
-      REPLACE_WITH_YOUR_AGE_PUBLIC_KEY
+      age1mzq6plpzuyrzsp3l2gl6fnjxqztgmrk26ex923uxkj4khkzfdcuqjqjhcg
 
   # その他（talos secrets 等、ファイル全体を暗号化）
   - path_regex: .*\.sops\.ya?ml$
     age: >-
-      REPLACE_WITH_YOUR_AGE_PUBLIC_KEY
+      age1mzq6plpzuyrzsp3l2gl6fnjxqztgmrk26ex923uxkj4khkzfdcuqjqjhcg

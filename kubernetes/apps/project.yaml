@@ -34,6 +34,7 @@ spec:
     - https://aquasecurity.github.io/helm-charts/
     - https://backube.github.io/helm-charts/
     - https://piraeus.io/helm-charts/
+    - https://pkgs.tailscale.com/helmcharts
 
   # -------------------------------------------------------------------------
   # デプロイ先の namespace
@@ -58,6 +59,8 @@ spec:
       namespace: velero
     - server: https://kubernetes.default.svc
       namespace: security
+    - server: https://kubernetes.default.svc
+      namespace: tailscale
     - server: https://kubernetes.default.svc
       namespace: argocd
     # kubelet-serving-cert-approver は上流マニフェストが専用 namespace を作る
@@ -132,6 +135,12 @@ spec:
       kind: CiliumLoadBalancerIPPool
     - group: cilium.io
       kind: CiliumL2AnnouncementPolicy
+    - group: networking.k8s.io
+      kind: IngressClass
+    - group: tailscale.com
+      kind: DNSConfig
+    - group: tailscale.com
+      kind: ProxyGroup
 
     # --- cert-manager ---
     - group: cert-manager.io

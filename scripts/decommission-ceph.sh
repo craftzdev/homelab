@@ -29,6 +29,9 @@ PVE_SSH_USER="${PVE_SSH_USER:-root}"
 PVE_NODES="${PVE_NODES:-sv-proxmox-01 sv-proxmox-02 sv-proxmox-03}"
 ZFS_POOL_NAME="${ZFS_POOL_NAME:-local-zfs}"
 OSD_DEVICE="${OSD_DEVICE:-/dev/sda}"
+BACKUP_STORAGE="${BACKUP_STORAGE:-pbs-gateway}"
+BACKUP_VMID="${BACKUP_VMID:-1200}"
+CEPHFS_ARCHIVE="${CEPHFS_ARCHIVE:-}"
 
 DRY_RUN=true
 
@@ -52,6 +55,9 @@ usage() {
   PVE_NODES      対象ノード（スペース区切り）
   OSD_DEVICE     OSD が載っているデバイス        (既定: /dev/sda)
   ZFS_POOL_NAME  作成する ZFS プール名           (既定: local-zfs)
+  BACKUP_STORAGE Gateway バックアップの PBS      (既定: pbs-gateway)
+  BACKUP_VMID    バックアップ確認対象 VMID       (既定: 1200)
+  CEPHFS_ARCHIVE CephFS 退避アーカイブ（指定時は SHA256 も検証）
 
 ⚠️ 実行前に必ず確認すること:
    - Ceph 上に必要なデータが残っていないか
@@ -73,6 +79,8 @@ done
 [[ "${PVE_SSH_USER}"  =~ ^[A-Za-z0-9._-]+$  ]] || die "PVE_SSH_USER が不正です"
 [[ "${ZFS_POOL_NAME}" =~ ^[A-Za-z0-9._-]+$  ]] || die "ZFS_POOL_NAME が不正です"
 [[ "${OSD_DEVICE}"    =~ ^/dev/[A-Za-z0-9/_-]+$ ]] || die "OSD_DEVICE が不正です"
+[[ "${BACKUP_STORAGE}" =~ ^[A-Za-z0-9._-]+$ ]] || die "BACKUP_STORAGE が不正です"
+[[ "${BACKUP_VMID}" =~ ^[0-9]+$ ]] || die "BACKUP_VMID が不正です"
 for n in ${PVE_NODES}; do
   [[ "${n}" =~ ^[A-Za-z0-9._-]+$ ]] || die "PVE_NODES に不正な値: ${n}"
 done
@@ -94,6 +102,14 @@ pve 'ceph -s >/dev/null 2>&1' || die "Ceph へアクセスできません（既�
 # ===========================================================================
 step "1. 前提チェック — Ceph 上にデータが残っていないか"
 # ===========================================================================
+
+# --- PBS に復元元が存在すること ---
+pve "pvesm status --storage ${BACKUP_STORAGE} 2>/dev/null | awk 'NR == 2 && \$3 == \"active\" { found=1 } END { exit !found }'" \
+  || die "PBS ストレージ ${BACKUP_STORAGE} が active ではありません"
+LATEST_BACKUP="$(pve "pvesm list ${BACKUP_STORAGE} --vmid ${BACKUP_VMID} 2>/dev/null | awk 'NR > 1 { print \$1 }' | tail -1")"
+[[ -n "${LATEST_BACKUP}" ]] \
+  || die "${BACKUP_STORAGE} に VM ${BACKUP_VMID} のバックアップがありません"
+ok "復元元を確認: ${LATEST_BACKUP}"
 
 # --- VM が存在しないこと ---
 VM_COUNT="$(pve 'qm list 2>/dev/null | tail -n +2 | wc -l' | tr -d ' ')"
@@ -119,6 +135,13 @@ done
 info "CephFS の内容:"
 pve 'du -sh /mnt/pve/cephfs01/* 2>/dev/null' | sed 's/^/      /' || true
 warn "上記のデータは失われます。必要なら先に退避してください（ISO/テンプレート等）。"
+if [[ -n "${CEPHFS_ARCHIVE}" ]]; then
+  pve "test -f '${CEPHFS_ARCHIVE}' && test -f '${CEPHFS_ARCHIVE}.sha256'" \
+    || die "CephFS 退避アーカイブまたは SHA256 ファイルがありません: ${CEPHFS_ARCHIVE}"
+  pve "sha256sum -c '${CEPHFS_ARCHIVE}.sha256'" >/dev/null \
+    || die "CephFS 退避アーカイブの SHA256 検証に失敗しました"
+  ok "CephFS 退避アーカイブを検証: ${CEPHFS_ARCHIVE}"
+fi
 
 # ---------------------------------------------------------------------------
 # 最終確認
@@ -150,6 +173,12 @@ for st in cephrdb_k8s cephrdb_vm cephfs01; do
     info "ストレージ ${st} は存在しません（スキップ）"
   fi
 done
+# Removing the storage definition does not reliably unmount an already-mounted
+# CephFS. Detach it on every node before the MDS/filesystem is destroyed.
+for n in ${PVE_NODES}; do
+  # -i skips the ceph umount helper, which can block forever once all MDS are gone.
+  run "ssh -o BatchMode=yes ${n} 'findmnt -rn /mnt/pve/cephfs01 >/dev/null 2>&1 && umount -i -l /mnt/pve/cephfs01 || true'"
+done
 
 # ===========================================================================
 step "3. CephFS を削除"
@@ -160,7 +189,7 @@ if pve 'ceph fs ls 2>/dev/null | grep -q cephfs01'; then
     run "ssh -o BatchMode=yes ${n} 'systemctl stop ceph-mds@${n}.service || true'"
   done
   run "ceph fs fail cephfs01"
-  run "ceph fs rm cephfs01 --yes-i-really-mean-it"
+  run "pveceph fs destroy cephfs01 --remove-storages 1 --remove-pools 1"
   for n in ${PVE_NODES}; do
     run "ssh -o BatchMode=yes ${n} 'systemctl disable ceph-mds@${n}.service || true'"
   done
@@ -173,7 +202,7 @@ step "4. プールを削除"
 # ===========================================================================
 # mon_allow_pool_delete は既に true（実測確認済み）だが念のため設定する
 run "ceph config set mon mon_allow_pool_delete true"
-for pool in cephrdb_k8s cephrdb_vm cephfs01_data cephfs01_metadata; do
+for pool in cephrdb_k8s cephrdb_vm cephfs01_data cephfs01_metadata .mgr; do
   if pve "ceph osd pool ls 2>/dev/null | grep -qx ${pool}"; then
     run "ceph osd pool delete ${pool} ${pool} --yes-i-really-really-mean-it"
   else
@@ -193,11 +222,17 @@ if [[ -n "${OSD_IDS}" ]]; then
     run "ceph osd down ${id}"
     # OSD が載っているノードでサービスを停止する
     OSD_HOST="$(pve "ceph osd find ${id} --format json 2>/dev/null" \
-      | grep -oE '\"host\":\"[^\"]+\"' | head -1 | cut -d'\"' -f4 || echo "")"
+      | grep -oE '"host":"[^"]+"' | head -1 \
+      | sed 's/^"host":"//; s/"$//' || echo "")"
     if [[ -n "${OSD_HOST}" ]]; then
       run "ssh -o BatchMode=yes ${OSD_HOST} 'systemctl stop ceph-osd@${id}.service || true'"
     fi
     run "ceph osd purge ${id} --yes-i-really-mean-it"
+    if [[ -n "${OSD_HOST}" ]]; then
+      # Whole-device OSDs are backed by an LVM VG. wipefs alone does not remove
+      # that VG/LV metadata, so destroy it explicitly before ZFS reuses the disk.
+      run "ssh -o BatchMode=yes ${OSD_HOST} 'systemctl disable ceph-osd@${id}.service || true; ceph-volume lvm zap --destroy ${OSD_DEVICE}; udevadm settle'"
+    fi
   done
 else
   info "OSD は存在しません（スキップ）"
@@ -206,16 +241,27 @@ fi
 # ===========================================================================
 step "6. MON / MGR を削除し、Ceph を解体"
 # ===========================================================================
+# pveceph removes local daemon state, so every command must run on the node
+# that owns the daemon. Running all IDs from PVE_HOST leaves remote state behind.
 for n in ${PVE_NODES}; do
-  run "pveceph mgr destroy ${n} || true"
+  run "ssh -o BatchMode=yes ${n} 'pveceph mds destroy ${n} || true'"
 done
 for n in ${PVE_NODES}; do
-  run "pveceph mon destroy ${n} || true"
+  run "ssh -o BatchMode=yes ${n} 'pveceph mgr destroy ${n} || true'"
 done
-
-warn "Ceph の設定ファイル（/etc/pve/ceph.conf 等）の削除は手動で行ってください:"
-printf '      pveceph purge --crash --logs\n'
-printf '      rm -f /etc/pve/ceph.conf /etc/ceph/ceph.conf\n'
+# The manager may have recreated its internal pool while OSDs were removed.
+if pve 'ceph osd pool ls 2>/dev/null | grep -qx .mgr'; then
+  run "ceph osd pool delete .mgr .mgr --yes-i-really-really-mean-it"
+fi
+for n in ${PVE_NODES}; do
+  run "ssh -o BatchMode=yes ${n} 'pveceph mon destroy ${n} || true'"
+done
+for n in ${PVE_NODES}; do
+  run "ssh -o BatchMode=yes ${n} 'pveceph purge --crash 1 --logs 1'"
+done
+for n in ${PVE_NODES}; do
+  run "ssh -o BatchMode=yes ${n} 'rm -f /etc/ceph/ceph.conf; rmdir /var/lib/ceph/osd/ceph-* 2>/dev/null || true'"
+done
 
 # ===========================================================================
 step "7. 解放された SSD に ZFS プールを作成"

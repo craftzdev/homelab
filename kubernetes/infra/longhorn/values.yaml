@@ -33,7 +33,9 @@ defaultSettings:
   # false にすると同一ノードに複数レプリカが載りうるが、
   # それでは「ノード障害に耐える」という目的を果たさない。
   replicaSoftAntiAffinity: false
-  replicaZoneSoftAntiAffinity: false
+  # 3 台は同一ホームラボで zone ラベルを持たない。同一 zone 内でも
+  # 別ノードへの配置を許可しないと、2・3 個目のレプリカを置けない。
+  replicaZoneSoftAntiAffinity: true
 
   # -------------------------------------------------------------------------
   # ⚠️ ノードのドレイン時にレプリカを退避させない
@@ -100,7 +102,10 @@ service:
 # ---------------------------------------------------------------------------
 metrics:
   serviceMonitor:
-    enabled: true
+    # Prometheus Operator の CRD は monitoring 導入後に有効化する。
+    # 初回 bootstrap では CRD がまだ無いため、先に有効化すると
+    # Longhorn の Helm install 自体が失敗する。
+    enabled: false
     additionalLabels:
       release: kube-prometheus-stack
 

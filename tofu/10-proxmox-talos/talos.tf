@@ -82,29 +82,10 @@ resource "talos_machine_bootstrap" "this" {
   endpoint             = local.controlplane_ips[0]
 }
 
-# ---------------------------------------------------------------------------
-# クラスタのヘルスチェック
-#
-# skip_kubernetes_checks = true が重要。
-# この時点では CNI（Cilium）が未導入なので、全ノードが NotReady であり
-# Kubernetes レベルのチェックは必ず失敗する。ここで確認したいのは
-# 「Talos と etcd が正常か」であって、Kubernetes の Ready 状態ではない。
-# ---------------------------------------------------------------------------
-data "talos_cluster_health" "this" {
-  depends_on = [talos_machine_bootstrap.this]
-
-  client_configuration = talos_machine_secrets.this.client_configuration
-  endpoints            = local.controlplane_ips
-
-  control_plane_nodes = local.controlplane_ips
-  worker_nodes        = [for k, v in var.worker_nodes : v.ip]
-
-  skip_kubernetes_checks = true
-
-  timeouts = {
-    read = "10m"
-  }
-}
+# Cluster health is verified by scripts/bootstrap-cluster.sh after Cilium is
+# installed. A talos_cluster_health data source runs during every plan refresh;
+# that makes a corrective plan impossible precisely when the cluster is
+# unhealthy, so it must not be part of the state graph.
 
 # ---------------------------------------------------------------------------
 # kubeconfig の取得

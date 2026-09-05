@@ -45,16 +45,10 @@ metadata:
   name: vlan40-l2-announcement
 spec:
   # ---------------------------------------------------------------------------
-  # 広告を行うノードを worker に限定する。
-  #
-  # control-plane が LoadBalancer のトラフィックを受けると、
-  # データプレーンの負荷が etcd / apiserver に影響しうる。
-  # 役割を分離しておく。
+  # 3 台は control-plane / worker 兼用なので、全ノードを広告候補にする。
+  # Lease により実際に ARP 応答するのは選出された 1 ノードだけになる。
   # ---------------------------------------------------------------------------
-  nodeSelector:
-    matchExpressions:
-      - key: node-role.kubernetes.io/control-plane
-        operator: DoesNotExist
+  nodeSelector: {}
 
   # ---------------------------------------------------------------------------
   # 広告を出すインタフェースを VLAN40 側に限定する。

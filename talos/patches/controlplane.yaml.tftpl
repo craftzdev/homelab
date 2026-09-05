@@ -213,9 +213,9 @@ cluster:
       service:
         disabled: true
 
-  # control-plane にはワークロードを載せない。
-  # 侵害されたワークロードが control-plane ノード上で動くことを避ける。
-  allowSchedulingOnControlPlanes: false
+  # 3 台の control-plane を worker と兼用する。物理ホストも 3 台のため、
+  # 専用 worker VM をさらに重ねず、障害ドメインを 1 ホスト = 1 ノードに保つ。
+  allowSchedulingOnControlPlanes: true
 
   # -------------------------------------------------------------------------
   # kube-apiserver
@@ -312,11 +312,8 @@ cluster:
             audit-version: latest
             warn: restricted
             warn-version: latest
-          exemptions:
-            namespaces:
-              - kube-system
-            runtimeClasses: []
-            usernames: []
+          # Talos の生成済み設定には kube-system の例外が既に入っている。
+          # ここで再指定すると配列へ追記され、API Server が重複値として拒否する。
 
   controllerManager:
     extraArgs:

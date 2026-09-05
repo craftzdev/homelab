@@ -9,6 +9,7 @@
 #   -15  gateway-api-crds : Gateway API の CRD（Cilium より先に必要）
 #    -5  snapshot-controller : VolumeSnapshot の CRD
 #     0  longhorn        : 分散ブロックストレージ（PV の供給元）
+#     1  tailscale       : Tailnet ingress / egress
 #     2  cert-manager    : 証明書管理（他が依存する）
 #     3  gateway         : HTTP ルーティング（Cilium Gateway API）
 #     4  cloudflared     : 外部公開（ingress-nginx が先に必要）
@@ -195,6 +196,53 @@ spec:
     syncOptions:
       - ServerSideApply=true
       - CreateNamespace=false
+
+---
+# ---------------------------------------------------------------------------
+# Tailscale Kubernetes Operator
+#
+# OAuth Secret `operator-oauth` は事前に tailscale namespace へ作成する。
+# Git / Argo CD には資格情報を保存しない。Operator は AI Worker の
+# Tailnet-only HTTPS ingress と Gateway 向け egress proxy を管理する。
+# ---------------------------------------------------------------------------
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: tailscale-operator
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: infrastructure
+  sources:
+    - repoURL: https://pkgs.tailscale.com/helmcharts
+      chart: tailscale-operator
+      targetRevision: 1.102.3
+      helm:
+        releaseName: tailscale-operator
+        valueFiles:
+          - $values/kubernetes/infra/tailscale-operator/values.yaml
+    - repoURL: https://github.com/craftzdev/homelab.git
+      targetRevision: main
+      path: kubernetes/infra/tailscale-operator
+      directory:
+        include: dnsconfig.yaml
+    - repoURL: https://github.com/craftzdev/homelab.git
+      targetRevision: main
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: tailscale
+  syncPolicy:
+    automated:
+      # OAuth を失った状態で proxy CRD を誤って削除しない。
+      prune: false
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
 
 ---
 # ---------------------------------------------------------------------------

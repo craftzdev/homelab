@@ -1,0 +1,75 @@
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: gateway
+      POSTGRES_USER: gateway
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gateway -d gateway"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - backend
+
+  public-api:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      API_SURFACE: public
+      DATABASE_URL: postgresql://gateway:${POSTGRES_PASSWORD}@db:5432/gateway
+      GATEWAY_API_TOKEN: ${GATEWAY_API_TOKEN}
+      WORKER_CALLBACK_TOKEN: ${WORKER_CALLBACK_TOKEN}
+      WORKER_BASE_URL: ${WORKER_BASE_URL}
+      WORKER_API_TOKEN: ${WORKER_API_TOKEN}
+      CLOUDFLARE_ACCESS_REQUIRED: ${CLOUDFLARE_ACCESS_REQUIRED:-false}
+      CLOUDFLARE_ACCESS_TEAM_DOMAIN: ${CLOUDFLARE_ACCESS_TEAM_DOMAIN:-}
+      CLOUDFLARE_ACCESS_AUD: ${CLOUDFLARE_ACCESS_AUD:-}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/ready', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+    ports:
+      - "127.0.0.1:8080:8080"
+    networks:
+      - frontend
+      - backend
+
+  callback-api:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      API_SURFACE: callback
+      DATABASE_URL: postgresql://gateway:${POSTGRES_PASSWORD}@db:5432/gateway
+      GATEWAY_API_TOKEN: ${GATEWAY_API_TOKEN}
+      WORKER_CALLBACK_TOKEN: ${WORKER_CALLBACK_TOKEN}
+      CLOUDFLARE_ACCESS_REQUIRED: "false"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/ready', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+    ports:
+      - "127.0.0.1:8081:8080"
+    networks:
+      - frontend
+      - backend
+
+networks:
+  frontend:
+  backend:
+    internal: true
+
+volumes:
+  postgres-data:
