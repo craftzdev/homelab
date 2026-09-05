@@ -3,11 +3,11 @@
 | 項目 | 内容 |
 |---|---|
 | 文書名 | AI自律事業運営基盤 基本設計書 |
-| バージョン | 0.2 |
+| バージョン | 0.3 |
 | 作成日 | 2026-09-06 |
 | 入力文書 | AI自律事業運営基盤 要件定義書 v1.0 |
 | 対象フェーズ | Phase 1 MVP |
-| ステータス | Infrastructure decisions confirmed / External account values TBD |
+| ステータス | Gateway deployed / External ingress and Worker pending |
 
 ## 1. 目的
 
@@ -75,17 +75,19 @@
 |---|---|---|
 | Proxmox | 3ノードとも PVE `9.0.11`、online | 正常 |
 | Cluster | `homelab`、3 votes、quorum 2、Quorate | 正常 |
-| VM/LXC | 全ノードとも登録なし、`/cluster/nextid` は `100` | VM ID `1200` は空き |
-| `172.16.40.30` | VM/LXC設定内の使用なし、Router経由probeは Host Unreachable | 固定IPとして採用 |
+| VM/LXC | VM `1200` `ai-gateway-01` を作成済み | 稼働中 |
+| `172.16.40.30` | Gateway VMの固定IPとして設定 | 稼働中 |
 | `gateway.craftz.dev` | A/AAAA/CNAME未登録、`craftz.dev` のNSはCloudflare | Tunnel hostnameとして採用 |
 | Ceph OSD | 3 OSDすべて up/in、全129 PGが `active+clean` | データ整合性は正常 |
 | Ceph容量 | raw約3.07 TB、利用約30.3 GB、空き約3.04 TB | Gateway配置に十分 |
 | `cephrdb_vm` | 3ノードで active、shared、replica size 3 / min_size 2 | Gateway diskに採用 |
-| Ceph health | `HEALTH_WARN`。`osd.0` に BlueStore slow-op履歴 | 要監視、稼働前に解消確認 |
+| Ceph health | `HEALTH_WARN`。`osd.0` と `osd.2` に BlueStore slow-op indication | PGはclean、警告継続監視 |
 | `osd.0` device | SMART PASSED、reallocated/pending/CRC error 0、現在のcommit/apply latency 0 ms | 即時故障の兆候なし |
 | Proxmox HA | 3ノードのCRM/LRM/watchdog active、quorum OK | HA利用可能 |
-| HA設定 | HA Resource、旧HA Group、新HA Ruleはいずれも未登録 | Gateway用に新規設定 |
+| HA設定 | `vm:1200` と Node Affinity Rule `ai-gateway-placement` を登録済み | `started` / `in use` |
 | PBS連携 | ProxmoxにPBS storage登録なし、backup jobなし | 本稼働前の必須作業 |
+| Tailscale | MagicDNS `tailb6c7d.ts.net`、Gateway `100.104.73.43` | Serve HTTPS稼働、tag/Grantsは未適用 |
+| Gateway復旧試験 | live migration往復、再起動、local backupから隔離restore | 成功 |
 
 ### 4.3 確定値
 
@@ -206,10 +208,10 @@ flowchart TB
 - VM `1200` は HA Resource として `max_restart=1`、`max_relocate=1`、`failback=0` で登録する。復旧後の不要な自動戻しを避ける。
 - ホスト障害時は同一 VM を別ノードで再起動する。Phase 1 は単一 Gateway/DB のため、再起動中は Job の新規受付が停止する。
 - Gateway復旧後、Worker APIから実行状態を再取得する。副作用のある Job は自動再実行せず、冪等性が確認できる Job だけを再dispatchする。
-- CephはGateway用storageとして採用する。ただし `osd.0` の slow-op warning が継続・増加する場合は、HA Resourceを有効化する前にデバイスとI/O経路を調査する。
-- PBS storage登録、backup job作成、restore test完了を本稼働条件とする。
+- CephはGateway用storageとして採用する。HA Resourceはclean PG、正常なquorum、live migration成功を確認して有効化したが、`osd.0` と `osd.2` の slow-op warning は継続監視し、増加時はデバイスとI/O経路を調査する。
+- local backupからの隔離restore testは完了した。PBS storage登録、PBS backup job作成、PBSからのrestore test完了は引き続き本稼働条件とする。
 
-HA登録時の確定パラメータは次のとおりとする。実行はVMの起動・停止試験後に行う。
+HA登録済みの確定パラメータは次のとおりである。
 
 ```bash
 ha-manager add vm:1200 --state started --max_restart 1 --max_relocate 1 --failback 0
@@ -966,7 +968,7 @@ Event envelope は Adapter に依存しない形式とする。
 
 ## 26. 実装前に確定する項目
 
-1. Tailnetの実MagicDNS domainとTailscale auth keyの発行方法
+1. Tailscale tag ownership、Grants、およびMac Studioを個人管理端末とWorkerで兼用する場合の権限境界
 2. Mac Studioの同時実行上限
 3. Cloudflare account/zone と Service Token 運用者
 4. Grok Bot が利用できる outbound HTTP、Webhook、polling の仕様
