@@ -50,8 +50,8 @@ pveum pool add k8s
 #        Kubernetes と無関係な VM（OpenClaw 等）まで巻き込む事故を防ぐため、
 #        プールと使用するストレージにだけ権限を与える。
 pveum aclmod /pool/k8s              -user tofu@pve -role TofuProvisioner
-pveum aclmod /storage/cephrdb_k8s   -user tofu@pve -role TofuProvisioner
-pveum aclmod /storage/cephfs01      -user tofu@pve -role TofuProvisioner
+pveum aclmod /storage/local         -user tofu@pve -role TofuProvisioner
+pveum aclmod /storage/local-zfs     -user tofu@pve -role TofuProvisioner
 
 #     VM の作成にはノードへの参照権限も要る（PVEAuditor で十分）
 pveum aclmod /nodes -user tofu@pve -role PVEAuditor
@@ -64,8 +64,8 @@ pveum user token add tofu@pve provider --privsep 1
 
 #     privsep 1 のトークンには、トークン自身にも ACL が必要
 pveum aclmod /pool/k8s            -token 'tofu@pve!provider' -role TofuProvisioner
-pveum aclmod /storage/cephrdb_k8s -token 'tofu@pve!provider' -role TofuProvisioner
-pveum aclmod /storage/cephfs01    -token 'tofu@pve!provider' -role TofuProvisioner
+pveum aclmod /storage/local       -token 'tofu@pve!provider' -role TofuProvisioner
+pveum aclmod /storage/local-zfs   -token 'tofu@pve!provider' -role TofuProvisioner
 pveum aclmod /nodes               -token 'tofu@pve!provider' -role PVEAuditor
 ```
 
@@ -101,12 +101,10 @@ echo "$TF_VAR_state_encryption_passphrase"   # パスワードマネージャへ
 ./scripts/preflight.sh
 ```
 
-**Ceph が `HEALTH_WARN` の場合、このスクリプトは失敗します。** これは意図的です。
-Kubernetes の PV はこの Ceph の上に載るため、ストレージ層の不安定さが
-そのままアプリの不安定さになります。原因の切り分け手順は
-[docs/30-storage-design.md §2](30-storage-design.md) を参照してください。
-
-承知の上で進める場合のみ `--skip-ceph-health` を付けます。
+3台すべての`local-zfs`、Proxmox quorum、必要なAPI/ネットワーク到達性を
+検証します。Cephは廃止済みであり、残っている場合は警告します。
+`local-zfs`が無い場合は、PBSバックアップとCeph解除を確認したうえで
+`decommission-ceph.sh`の手順を完了させてください。
 
 ### 2.5 旧クラスタの VM を削除する
 
@@ -116,6 +114,65 @@ Kubernetes の PV はこの Ceph の上に載るため、ストレージ層の�
 ```
 
 ## 3. クラスタの構築
+
+### 3.0 クラスタ全体をワンコマンドで再構築する
+
+通常の再構築はリポジトリのルートで次の1コマンドを実行します。
+
+```bash
+./scripts/rebuild-talos-cluster.sh \
+  --execute \
+  --confirm-destroy-six-k8s-vms
+```
+
+このコマンドは以下を直列化して実行します。
+
+1. OpenTofuのdestroy planを生成し、対象がVMID `1001`〜`1003`と
+   `1101`〜`1103`だけであることを検証する（Gateway VM `1200`は対象外）。
+2. レジストリ、WorkerのSecret/PVCデータ、Tailscale Operator/Proxyの状態を
+   age暗号化し、6 VMをPBS `172.16.10.51`へバックアップする。
+3. 6 VMを削除し、OpenTofuとTalosで3 control plane + 3 workerを再作成する。
+4. Gateway API、Cilium、Argo CD/KSOPS、Longhorn CSI、全GitOpsアプリを
+   依存順に復元する。
+5. レジストリとWorkerデータを復元し、TailscaleのIDとTLSキャッシュを
+   Proxyの初回起動前に戻す。
+6. 6ノード、etcd、全Pod、全Argo CD Application、Longhorn、Tailnet HTTPSを
+   検証し、最後にCloudflare Access → Gateway → Worker → callbackの
+   認証付きスモークテストを実行する。
+
+デフォルト実行は読み取り専用のdestroy plan監査です。
+
+```bash
+./scripts/rebuild-talos-cluster.sh
+```
+
+中断後に既存の復旧セットから再開する場合だけ、次を使います。これは通常運用の
+バックアップ取得を省略するため、`BACKUP_DIR`は同スクリプトが作成し検証済みの
+ディレクトリを指定してください。
+
+```bash
+BACKUP_DIR="$PWD/_out/rebuild-backups/<timestamp>" \
+  ./scripts/rebuild-talos-cluster.sh \
+  --execute \
+  --confirm-destroy-six-k8s-vms \
+  --resume-after-backup
+```
+
+必要な機密値は平文tfvarsへ置かず、macOS Keychainの次のservice/accountから
+読み取ります。
+
+| 用途 | service | account |
+|---|---|---|
+| OpenTofu state暗号化 | `dev.craftz.homelab.tofu-state` | `talos-k8s` |
+| Proxmox API token | `dev.craftz.proxmox.tofu-token` | `tofu@pve!provider` |
+| Cloudflare Access client ID | `dev.craftz.ai-business-gateway.cloudflare-access-client-id` | `craftz` |
+| Cloudflare Access client secret | `dev.craftz.ai-business-gateway.cloudflare-access-client-secret` | `craftz` |
+
+初回の外部レジストリ取得ではCilium、Longhorn、監視スタックの展開に時間が
+かかります。成功メッセージが出るまでは、途中で起動済みのPodやVMだけを見て
+完了と判断しないでください。2026-09-07の実機試験では、6 VMの破棄・再作成、
+全12 Argo CD Application、Tailnet ID/TLS継続、Gatewayジョブ成功、
+`tofu plan`差分0まで確認しています。
 
 ### 3.1 VM 作成と Talos の bootstrap
 
@@ -297,16 +354,18 @@ Proxmox の Console でシリアルコンソールを開けば、起動時のロ
 
 ```bash
 kubectl describe pvc <name>
-kubectl -n ceph-csi logs -l app=ceph-csi-rbd-provisioner -c csi-rbdplugin
+kubectl -n longhorn-system get pods
+kubectl -n longhorn-system get volumes.longhorn.io
+kubectl -n longhorn-system logs deploy/longhorn-driver-deployer --tail=100
 ```
 
 よくある原因:
 
 | 症状 | 原因 | 対処 |
 | --- | --- | --- |
-| `clusterID` のエラー | StorageClass の fsid が実際の Ceph と不一致 | `ceph fsid` で確認して修正 |
-| MON への接続タイムアウト | ノードから VLAN20 へ到達できていない | `talosctl -n <node> get addresses` で eth1 の IP を確認 |
-| 認証エラー | cephx の権限不足 | `ceph auth get client.k8s-rbd` で caps を確認 |
+| `driver.longhorn.io`を待ち続ける | Longhorn CSIが未収束 | `longhorn-csi-plugin` DaemonSetと`csi-provisioner`を確認 |
+| volumeが`degraded`/`faulted` | workerまたはLonghorn専用ディスクが利用不可 | Longhorn node/disk状態と`/var/mnt/longhorn`を確認 |
+| attach timeout | 旧PodがRWO volumeを保持 | 旧Podの終了を確認し、volumeが`detached`後に再実行 |
 
 ### 通信が落ちている
 

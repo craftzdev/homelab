@@ -17,14 +17,51 @@ rebuild performed on the same day.
 | Talos | `1.13.9`, three dedicated control-plane nodes plus three dedicated workers, all Ready |
 | Kubernetes | `1.34.3`, API VIP `172.16.40.10` |
 | CNI | Cilium `1.20.1`, kube-proxy replacement, WireGuard, L2 LoadBalancer, Hubble healthy |
-| Storage | Longhorn `1.12.1`; both persistent volumes have one healthy replica on each dedicated worker |
+| Storage | Longhorn `1.12.1`; all five persistent volumes are healthy and replicas are restricted to the dedicated workers |
 | K8s Worker | Running on the dedicated worker plane in namespace `ai-worker`; restricted non-root Pod, Codex CLI and API health verified |
 | Gateway dispatcher | Deployed; typed Worker endpoint mapping and Bearer authentication verified against an isolated Worker |
 | Tailnet cutover | Tailscale Operator ingress/egress and bidirectional HTTPS verified |
 | Mac Studio Worker | Removed after Kubernetes cutover; launchd, account/group, home, plist, Serve, and Worker Grants absent |
 | Internal registry | TLS registry at `172.16.40.200:5000`, 20 GiB Longhorn 3-replica PVC |
 | Codex end-to-end | Gateway job `9b828a64-1f96-4261-af02-10f3c29c7160` succeeded with tests and signed review artifacts |
-| Post-migration smoke test | Gateway job `04c8546b-b13e-4ca6-8a7d-71cdc57de240` reached `SUCCEEDED` through Cloudflare Access, Gateway, Tailnet HTTPS, and the Kubernetes Worker |
+| Post-migration smoke test | Gateway job `054f75e6-50d2-4bc1-a837-687574f72c21` reached `SUCCEEDED` through Cloudflare Access, Gateway, Tailnet HTTPS, and the Kubernetes Worker |
+
+## Final one-command rebuild validation (2026-09-07 JST)
+
+The production rebuild command completed successfully from commit `531adae`:
+
+```bash
+./scripts/rebuild-talos-cluster.sh \
+  --execute \
+  --confirm-destroy-six-k8s-vms
+```
+
+For the final repeat test, the already verified PBS snapshots and encrypted
+application recovery set were reused with `--resume-after-backup`. The recovery
+set was `_out/rebuild-backups/20260906T120841Z`. The command independently
+audited its destroy plan before applying it and restricted deletion to VMIDs
+`1001`, `1002`, `1003`, `1101`, `1102`, and `1103`. Gateway VM `1200` remained
+running throughout.
+
+| Verification | Result |
+|---|---|
+| Proxmox VM placement | One control plane and one worker running on each of `sv-proxmox-01` through `sv-proxmox-03` |
+| Talos / Kubernetes | Six nodes Ready; three control-plane and three worker nodes |
+| etcd | Three voting members, no learners |
+| API stability | All three direct kube-apiserver endpoints and all nodes Ready for 12 consecutive five-second samples |
+| GitOps | All 12 Argo CD Applications `Synced/Healthy` |
+| Storage | Five Longhorn volumes `attached/healthy`; replica nodes restricted to the three workers |
+| Infrastructure drift | `tofu plan -detailed-exitcode` returned `0` (`No changes`) |
+| Tailnet continuity | Worker ingress and Gateway egress device IDs matched the encrypted pre-rebuild state |
+| TLS continuity | Cached Tailnet certificate state restored before proxy startup; no ACME issuance or rate-limit event in the new proxy logs |
+| Worker health | `https://ai-worker-cluster.tailb6c7d.ts.net/health` returned healthy with Codex Builder enabled |
+| End-to-end | Gateway job `054f75e6-50d2-4bc1-a837-687574f72c21` reached `SUCCEEDED` |
+
+Cold-start image downloads from external registries were slow and temporarily
+increased local-ZFS I/O latency. The rebuild therefore uses dependency gates
+and bounded convergence windows for Cilium, Longhorn CSI, every Pod, and the
+final authenticated smoke test. After image convergence, all three API servers
+remained continuously Ready for the final stability sample.
 
 ## Six-VM destructive rebuild validation
 
