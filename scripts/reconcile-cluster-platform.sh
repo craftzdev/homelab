@@ -109,23 +109,75 @@ verify_ksops_runtime() {
   die "KSOPS runtime verification failed after kubelet certificate approval"
 }
 
+wait_for_longhorn_csi() {
+  local deadline ready name
+  local workers=(k8s-worker-1 k8s-worker-2 k8s-worker-3)
+  local deployments=(
+    longhorn-driver-deployer
+    csi-attacher
+    csi-provisioner
+    csi-resizer
+    csi-snapshotter
+  )
+  local daemonsets=(longhorn-manager longhorn-csi-plugin)
+
+  deadline=$((SECONDS + APPLICATION_TIMEOUT_SECONDS))
+  info "Waiting for Longhorn CSI provisioning to become available"
+  while (( SECONDS < deadline )); do
+    ready=true
+
+    kubectl --request-timeout=15s get csidriver driver.longhorn.io \
+      >/dev/null 2>&1 || ready=false
+    for name in "${workers[@]}"; do
+      kubectl --request-timeout=15s wait --for=condition=Ready \
+        "node/${name}" --timeout=5s >/dev/null 2>&1 || ready=false
+    done
+    for name in "${deployments[@]}"; do
+      kubectl --request-timeout=15s -n longhorn-system rollout status \
+        "deployment/${name}" --timeout=5s >/dev/null 2>&1 || ready=false
+    done
+    for name in "${daemonsets[@]}"; do
+      kubectl --request-timeout=15s -n longhorn-system rollout status \
+        "daemonset/${name}" --timeout=5s >/dev/null 2>&1 || ready=false
+    done
+
+    if [[ "${ready}" == true ]]; then
+      ok "Longhorn CSI provisioning is available on the worker plane"
+      return
+    fi
+    sleep 5
+  done
+
+  kubectl --request-timeout=15s -n longhorn-system get \
+    deployments,daemonsets,pods >&2 || true
+  kubectl --request-timeout=15s get csidriver driver.longhorn.io >&2 || true
+  die "Longhorn CSI provisioning did not become available"
+}
+
 # This CiliumNetworkPolicy belonged to the pre-Longhorn policy model. Argo CD
 # cannot prune it because it is no longer in the desired manifest set.
 kubectl --request-timeout=15s -n longhorn-system delete ciliumnetworkpolicy default-deny \
   --ignore-not-found --wait=true >/dev/null 2>&1 || true
 
-# Foundation first. Monitoring installs the ServiceMonitor CRD required by
-# cert-manager and Trivy, so those applications are deliberately checked later.
-for app in gateway-api-crds cilium snapshot-controller longhorn \
-  image-registry tailscale-operator security-config \
-  kubelet-serving-cert-approver monitoring; do
+# Foundation first. Kubelet serving certificates are required for reliable
+# container status/log/exec operations during the rest of bootstrap. Longhorn's
+# Application can report Healthy before the CSI resources it generates exist,
+# so storage receives an additional explicit readiness gate before any PVC user.
+for app in gateway-api-crds cilium kubelet-serving-cert-approver \
+  snapshot-controller longhorn; do
   resume_application "${app}"
   wait_for_application "${app}"
 done
 
-# kubectl exec requires a trusted kubelet serving certificate. Verify the
-# repo-server runtime only after the certificate approver Application is healthy.
 verify_ksops_runtime
+wait_for_longhorn_csi
+
+# Monitoring installs the ServiceMonitor CRD required by cert-manager and Trivy,
+# so those applications are deliberately checked later.
+for app in image-registry tailscale-operator security-config monitoring; do
+  resume_application "${app}"
+  wait_for_application "${app}"
+done
 
 for app in cert-manager trivy-operator network-policies; do
   resume_application "${app}"
