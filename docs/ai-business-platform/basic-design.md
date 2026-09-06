@@ -121,7 +121,7 @@ Workerリポジトリから生成するOpenAPIをGateway→Worker API契約の�
 | Worker Tailnet identity | Tailscale Operator proxy / `tag:ai-worker-trusted` |
 | 将来の隔離Worker tag | `tag:ai-worker-sandbox` |
 | Worker API backend | Kubernetes ClusterIP / TCP 8080 |
-| Worker API endpoint | `https://ai-worker-k8s.<tailnet>.ts.net:443` |
+| Worker API endpoint | `https://ai-worker-cluster.<tailnet>.ts.net:443` |
 | Gateway→Worker transport | Tailscale Operator Ingress / HTTPS REST |
 | Gateway→Worker authentication | Tailscale Grant + Bearer API Token |
 | Worker→Gateway callback | `POST https://ai-gateway-01.<tailnet>.ts.net/v1/worker-events` |
@@ -587,7 +587,7 @@ stateDiagram-v2
 | POST | `/v1/jobs/{worker_job_id}/cancel` | 未開始または安全に停止可能なJobの取消し |
 | GET | `/health` | Worker APIとlocal queueのhealth |
 
-Worker APIはPod内の `0.0.0.0:8080` でlistenし、ClusterIP以外へ直接公開しない。Tailscale Operator Ingressだけが `https://ai-worker-k8s.<tailnet>.ts.net:443` としてproxyする。Job受付は `202 Accepted` と次の最小応答を返す。
+Worker APIはPod内の `0.0.0.0:8080` でlistenし、ClusterIP以外へ直接公開しない。Tailscale Operator Ingressだけが `https://ai-worker-cluster.<tailnet>.ts.net:443` としてproxyする。Job受付は `202 Accepted` と次の最小応答を返す。
 
 ```json
 {
@@ -702,7 +702,7 @@ limits:
 ### 15.1 実行モデル
 
 - Worker API はKubernetes Deploymentとして常時起動し、ClusterIPだけでlistenする。
-- Tailscale Kubernetes Operatorが `ai-worker-k8s` を `tag:ai-worker-trusted` でTailnetへ参加させ、HTTPS `:443` に公開する。
+- Tailscale Kubernetes Operatorが `ai-worker-cluster` を `tag:ai-worker-trusted` でTailnetへ参加させ、HTTPS `:443` に公開する。
 - Tailscale Funnelは有効化しない。
 - WorkerはJob状態をLonghorn 3レプリカPV上のSQLiteへ永続化し、Pod再起動後も受付済みJobとdispatch重複判定を復元する。
 - Job は `/data/workspaces/<job_id>/` に分離する。

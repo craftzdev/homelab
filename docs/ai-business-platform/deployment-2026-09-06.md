@@ -40,7 +40,7 @@ nodes and three dedicated workers. Registry and Worker data were restored to
 new Longhorn volumes; each volume has one healthy replica on every worker and
 none on the control plane. Tailscale Operator ingress/egress identities were
 recreated, CoreDNS forwarding for `tailb6c7d.ts.net` was restored, and
-`https://ai-worker-k8s.tailb6c7d.ts.net/health` returned healthy.
+`https://ai-worker-cluster.tailb6c7d.ts.net/health` returned healthy.
 
 The post-rebuild end-to-end test created Gateway job
 `ad231cde-5ff6-434b-9bbb-5e5de067f573`. It passed Cloudflare Access rejection,

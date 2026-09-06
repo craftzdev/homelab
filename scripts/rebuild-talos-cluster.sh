@@ -30,7 +30,7 @@ AI_WORKER_REPO="${AI_WORKER_REPO:-${REPO_ROOT}/../ai-business-worker}"
 GITOPS_REVISION="${GITOPS_REVISION:-$(git -C "${REPO_ROOT}" branch --show-current)}"
 PBS_BACKUP="${PBS_BACKUP:-1}"
 GATEWAY_SMOKE="${GATEWAY_SMOKE:-1}"
-TAILSCALE_WORKER_FQDN="${TAILSCALE_WORKER_FQDN:-ai-worker-k8s.tailb6c7d.ts.net}"
+TAILSCALE_WORKER_FQDN="${TAILSCALE_WORKER_FQDN:-ai-worker-cluster.tailb6c7d.ts.net}"
 CF_ACCESS_CLIENT_ID_SERVICE="${CF_ACCESS_CLIENT_ID_SERVICE:-dev.craftz.ai-business-gateway.cloudflare-access-client-id}"
 CF_ACCESS_CLIENT_SECRET_SERVICE="${CF_ACCESS_CLIENT_SECRET_SERVICE:-dev.craftz.ai-business-gateway.cloudflare-access-client-secret}"
 EXPECTED_VMIDS=(1001 1002 1003 1101 1102 1103)
@@ -41,6 +41,7 @@ EXECUTE=0
 CONFIRMED=0
 RESUME_AFTER_BACKUP=0
 RESTORE_ONLY=0
+TAILNET_RESTORE_TAINTED=0
 
 info() { printf '[INFO] %s\n' "$*"; }
 ok() { printf '[OK]   %s\n' "$*"; }
@@ -95,6 +96,14 @@ DESTROY_PLAN="${BACKUP_DIR}/destroy.tfplan"
 DESTROY_GUARD="${BACKUP_DIR}/destroy-plan-guard.json"
 
 cleanup() {
+  if [[ "${TAILNET_RESTORE_TAINTED}" == 1 && -s "${KUBECONFIG_PATH}" ]]; then
+    local node
+    for node in k8s-worker-1 k8s-worker-2 k8s-worker-3; do
+      kubectl --kubeconfig "${KUBECONFIG_PATH}" taint node "${node}" \
+        homelab.craftz.dev/tailnet-state-restore:NoSchedule- \
+        >/dev/null 2>&1 || true
+    done
+  fi
   unset TF_VAR_state_encryption_passphrase TF_VAR_proxmox_api_token AGE_RECIPIENT
 }
 trap cleanup EXIT
@@ -163,6 +172,33 @@ encrypt_secret() {
   chmod 600 "${output}"
 }
 
+backup_tailnet_proxy_state() {
+  local parent_type=$1 parent_namespace=$2 parent_name=$3 output=$4
+  local secrets_json count
+  secrets_json="$(kubectl --kubeconfig "${KUBECONFIG_PATH}" -n tailscale \
+    get secrets \
+    -l "tailscale.com/managed=true,tailscale.com/parent-resource-type=${parent_type},tailscale.com/parent-resource-ns=${parent_namespace},tailscale.com/parent-resource=${parent_name}" \
+    -o json)"
+  count="$(jq '.items | length' <<<"${secrets_json}")"
+  [[ "${count}" == 1 ]] \
+    || die "expected one Tailnet state Secret for ${parent_type}/${parent_namespace}/${parent_name}, found ${count}"
+
+  jq '.items[0] | {
+      apiVersion: "v1",
+      kind: "Secret",
+      type,
+      metadata: {
+        labels: {
+          "tailscale.com/parent-resource-type": .metadata.labels["tailscale.com/parent-resource-type"],
+          "tailscale.com/parent-resource-ns": .metadata.labels["tailscale.com/parent-resource-ns"],
+          "tailscale.com/parent-resource": .metadata.labels["tailscale.com/parent-resource"]
+        }
+      },
+      data
+    }' <<<"${secrets_json}" | age -r "${AGE_RECIPIENT}" -o "${output}"
+  chmod 600 "${output}"
+}
+
 verify_encrypted_tar() {
   local archive=$1
   age -d -i "${AGE_KEY_FILE}" "${archive}" | tar -tf - >/dev/null
@@ -207,6 +243,12 @@ backup_cluster_data() {
     "${BACKUP_DIR}/registry-tls.secret.json.age"
   encrypt_secret tailscale operator-oauth \
     "${BACKUP_DIR}/tailscale-oauth.secret.json.age"
+  encrypt_secret tailscale operator \
+    "${BACKUP_DIR}/tailscale-operator-state.secret.json.age"
+  backup_tailnet_proxy_state ingress ai-worker ai-business-worker \
+    "${BACKUP_DIR}/tailscale-worker-state.secret.json.age"
+  backup_tailnet_proxy_state svc ai-worker ai-gateway-egress \
+    "${BACKUP_DIR}/tailscale-gateway-egress-state.secret.json.age"
 
   kubectl --kubeconfig "${KUBECONFIG_PATH}" -n ai-worker get deploy ai-business-worker \
     -o jsonpath='{.spec.template.spec.containers[0].image}' \
@@ -252,6 +294,15 @@ verify_recovery_set() {
     || die "Worker data archive is not a complete tar stream"
   verify_encrypted_tar "${REGISTRY_DATA_BACKUP}" \
     || die "registry data archive is not a complete tar stream"
+  local tailnet_state_count=0 tailnet_state_file
+  for tailnet_state_file in \
+    tailscale-operator-state.secret.json.age \
+    tailscale-worker-state.secret.json.age \
+    tailscale-gateway-egress-state.secret.json.age; do
+    [[ -s "${BACKUP_DIR}/${tailnet_state_file}" ]] && tailnet_state_count=$((tailnet_state_count + 1))
+  done
+  [[ "${tailnet_state_count}" == 0 || "${tailnet_state_count}" == 3 ]] \
+    || die "Tailnet state backup is incomplete"
   ok "Existing encrypted recovery set verified"
 }
 
@@ -259,7 +310,12 @@ remove_stale_tailnet_cluster_devices() {
   local oauth_json client_id client_secret token_json access_token devices_json
   local device_ids device_count device_id delete_code tag selector maximum
 
-  info "Removing previous Tailnet identities before recreation"
+  if [[ -s "${BACKUP_DIR}/tailscale-worker-state.secret.json.age" ]]; then
+    info "Preserving Tailnet identities and TLS certificate cache for recreation"
+    return
+  fi
+
+  info "Removing previous Tailnet identities before recreation (legacy recovery set)"
   oauth_json="$(age -d -i "${AGE_KEY_FILE}" \
     "${BACKUP_DIR}/tailscale-oauth.secret.json.age")"
   client_id="$(jq -er '.data.client_id | @base64d' <<<"${oauth_json}")"
@@ -301,6 +357,105 @@ remove_stale_tailnet_cluster_devices() {
   done
   ok "Previous Tailnet cluster identities removed"
   unset oauth_json client_id client_secret token_json access_token devices_json
+}
+
+delete_tailnet_device_id() {
+  local device_id=$1 tag=$2 oauth_json client_id client_secret token_json access_token delete_code
+  [[ -n "${device_id}" ]] || return
+  oauth_json="$(age -d -i "${AGE_KEY_FILE}" \
+    "${BACKUP_DIR}/tailscale-oauth.secret.json.age")"
+  client_id="$(jq -er '.data.client_id | @base64d' <<<"${oauth_json}")"
+  client_secret="$(jq -er '.data.client_secret | @base64d' <<<"${oauth_json}")"
+  token_json="$(curl -fsS -u "${client_id}:${client_secret}" \
+    --data-urlencode 'grant_type=client_credentials' \
+    --data-urlencode 'scope=devices:core' \
+    --data-urlencode "tags=${tag}" \
+    https://api.tailscale.com/api/v2/oauth/token)"
+  access_token="$(jq -er '.access_token' <<<"${token_json}")"
+  delete_code="$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE \
+    -H "Authorization: Bearer ${access_token}" \
+    "https://api.tailscale.com/api/v2/device/${device_id}")"
+  [[ "${delete_code}" == 200 || "${delete_code}" == 204 ]] \
+    || die "transient Tailnet device cleanup failed with HTTP ${delete_code}"
+  unset oauth_json client_id client_secret token_json access_token
+}
+
+restore_tailnet_proxy_state() {
+  local input=$1 parent_type=$2 parent_namespace=$3 parent_name=$4
+  local selector secrets_json count secret_name
+  local old_json old_device_id new_device_id identity_patch
+  [[ -s "${input}" ]] || {
+    info "Tailnet state backup is absent; a new identity and certificate will be issued"
+    return
+  }
+
+  selector="tailscale.com/managed=true,tailscale.com/parent-resource-type=${parent_type},tailscale.com/parent-resource-ns=${parent_namespace},tailscale.com/parent-resource=${parent_name}"
+  for _ in $(seq 1 120); do
+    secrets_json="$(kubectl -n tailscale get secrets -l "${selector}" -o json 2>/dev/null || true)"
+    count="$(jq '.items | length' <<<"${secrets_json:-{\"items\":[]}}" 2>/dev/null || echo 0)"
+    [[ "${count}" == 1 ]] && break
+    sleep 5
+  done
+  [[ "${count:-0}" == 1 ]] \
+    || die "generated Tailnet state Secret was not created for ${parent_type}/${parent_namespace}/${parent_name}"
+
+  secret_name="$(jq -r '.items[0].metadata.name' <<<"${secrets_json}")"
+  new_device_id="$(jq -r '.items[0].data.device_id // "" | @base64d' <<<"${secrets_json}")"
+  old_json="$(age -d -i "${AGE_KEY_FILE}" "${input}")"
+  old_device_id="$(jq -r '.data.device_id // "" | @base64d' <<<"${old_json}")"
+
+  # The generated cap/serve data contains the new Pod UID and ClusterIP, so only
+  # identity, profile, ACME account, and cached certificate material is restored.
+  identity_patch="$(jq -c '{data: (.data | with_entries(select(
+      .key == "_current-profile" or
+      .key == "_machinekey" or
+      .key == "_profiles" or
+      (.key | startswith("profile-")) or
+      .key == "acme-account.key.pem" or
+      (.key | startswith("cert-")) or
+      (.key | endswith(".crt")) or
+      (.key | endswith(".key")) or
+      (.key | endswith(".pem"))
+    )))}' <<<"${old_json}")"
+  [[ "$(jq '.data | length' <<<"${identity_patch}")" -gt 0 ]] \
+    || die "Tailnet state backup contains no restorable identity data"
+
+  if [[ -n "${new_device_id}" && "${new_device_id}" != "${old_device_id}" ]]; then
+    delete_tailnet_device_id "${new_device_id}" tag:ai-worker-trusted
+  fi
+  kubectl -n tailscale patch secret "${secret_name}" --type=merge \
+    -p "${identity_patch}" >/dev/null
+
+  ok "Restored Tailnet identity state for ${parent_type}/${parent_namespace}/${parent_name}"
+}
+
+taint_tailnet_proxy_workers() {
+  local node
+  for node in k8s-worker-1 k8s-worker-2 k8s-worker-3; do
+    kubectl taint node "${node}" \
+      homelab.craftz.dev/tailnet-state-restore=true:NoSchedule --overwrite
+  done
+  TAILNET_RESTORE_TAINTED=1
+}
+
+untaint_tailnet_proxy_workers() {
+  local node
+  for node in k8s-worker-1 k8s-worker-2 k8s-worker-3; do
+    kubectl taint node "${node}" \
+      homelab.craftz.dev/tailnet-state-restore:NoSchedule-
+  done
+  TAILNET_RESTORE_TAINTED=0
+}
+
+restart_tailnet_proxy() {
+  local parent_type=$1 parent_namespace=$2 parent_name=$3 selector statefulsets_json statefulset_name
+  selector="tailscale.com/managed=true,tailscale.com/parent-resource-type=${parent_type},tailscale.com/parent-resource-ns=${parent_namespace},tailscale.com/parent-resource=${parent_name}"
+  statefulsets_json="$(kubectl -n tailscale get statefulsets -l "${selector}" -o json)"
+  [[ "$(jq '.items | length' <<<"${statefulsets_json}")" == 1 ]] \
+    || die "expected one Tailnet StatefulSet for ${parent_type}/${parent_namespace}/${parent_name}"
+  statefulset_name="$(jq -r '.items[0].metadata.name' <<<"${statefulsets_json}")"
+  kubectl -n tailscale rollout restart "statefulset/${statefulset_name}" >/dev/null
+  kubectl -n tailscale rollout status "statefulset/${statefulset_name}" --timeout=10m
 }
 
 restore_secret() {
@@ -432,6 +587,9 @@ restore_platform() {
   "${SCRIPT_DIR}/bootstrap-cluster-secrets.sh"
   restore_secret "${BACKUP_DIR}/registry-tls.secret.json.age"
   restore_secret "${BACKUP_DIR}/tailscale-oauth.secret.json.age"
+  if [[ -s "${BACKUP_DIR}/tailscale-operator-state.secret.json.age" ]]; then
+    restore_secret "${BACKUP_DIR}/tailscale-operator-state.secret.json.age"
+  fi
 
   info "Bootstrapping Argo CD at revision ${GITOPS_REVISION}"
   GITOPS_REVISION="${GITOPS_REVISION}" "${SCRIPT_DIR}/bootstrap-argocd.sh"
@@ -518,7 +676,28 @@ EOF
   kubectl -n ai-worker exec rebuild-data-restore -- \
     sh -c 'test -f /data/worker.db && test -d /data/jobs'
   kubectl -n ai-worker delete pod rebuild-data-restore --wait=true >/dev/null
+
+  # Prevent newly generated Tailscale proxy Pods from starting with an empty
+  # StateStore and requesting another ACME certificate. The operator may create
+  # the Secret/StatefulSet while workers are NoSchedule; identity state is then
+  # injected before the first proxy process starts.
+  if [[ -s "${BACKUP_DIR}/tailscale-worker-state.secret.json.age" ]]; then
+    taint_tailnet_proxy_workers
+  fi
   kubectl apply -k "${AI_WORKER_REPO}/deploy/kubernetes"
+
+  if [[ -s "${BACKUP_DIR}/tailscale-worker-state.secret.json.age" ]]; then
+    restore_tailnet_proxy_state \
+      "${BACKUP_DIR}/tailscale-worker-state.secret.json.age" \
+      ingress ai-worker ai-business-worker
+    restore_tailnet_proxy_state \
+      "${BACKUP_DIR}/tailscale-gateway-egress-state.secret.json.age" \
+      svc ai-worker ai-gateway-egress
+    untaint_tailnet_proxy_workers
+    restart_tailnet_proxy ingress ai-worker ai-business-worker
+    restart_tailnet_proxy svc ai-worker ai-gateway-egress
+  fi
+
   kubectl -n ai-worker rollout status deployment/ai-business-worker --timeout=15m
   kubectl -n tailscale wait --for=condition=Ready pod \
     -l tailscale.com/parent-resource=ai-business-worker --timeout=10m
