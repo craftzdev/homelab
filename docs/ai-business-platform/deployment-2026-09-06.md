@@ -18,13 +18,35 @@ rebuild performed on the same day.
 | Kubernetes | `1.34.3`, API VIP `172.16.40.10` |
 | CNI | Cilium `1.20.1`, kube-proxy replacement, WireGuard, L2 LoadBalancer, Hubble healthy |
 | Storage | Longhorn `1.12.1`; both persistent volumes have one healthy replica on each dedicated worker |
-| K8s Worker | Running on `k8s-worker-3` in namespace `ai-worker`; restricted non-root Pod, Codex CLI and API health verified |
+| K8s Worker | Running on the dedicated worker plane in namespace `ai-worker`; restricted non-root Pod, Codex CLI and API health verified |
 | Gateway dispatcher | Deployed; typed Worker endpoint mapping and Bearer authentication verified against an isolated Worker |
 | Tailnet cutover | Tailscale Operator ingress/egress and bidirectional HTTPS verified |
 | Mac Studio Worker | Removed after Kubernetes cutover; launchd, account/group, home, plist, Serve, and Worker Grants absent |
 | Internal registry | TLS registry at `172.16.40.200:5000`, 20 GiB Longhorn 3-replica PVC |
 | Codex end-to-end | Gateway job `9b828a64-1f96-4261-af02-10f3c29c7160` succeeded with tests and signed review artifacts |
 | Post-migration smoke test | Gateway job `04c8546b-b13e-4ca6-8a7d-71cdc57de240` reached `SUCCEEDED` through Cloudflare Access, Gateway, Tailnet HTTPS, and the Kubernetes Worker |
+
+## Six-VM destructive rebuild validation
+
+The complete Talos cluster was destroyed and recreated from the OpenTofu state
+on 2026-09-06. The guarded destroy plan contained exactly VMIDs `1001`, `1002`,
+`1003`, `1101`, `1102`, and `1103`; Gateway VM `1200` was explicitly excluded.
+Before deletion, all six VMs were snapshotted to `pbs-gateway` and an encrypted
+application recovery set was written to
+`_out/rebuild-backups/20260906T024154Z`.
+
+All six replacement nodes reached `Ready` with three tainted control-plane
+nodes and three dedicated workers. Registry and Worker data were restored to
+new Longhorn volumes; each volume has one healthy replica on every worker and
+none on the control plane. Tailscale Operator ingress/egress identities were
+recreated, CoreDNS forwarding for `tailb6c7d.ts.net` was restored, and
+`https://ai-worker-k8s.tailb6c7d.ts.net/health` returned healthy.
+
+The post-rebuild end-to-end test created Gateway job
+`ad231cde-5ff6-434b-9bbb-5e5de067f573`. It passed Cloudflare Access rejection,
+Gateway Bearer authentication, idempotency and conflict checks, Tailnet Worker
+dispatch, Worker callback delivery, duplicate event handling, and ended in
+`SUCCEEDED`.
 
 The additional PBS snapshot containing the rebuilt Gateway and dispatcher is
 `pbs-gateway:backup/vm/1200/2026-09-05T19:33:25Z`.

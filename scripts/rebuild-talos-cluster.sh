@@ -195,43 +195,51 @@ verify_recovery_set() {
   ok "Existing encrypted recovery set verified"
 }
 
-remove_stale_tailnet_worker() {
+remove_stale_tailnet_cluster_devices() {
   local oauth_json client_id client_secret token_json access_token devices_json
-  local device_ids device_count device_id delete_code
+  local device_ids device_count device_id delete_code tag selector maximum
 
-  info "Removing the previous Tailnet Worker identity before recreation"
+  info "Removing previous Tailnet identities before recreation"
   oauth_json="$(age -d -i "${AGE_KEY_FILE}" \
     "${BACKUP_DIR}/tailscale-oauth.secret.json.age")"
   client_id="$(jq -er '.data.client_id | @base64d' <<<"${oauth_json}")"
   client_secret="$(jq -er '.data.client_secret | @base64d' <<<"${oauth_json}")"
-  token_json="$(curl -fsS -u "${client_id}:${client_secret}" \
-    --data-urlencode 'grant_type=client_credentials' \
-    --data-urlencode 'scope=devices:core' \
-    --data-urlencode 'tags=tag:ai-worker-trusted' \
-    https://api.tailscale.com/api/v2/oauth/token)"
-  access_token="$(jq -er '.access_token' <<<"${token_json}")"
-  devices_json="$(curl -fsS -H "Authorization: Bearer ${access_token}" \
-    https://api.tailscale.com/api/v2/tailnet/-/devices)"
-  device_ids="$(jq -r --arg fqdn "${TAILSCALE_WORKER_FQDN}" '
-    [.devices[]
-      | select(.name == $fqdn)
-      | select((.tags // []) | index("tag:ai-worker-trusted"))
-      | .id][]' <<<"${devices_json}")"
-  device_count="$(sed '/^$/d' <<<"${device_ids}" | wc -l | tr -d ' ')"
-  [[ "${device_count}" -le 1 ]] \
-    || die "multiple canonical Tailnet Worker devices matched; refusing cleanup"
 
-  if [[ "${device_count}" == 1 ]]; then
-    device_id="${device_ids}"
-    delete_code="$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE \
-      -H "Authorization: Bearer ${access_token}" \
-      "https://api.tailscale.com/api/v2/device/${device_id}")"
-    [[ "${delete_code}" == 200 || "${delete_code}" == 204 ]] \
-      || die "Tailnet device cleanup failed with HTTP ${delete_code}"
-    ok "Previous Tailnet Worker identity removed"
-  else
-    info "No previous canonical Tailnet Worker identity found"
-  fi
+  for tag in tag:ai-worker-trusted tag:k8s-operator; do
+    token_json="$(curl -fsS -u "${client_id}:${client_secret}" \
+      --data-urlencode 'grant_type=client_credentials' \
+      --data-urlencode 'scope=devices:core' \
+      --data-urlencode "tags=${tag}" \
+      https://api.tailscale.com/api/v2/oauth/token)"
+    access_token="$(jq -er '.access_token' <<<"${token_json}")"
+    devices_json="$(curl -fsS -H "Authorization: Bearer ${access_token}" \
+      https://api.tailscale.com/api/v2/tailnet/-/devices)"
+    if [[ "${tag}" == tag:ai-worker-trusted ]]; then
+      selector='(.name == $worker_fqdn or .hostname == "ai-worker-ai-gateway-egress")'
+      maximum=2
+    else
+      selector='(.hostname == "tailscale-operator")'
+      maximum=1
+    fi
+    device_ids="$(jq -r --arg worker_fqdn "${TAILSCALE_WORKER_FQDN}" \
+      --arg tag "${tag}" "[.devices[]
+        | select(${selector})
+        | select((.tags // []) | index(\$tag))
+        | .id][]" <<<"${devices_json}")"
+    device_count="$(sed '/^$/d' <<<"${device_ids}" | wc -l | tr -d ' ')"
+    [[ "${device_count}" -le "${maximum}" ]] \
+      || die "too many Tailnet devices matched ${tag}; refusing cleanup"
+    while IFS= read -r device_id; do
+      [[ -n "${device_id}" ]] || continue
+      delete_code="$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE \
+        -H "Authorization: Bearer ${access_token}" \
+        "https://api.tailscale.com/api/v2/device/${device_id}")"
+      [[ "${delete_code}" == 200 || "${delete_code}" == 204 ]] \
+        || die "Tailnet device cleanup failed with HTTP ${delete_code}"
+    done <<<"${device_ids}"
+    info "Removed ${device_count} previous ${tag} device(s)"
+  done
+  ok "Previous Tailnet cluster identities removed"
   unset oauth_json client_id client_secret token_json access_token devices_json
 }
 
@@ -285,6 +293,7 @@ restore_platform() {
   kubectl -n tailscale rollout status deployment/operator --timeout=10m
   kubectl wait --for=jsonpath='{.status.conditions[?(@.type=="ProxyClassReady")].status}'=True \
     proxyclass/restricted-userspace proxyclass/kernel-egress --timeout=5m
+  "${SCRIPT_DIR}/configure-tailscale-dns.sh"
   kubectl -n longhorn-system rollout status daemonset/longhorn-manager --timeout=15m
   "${SCRIPT_DIR}/reconcile-longhorn-worker-plane.sh"
 
@@ -353,6 +362,9 @@ EOF
   kubectl -n ai-worker delete pod rebuild-data-restore --wait=true >/dev/null
   kubectl apply -k "${AI_WORKER_REPO}/deploy/kubernetes"
   kubectl -n ai-worker rollout status deployment/ai-business-worker --timeout=15m
+  kubectl -n ai-worker exec deployment/ai-business-worker -c worker -- \
+    python -c "import socket; socket.getaddrinfo('ai-gateway-01.${TAILSCALE_WORKER_FQDN#*.}', 443)" \
+    >/dev/null
   kubectl -n tailscale wait --for=condition=Ready pod \
     -l tailscale.com/parent-resource=ai-business-worker --timeout=10m
   kubectl -n ai-worker wait \
@@ -414,7 +426,7 @@ fi
 info "Destroying the six allowlisted Kubernetes VMs using the audited plan"
 (cd "${TOFU_DIR}" && tofu apply -auto-approve "${DESTROY_PLAN}")
 ok "Six Kubernetes VMs destroyed"
-remove_stale_tailnet_worker
+remove_stale_tailnet_cluster_devices
 
 info "Recreating all OpenTofu and Talos resources"
 (cd "${TOFU_DIR}" && tofu apply -auto-approve)
