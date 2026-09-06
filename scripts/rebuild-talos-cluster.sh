@@ -25,6 +25,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 TOFU_DIR="${REPO_ROOT}/tofu/10-proxmox-talos"
 KUBECONFIG_PATH="${REPO_ROOT}/_out/kubeconfig"
+REBUILD_KUBECONFIG_PATH="${REPO_ROOT}/_out/rebuild-kubeconfig"
 AI_WORKER_REPO="${AI_WORKER_REPO:-${REPO_ROOT}/../ai-business-worker}"
 GITOPS_REVISION="${GITOPS_REVISION:-$(git -C "${REPO_ROOT}" branch --show-current)}"
 PBS_BACKUP="${PBS_BACKUP:-1}"
@@ -334,6 +335,42 @@ wait_for_control_plane_stability() {
   die "the three-voter control plane did not stabilize within ten minutes"
 }
 
+pin_rebuild_api_endpoint() {
+  local source_config="${REPO_ROOT}/_out/kubeconfig"
+  local context cluster endpoint attempt
+  [[ -s "${source_config}" ]] || die "generated kubeconfig not found: ${source_config}"
+
+  # The Kubernetes VIP uses L2 ownership. Across a Tailscale subnet router an
+  # ownership change can retain a stale ARP entry for several minutes, even
+  # though every apiserver is healthy. Use one direct control-plane endpoint
+  # for this finite rebuild transaction; the generated VIP kubeconfig remains
+  # untouched for normal cluster administration.
+  cp "${source_config}" "${REBUILD_KUBECONFIG_PATH}"
+  chmod 600 "${REBUILD_KUBECONFIG_PATH}"
+  context="$(kubectl --kubeconfig "${REBUILD_KUBECONFIG_PATH}" config current-context)"
+  cluster="$(kubectl --kubeconfig "${REBUILD_KUBECONFIG_PATH}" config view -o json \
+    | jq -r --arg context "${context}" \
+      '.contexts[] | select(.name == $context) | .context.cluster')"
+  [[ -n "${cluster}" && "${cluster}" != null ]] \
+    || die "could not resolve the active kubeconfig cluster"
+
+  for attempt in $(seq 1 60); do
+    for endpoint in 172.16.40.13 172.16.40.12 172.16.40.11; do
+      if [[ "$(kubectl --kubeconfig "${source_config}" \
+          --server="https://${endpoint}:6443" --request-timeout=10s \
+          get --raw=/readyz 2>/dev/null || true)" == ok ]]; then
+        kubectl --kubeconfig "${REBUILD_KUBECONFIG_PATH}" config set-cluster \
+          "${cluster}" --server="https://${endpoint}:6443" >/dev/null
+        KUBECONFIG_PATH="${REBUILD_KUBECONFIG_PATH}"
+        ok "Rebuild API traffic pinned to healthy control plane ${endpoint}"
+        return
+      fi
+    done
+    sleep 5
+  done
+  die "no direct control-plane API endpoint became ready within five minutes"
+}
+
 wait_for_all_pods() {
   local deadline stable_checks=0 pods_json
   deadline=$((SECONDS + 1200))
@@ -368,8 +405,9 @@ wait_for_all_pods() {
 }
 
 restore_platform() {
+  pin_rebuild_api_endpoint
   export KUBECONFIG="${KUBECONFIG_PATH}"
-  info "Waiting for the new kube-apiserver VIP"
+  info "Waiting for the pinned kube-apiserver endpoint"
   for _ in $(seq 1 60); do
     if kubectl version -o json >/dev/null 2>&1; then
       break

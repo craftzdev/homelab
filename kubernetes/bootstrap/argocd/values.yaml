@@ -31,6 +31,24 @@ crds:
 repoServer:
   replicas: 2
 
+  # 初回再構築時は全 Application のリポジトリ取得・レンダリングが集中する。
+  # 1 秒のデフォルト probe は正常な高負荷処理をハングと誤判定するため、
+  # 起動猶予と現実的な応答時間を与えて不要な再起動ループを防ぐ。
+  readinessProbe:
+    timeoutSeconds: 5
+    failureThreshold: 6
+  livenessProbe:
+    # full=true は処理中の repository RPC まで確認するため、初回同期の
+    # 長い manifest generation をプロセス障害と誤認する。プロセス自身の
+    # health endpoint を liveness に使い、処理可否は readiness に任せる。
+    httpPath: /healthz
+    timeoutSeconds: 5
+    failureThreshold: 6
+  startupProbe:
+    enabled: true
+    timeoutSeconds: 5
+    failureThreshold: 30
+
   # -------------------------------------------------------------------------
   # ksops と kustomize のバイナリを initContainer で持ち込む
   #

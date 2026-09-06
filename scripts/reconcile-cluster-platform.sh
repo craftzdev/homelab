@@ -44,8 +44,9 @@ application_diagnostics() {
 }
 
 wait_for_application() {
-  local name=$1 deadline sync health status_json
+  local name=$1 deadline next_refresh sync health status_json
   deadline=$((SECONDS + APPLICATION_TIMEOUT_SECONDS))
+  next_refresh=$((SECONDS + 60))
   info "Waiting for Argo CD Application ${name}"
   while (( SECONDS < deadline )); do
     if status_json="$(kubectl --request-timeout=15s -n argocd \
@@ -57,10 +58,28 @@ wait_for_application() {
         return
       fi
     fi
+    # A heavily loaded first bootstrap can leave an otherwise successful
+    # Application with stale Degraded/Progressing health. Periodic hard refresh
+    # makes the wait converge without operator intervention.
+    if (( SECONDS >= next_refresh )); then
+      kubectl --request-timeout=15s -n argocd annotate application "${name}" \
+        argocd.argoproj.io/refresh=hard --overwrite >/dev/null 2>&1 || true
+      next_refresh=$((SECONDS + 60))
+    fi
     sleep 5
   done
   application_diagnostics "${name}"
   die "Application ${name} did not become Synced/Healthy"
+}
+
+resume_application() {
+  local name=$1
+  # bootstrap-argocd.sh pauses feature-branch Applications so their initial
+  # automated syncs cannot stampede etcd. Removing the annotation is idempotent
+  # and harmless for main/root-managed Applications where it is absent.
+  kubectl --request-timeout=15s -n argocd annotate application "${name}" \
+    argocd.argoproj.io/skip-reconcile- >/dev/null 2>&1 || true
+  refresh_application "${name}"
 }
 
 refresh_application() {
@@ -80,20 +99,17 @@ refresh_application() {
 kubectl --request-timeout=15s -n longhorn-system delete ciliumnetworkpolicy default-deny \
   --ignore-not-found --wait=true >/dev/null 2>&1 || true
 
-for app in "${EXPECTED_APPLICATIONS[@]}"; do
-  refresh_application "${app}"
-done
-
 # Foundation first. Monitoring installs the ServiceMonitor CRD required by
 # cert-manager and Trivy, so those applications are deliberately checked later.
 for app in gateway-api-crds cilium snapshot-controller longhorn \
   image-registry tailscale-operator security-config \
   kubelet-serving-cert-approver monitoring; do
+  resume_application "${app}"
   wait_for_application "${app}"
 done
 
 for app in cert-manager trivy-operator network-policies; do
-  refresh_application "${app}"
+  resume_application "${app}"
   wait_for_application "${app}"
 done
 

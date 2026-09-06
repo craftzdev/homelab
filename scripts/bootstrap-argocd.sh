@@ -125,12 +125,18 @@ else
 
   rendered_apps="$(mktemp)"
   trap 'rm -f "${rendered_apps:-}"' EXIT
+  # feature branch の Application を一括作成すると、12個の automated sync が
+  # 同時に始まり、低速な local-zfs 上の etcd を初回 CRD 登録が圧迫する。
+  # いったん全 Application を pause し、reconcile-cluster-platform.sh が依存順に
+  # 1個ずつ resume する。最後の annotation 削除後は通常の self-heal に戻る。
   sed "s|targetRevision: main|targetRevision: ${GITOPS_REVISION}|g" \
-    "${REPO_ROOT}/kubernetes/apps/infrastructure.yaml" >"${rendered_apps}"
+    "${REPO_ROOT}/kubernetes/apps/infrastructure.yaml" \
+    | sed '/argocd.argoproj.io\/sync-wave:/a\
+    argocd.argoproj.io/skip-reconcile: "true"' >"${rendered_apps}"
 
   info "feature revision ${GITOPS_REVISION} の Application を適用しています..."
   kubectl apply -f "${rendered_apps}"
-  ok "feature revision の GitOps Application を登録しました（root は未作成）"
+  ok "feature revision の GitOps Application を一時停止状態で登録しました（root は未作成）"
   warn "main へマージ後、GITOPS_REVISION=main で再実行して root 管理へ切り替えてください。"
 fi
 

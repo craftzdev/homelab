@@ -49,6 +49,11 @@ kind: NetworkPolicy
 metadata:
   name: default-deny
   namespace: argocd
+  annotations:
+    # Argo CD must receive its explicit API/DNS/repository allows before its
+    # blanket deny becomes active, otherwise the first GitOps sync can cut the
+    # controller off halfway through its own Application.
+    argocd.argoproj.io/sync-wave: "1"
 spec:
   podSelector: {}
   policyTypes: [Ingress, Egress]
@@ -59,6 +64,8 @@ kind: CiliumNetworkPolicy
 metadata:
   name: argocd-rules
   namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
 spec:
   endpointSelector: {}
 
