@@ -1,7 +1,7 @@
 # ===========================================================================
 # Kubernetes ノード VM
 #
-# 1 物理ノードにつき 1 VM（control-plane 兼 worker）の 3 ノード構成。
+# 1物理ノードにつきcontrol-plane 1 VM + worker 1 VMの6ノード構成。
 #
 # ディスクは 2 本:
 #   scsi0 = OS（Talos がインストールされる）
@@ -126,14 +126,14 @@ resource "proxmox_virtual_environment_vm" "node" {
   boot_order = ["scsi0", "ide0"]
 
   # ---------------------------------------------------------------------------
-  # cloud-init（初期 IP の付与のみ）
+  # cloud-init（初回到達用の IP / DNS だけ）
   #
   # ⚠️ ここには machine config（＝クラスタの秘密鍵）を置かない。
   #    理由は machine-config.tf の冒頭コメントを参照。
   #
   # Talos の nocloud プラットフォームは cloud-init の network-config を
-  # 解釈する。これにより、DHCP の無い VLAN40 でもメンテナンスモードの
-  # 時点でノードに到達できるようになる。
+  # 解釈する。これは初回Talos API到達のためだけに使う。永続network設定、
+  # OS/Kubernetes設定、middlewareをcloud-initへ載せない。
   # ---------------------------------------------------------------------------
   initialization {
     datastore_id = var.vm_datastore_id

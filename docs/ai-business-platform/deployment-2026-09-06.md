@@ -14,16 +14,17 @@ rebuild performed on the same day.
 | Gateway VM | VM `1200` running from `local-zfs` on `sv-proxmox-01` |
 | Gateway durability | PBS backups at `172.16.10.51`; ZFS replication jobs `1200-0` and `1200-1` to nodes 2 and 3 every five minutes |
 | Gateway HA verification | Online migration to node 2 and back completed; both API surfaces remained healthy afterward |
-| Talos | `1.13.9`, three combined control-plane/worker nodes, all Ready |
+| Talos | `1.13.9`, three dedicated control-plane nodes plus three dedicated workers, all Ready |
 | Kubernetes | `1.34.3`, API VIP `172.16.40.10` |
 | CNI | Cilium `1.20.1`, kube-proxy replacement, WireGuard, L2 LoadBalancer, Hubble healthy |
-| Storage | Longhorn `1.12.1`; Worker volume has three healthy replicas across all nodes |
-| K8s Worker | Running in namespace `ai-worker`; restricted non-root Pod, Codex CLI and API health verified |
+| Storage | Longhorn `1.12.1`; both persistent volumes have one healthy replica on each dedicated worker |
+| K8s Worker | Running on `k8s-worker-3` in namespace `ai-worker`; restricted non-root Pod, Codex CLI and API health verified |
 | Gateway dispatcher | Deployed; typed Worker endpoint mapping and Bearer authentication verified against an isolated Worker |
 | Tailnet cutover | Tailscale Operator ingress/egress and bidirectional HTTPS verified |
 | Mac Studio Worker | Removed after Kubernetes cutover; launchd, account/group, home, plist, Serve, and Worker Grants absent |
 | Internal registry | TLS registry at `172.16.40.200:5000`, 20 GiB Longhorn 3-replica PVC |
 | Codex end-to-end | Gateway job `9b828a64-1f96-4261-af02-10f3c29c7160` succeeded with tests and signed review artifacts |
+| Post-migration smoke test | Gateway job `04c8546b-b13e-4ca6-8a7d-71cdc57de240` reached `SUCCEEDED` through Cloudflare Access, Gateway, Tailnet HTTPS, and the Kubernetes Worker |
 
 The additional PBS snapshot containing the rebuilt Gateway and dispatcher is
 `pbs-gateway:backup/vm/1200/2026-09-05T19:33:25Z`.

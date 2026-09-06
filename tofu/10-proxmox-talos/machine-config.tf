@@ -62,6 +62,11 @@ locals {
     management_ingress    = local.management_ingress
     management_cidrs_desc = join(", ", var.management_cidrs)
   }
+
+  registry_template_vars = {
+    registry_endpoint = "172.16.40.200:5000"
+    registry_ca_pem   = file("${path.module}/../../talos/certs/registry-ca.crt")
+  }
 }
 
 # ---------------------------------------------------------------------------
@@ -105,6 +110,10 @@ data "talos_machine_configuration" "node" {
     templatefile(
       "${path.module}/../../talos/patches/ingress-firewall.yaml.tftpl",
       local.firewall_template_vars
+    ),
+    templatefile(
+      "${path.module}/../../talos/patches/registry-tls.yaml.tftpl",
+      local.registry_template_vars
     ),
   ]
 }

@@ -20,31 +20,35 @@ vmbr1 : enp1s0 (10GbE) → vlan-aware, bridge-vids 20 30 40
 
 ## 2. Kubernetes ノードのアドレス設計
 
-**1 物理ノード = 1 Kubernetes ノード**の 3 ノード構成。
+**1物理ノード = control-plane 1台 + worker 1台**の6 VM構成。
 NIC は VLAN40 の 1 枚のみ（Ceph 廃止により VLAN20 への接続は不要になった）。
-理由は [ADR-0009](adr/0009-drop-ceph-adopt-longhorn.md) を参照。
+役割分離の理由は [ADR-0011](adr/0011-dedicated-worker-plane.md) を参照。
 
 | ホスト名 | 役割 | 配置ノード | VMID | IP (VLAN40) | vCPU | RAM | OS Disk | Longhorn Disk |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `k8s-1` | control-plane 兼 worker | sv-proxmox-01 | 1001 | 172.16.40.11/24 | 8 | 32 GiB | 60 GiB | 300 GiB |
-| `k8s-2` | control-plane 兼 worker | sv-proxmox-02 | 1002 | 172.16.40.12/24 | 8 | 32 GiB | 60 GiB | 300 GiB |
-| `k8s-3` | control-plane 兼 worker | sv-proxmox-03 | 1003 | 172.16.40.13/24 | 8 | 32 GiB | 60 GiB | 300 GiB |
+| `k8s-1` | control-plane | sv-proxmox-01 | 1001 | 172.16.40.11/24 | 8 | 24 GiB | 60 GiB | 300 GiB（配置停止） |
+| `k8s-2` | control-plane | sv-proxmox-02 | 1002 | 172.16.40.12/24 | 8 | 24 GiB | 60 GiB | 300 GiB（配置停止） |
+| `k8s-3` | control-plane | sv-proxmox-03 | 1003 | 172.16.40.13/24 | 8 | 24 GiB | 60 GiB | 300 GiB（配置停止） |
+| `k8s-worker-1` | worker | sv-proxmox-01 | 1101 | 172.16.40.21/24 | 6 | 20 GiB | 60 GiB | 300 GiB |
+| `k8s-worker-2` | worker | sv-proxmox-02 | 1102 | 172.16.40.22/24 | 6 | 20 GiB | 60 GiB | 300 GiB |
+| `k8s-worker-3` | worker | sv-proxmox-03 | 1103 | 172.16.40.23/24 | 6 | 20 GiB | 60 GiB | 300 GiB |
 
-**物理ノードあたりの割当**: 8 vCPU / 32 GiB（16 vCPU / 58 GiB に対し余裕を残す）。
-ディスクは 360 GiB / 1 TB（SATA SSD）。
+**物理ノードあたりのKubernetes割当**: 14 vCPU / 44 GiB。
+Proxmoxと補助VM用の余裕を残す。control-planeの既存Longhorn diskは退避済みで、
+新規レプリカの配置は禁止している。
 
-> **なぜ control-plane と worker を分けないのか**: 物理ノードが 3 台しかない以上、
-> VM を分けても障害耐性は変わりません。Ryzen 5700G は CPU が先に不足するため、
-> VM 数を増やすより 1 VM あたりの割当を増やす方が効率的です。
-> `cluster.allowSchedulingOnControlPlanes: true` でワークロードを載せています。
+> VMを6台にしても物理障害ドメインは3つのままです。分離の目的は障害ドメインを
+> 増やすことではなく、AIコード実行とLonghornの負荷・権限をcontrol-planeから
+> 切り離すことです。control-planeは`NoSchedule`です。
 
 ### 予約アドレス
 
 | アドレス | 用途 | 備考 |
 | --- | --- | --- |
 | 172.16.40.10 | **kube-apiserver VIP** | Talos 内蔵 VIP 機能（control-plane 間で自動フェイルオーバー） |
-| 172.16.40.11 - .13 | Kubernetes ノード（control-plane 兼 worker） | |
-| 172.16.40.21 - .29 | 追加 worker 用に予約 | 必要になったときに使う |
+| 172.16.40.11 - .13 | Kubernetes control-plane | |
+| 172.16.40.21 - .23 | Kubernetes worker | AI Worker / registry / Longhorn replicas |
+| 172.16.40.24 - .29 | 追加worker用に予約 | |
 | 172.16.40.200 - .239 | **Cilium L2 LoadBalancer プール** | `homelab.io/lan-exposed: "true"` ラベルを持つ Service にのみ払い出す |
 | 172.16.40.240 - .254 | 予約（将来用） | |
 

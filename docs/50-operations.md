@@ -149,14 +149,14 @@ cd ../..
 kubectl get nodes            # 全ノードが Ready になる
 ```
 
-### 3.3 Ceph の認証情報
+### 3.3 Longhornをworker planeへ限定
 
 ```bash
-./scripts/ceph-create-k8s-user.sh
-git add kubernetes/infra/ceph-csi/secrets.sops.yaml
-git commit -m "feat(ceph-csi): Ceph の認証情報を追加（SOPS 暗号化済み）"
-git push
+./scripts/reconcile-longhorn-worker-plane.sh
 ```
+
+Longhorn導入後に実行する。control-plane上に既存レプリカがある場合は1台ずつ
+Workerへ再構築し、全volumeがHealthyになってから次へ進む。繰り返し実行可能。
 
 ### 3.4 ArgoCD の導入
 
@@ -345,7 +345,7 @@ Talos ノードはステートレスに近いため、作り直すのが最も�
 ```bash
 # Proxmox から該当 VM を削除し、tofu で再作成する
 cd tofu/10-proxmox-talos
-tofu taint 'proxmox_virtual_environment_vm.node["k8s-wk-2"]'
+tofu taint 'proxmox_virtual_environment_vm.node["k8s-worker-2"]'
 tofu apply
 ```
 
@@ -373,18 +373,20 @@ talosctl -n 172.16.40.11 bootstrap \
 # 3) Cilium と ArgoCD を再導入する
 ./scripts/bootstrap-cluster.sh
 ./scripts/bootstrap-argocd.sh
+./scripts/reconcile-longhorn-worker-plane.sh
 ```
 
 etcd スナップショットが無い場合でも、GitOps を徹底していればクラスタは
 Git から再構築できます。ただし PVC の中身は Velero から復元する必要があります。
 
-### 6.3 Ceph 全損
+### 6.3 Longhorn 全損
 
 最も深刻なケースです。以下の順で復旧します。
 
-1. Proxmox 側で Ceph を再構築する（本リポジトリのスコープ外）
-2. PBS から Kubernetes ノード VM を復元する
-3. Velero で PVC の中身を復元する（**バックアップ先がクラスタ外にあることが前提**）
+1. OpenTofuでworker VMとLonghorn専用diskを再作成する
+2. Helm/Argo CDでLonghornを再導入する
+3. 外部S3のLonghorn backupまたはVeleroからPVCを復元する
+4. `reconcile-longhorn-worker-plane.sh` でworker限定配置を再確認する
 
 > これが、[ADR-0008](adr/0008-backup-strategy.md) で
 > 「Velero のバックアップ先をクラスタ内 MinIO にしてはならない」と

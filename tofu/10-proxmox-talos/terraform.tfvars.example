@@ -55,15 +55,15 @@ cluster_name = "homelab"
 # ---------------------------------------------------------------------------
 # ストレージ
 # ---------------------------------------------------------------------------
-iso_datastore_id = "cephfs01"    # ISO 置き場（共有ストレージであること）
-vm_datastore_id  = "cephrdb_k8s" # VM ディスク（Ceph RBD）
+iso_datastore_id  = "local"     # Talos ISOは各Proxmox nodeへ個別配置
+vm_datastore_id   = "local-zfs" # VM diskは各nodeの単体ZFS
+longhorn_disk_gib = 300
 
 # ---------------------------------------------------------------------------
 # ネットワーク
 # ---------------------------------------------------------------------------
 network_bridge   = "vmbr1"
 vlan_k8s         = 40
-vlan_ceph_public = 20
 k8s_gateway      = "172.16.40.1"
 cluster_vip      = "172.16.40.10"
 
@@ -101,43 +101,37 @@ management_cidrs = [
 #    使われる。変更する場合は重複しないよう注意すること。
 # ---------------------------------------------------------------------------
 control_plane_nodes = {
-  "k8s-cp-1" = {
+  "k8s-1" = {
     vmid = 1001, pve_node = "sv-proxmox-01"
-    ip = "172.16.40.11", ceph_ip = "172.16.20.41"
-    mac_k8s = "BC:24:11:40:00:11", mac_ceph = "BC:24:11:20:00:11"
+    ip = "172.16.40.11", mac_k8s = "BC:24:11:40:00:11"
     cores = 4, memory_mib = 8192, disk_gib = 60
   }
-  "k8s-cp-2" = {
+  "k8s-2" = {
     vmid = 1002, pve_node = "sv-proxmox-02"
-    ip = "172.16.40.12", ceph_ip = "172.16.20.42"
-    mac_k8s = "BC:24:11:40:00:12", mac_ceph = "BC:24:11:20:00:12"
+    ip = "172.16.40.12", mac_k8s = "BC:24:11:40:00:12"
     cores = 4, memory_mib = 8192, disk_gib = 60
   }
-  "k8s-cp-3" = {
+  "k8s-3" = {
     vmid = 1003, pve_node = "sv-proxmox-03"
-    ip = "172.16.40.13", ceph_ip = "172.16.20.43"
-    mac_k8s = "BC:24:11:40:00:13", mac_ceph = "BC:24:11:20:00:13"
+    ip = "172.16.40.13", mac_k8s = "BC:24:11:40:00:13"
     cores = 4, memory_mib = 8192, disk_gib = 60
   }
 }
 
 worker_nodes = {
-  "k8s-wk-1" = {
+  "k8s-worker-1" = {
     vmid = 1101, pve_node = "sv-proxmox-01"
-    ip = "172.16.40.21", ceph_ip = "172.16.20.51"
-    mac_k8s = "BC:24:11:40:00:21", mac_ceph = "BC:24:11:20:00:21"
-    cores = 6, memory_mib = 20480, disk_gib = 120
+    ip = "172.16.40.21", mac_k8s = "BC:24:11:40:00:21"
+    cores = 6, memory_mib = 20480, disk_gib = 60
   }
-  "k8s-wk-2" = {
+  "k8s-worker-2" = {
     vmid = 1102, pve_node = "sv-proxmox-02"
-    ip = "172.16.40.22", ceph_ip = "172.16.20.52"
-    mac_k8s = "BC:24:11:40:00:22", mac_ceph = "BC:24:11:20:00:22"
-    cores = 6, memory_mib = 20480, disk_gib = 120
+    ip = "172.16.40.22", mac_k8s = "BC:24:11:40:00:22"
+    cores = 6, memory_mib = 20480, disk_gib = 60
   }
-  "k8s-wk-3" = {
+  "k8s-worker-3" = {
     vmid = 1103, pve_node = "sv-proxmox-03"
-    ip = "172.16.40.23", ceph_ip = "172.16.20.53"
-    mac_k8s = "BC:24:11:40:00:23", mac_ceph = "BC:24:11:20:00:23"
-    cores = 6, memory_mib = 20480, disk_gib = 120
+    ip = "172.16.40.23", mac_k8s = "BC:24:11:40:00:23"
+    cores = 6, memory_mib = 20480, disk_gib = 60
   }
 }

@@ -233,21 +233,10 @@ variable "management_cidrs" {
 # ===========================================================================
 variable "control_plane_nodes" {
   description = <<-EOT
-    Kubernetes ノードの定義（control-plane 兼 worker）。
+    Kubernetes control-plane ノードの定義。
 
-    ⚠️ 3 ノード集約構成である。
-       当初は control-plane 3 + worker 3 の 6 VM 構成だったが、
-       Ceph を廃止して各ノードのローカルストレージを使う構成にしたことで
-       「1 物理ノード = 1 VM」の方が障害ドメインが明確になるため集約した。
-
-       - etcd のクォーラムは 3 で成立する（1 ノード障害に耐える）
-       - Longhorn も 3 レプリカなので同じ障害ドメインに揃う
-       - CPU が先に不足するため、worker の追加は必要になってから行う
-         （worker_nodes 変数に足せば、その分だけ増える）
-
-    `cluster.allowSchedulingOnControlPlanes` を true にしてワークロードを
-    載せる。control-plane を分離する原則より、3 台という規模で
-    「ノードを遊ばせない」ことを優先した判断である。
+    etcd quorumを3台で構成し、各Proxmoxホストへ1台ずつ配置する。
+    application workloadは専用workerへ限定し、control-planeには載せない。
   EOT
   type = map(object({
     vmid       = number
@@ -263,29 +252,29 @@ variable "control_plane_nodes" {
       vmid    = 1001, pve_node = "sv-proxmox-01"
       ip      = "172.16.40.11"
       mac_k8s = "BC:24:11:40:00:11"
-      cores   = 8, memory_mib = 32768, disk_gib = 60
+      cores   = 4, memory_mib = 8192, disk_gib = 60
     }
     "k8s-2" = {
       vmid    = 1002, pve_node = "sv-proxmox-02"
       ip      = "172.16.40.12"
       mac_k8s = "BC:24:11:40:00:12"
-      cores   = 8, memory_mib = 32768, disk_gib = 60
+      cores   = 4, memory_mib = 8192, disk_gib = 60
     }
     "k8s-3" = {
       vmid    = 1003, pve_node = "sv-proxmox-03"
       ip      = "172.16.40.13"
       mac_k8s = "BC:24:11:40:00:13"
-      cores   = 8, memory_mib = 32768, disk_gib = 60
+      cores   = 4, memory_mib = 8192, disk_gib = 60
     }
   }
 }
 
 variable "worker_nodes" {
   description = <<-EOT
-    追加の worker ノード（既定では作らない）。
+    Kubernetes workerノードの定義。
 
-    3 ノード構成で CPU が足りなくなったらここに足す。
-    control_plane_nodes と同じ形式で、VMID は 1101 以降を使う想定。
+    application workloadとLonghorn replicaを担当し、各Proxmoxホストへ
+    1台ずつ配置する。VMIDは1101以降を使用する。
   EOT
   type = map(object({
     vmid       = number
@@ -296,7 +285,26 @@ variable "worker_nodes" {
     memory_mib = number
     disk_gib   = number
   }))
-  default = {}
+  default = {
+    "k8s-worker-1" = {
+      vmid    = 1101, pve_node = "sv-proxmox-01"
+      ip      = "172.16.40.21"
+      mac_k8s = "BC:24:11:40:00:21"
+      cores   = 6, memory_mib = 20480, disk_gib = 60
+    }
+    "k8s-worker-2" = {
+      vmid    = 1102, pve_node = "sv-proxmox-02"
+      ip      = "172.16.40.22"
+      mac_k8s = "BC:24:11:40:00:22"
+      cores   = 6, memory_mib = 20480, disk_gib = 60
+    }
+    "k8s-worker-3" = {
+      vmid    = 1103, pve_node = "sv-proxmox-03"
+      ip      = "172.16.40.23"
+      mac_k8s = "BC:24:11:40:00:23"
+      cores   = 6, memory_mib = 20480, disk_gib = 60
+    }
+  }
 }
 
 # ===========================================================================

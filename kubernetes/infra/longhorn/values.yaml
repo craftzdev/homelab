@@ -21,6 +21,14 @@
 defaultSettings:
   defaultDataPath: /var/mnt/longhorn
 
+  # 永続データは専用worker planeにだけ置く。Talos worker machine configが
+  # node.longhorn.io/create-default-disk=true を宣言する。
+  createDefaultDiskLabeledNodes: true
+
+  # instance-manager、CSI plugin等のsystem-managed componentもworker限定。
+  # Longhorn設定の書式は key:value の文字列（Kubernetes YAML mapではない）。
+  systemManagedComponentsNodeSelector: homelab.craftz.dev/workload-plane:true
+
   # -------------------------------------------------------------------------
   # レプリカ数
   #
@@ -112,24 +120,22 @@ metrics:
 # ---------------------------------------------------------------------------
 # リソース
 #
-# 3 ノードしかないため、Longhorn 自身が資源を食い潰さないよう制限する。
+# 専用worker 3ノードだけで動かし、control-planeの資源を消費させない。
 # ---------------------------------------------------------------------------
 longhornManager:
   priorityClass: system-node-critical
-  tolerations:
-    - key: node-role.kubernetes.io/control-plane
-      operator: Exists
-      effect: NoSchedule
+  nodeSelector:
+    homelab.craftz.dev/workload-plane: "true"
 
 longhornDriver:
   priorityClass: system-node-critical
-  tolerations:
-    - key: node-role.kubernetes.io/control-plane
-      operator: Exists
-      effect: NoSchedule
+  nodeSelector:
+    homelab.craftz.dev/workload-plane: "true"
 
 longhornUI:
   replicas: 1
+  nodeSelector:
+    homelab.craftz.dev/workload-plane: "true"
 
 # ---------------------------------------------------------------------------
 # CSI サイドカーのレプリカ数

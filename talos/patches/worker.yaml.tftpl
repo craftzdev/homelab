@@ -11,6 +11,16 @@
 #    片方の NIC 定義が消えるという分かりにくい事故が起きる。
 # ===========================================================================
 machine:
+  nodeLabels:
+    # node-role.kubernetes.io/* は Kubernetes の予約済みプレフィックスで、
+    # worker 自身の kubelet からは付与できない。worker の役割は
+    # control-plane ラベルを持たないことで Kubernetes が判定する。
+    # ワークロード配置には、kubelet が安全に登録できる独自ラベルを使う。
+    homelab.craftz.dev/workload-plane: "true"
+    # Longhorn はこのラベルを持つノードだけに既定ディスクを作る。
+    # これにより再構築後もcontrol-planeがstorage nodeへ戻らない。
+    node.longhorn.io/create-default-disk: "true"
+
   install:
     disk: /dev/sda
     image: ${installer_image}

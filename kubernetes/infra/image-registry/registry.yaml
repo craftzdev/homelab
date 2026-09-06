@@ -32,6 +32,8 @@ spec:
         app.kubernetes.io/name: registry
     spec:
       automountServiceAccountToken: false
+      nodeSelector:
+        homelab.craftz.dev/workload-plane: "true"
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001

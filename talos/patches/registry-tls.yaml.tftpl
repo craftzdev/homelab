@@ -1,0 +1,8 @@
+# Internal registry trust is machine configuration, not Cloud-Init state.
+# The certificate is public material; the matching private key stays only in
+# the image-registry/registry-tls Kubernetes Secret.
+apiVersion: v1alpha1
+kind: RegistryTLSConfig
+name: ${registry_endpoint}
+ca: |-
+  ${indent(2, trimspace(registry_ca_pem))}

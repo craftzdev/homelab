@@ -28,6 +28,7 @@
 | [0008](adr/0008-backup-strategy.md) | **3 階層バックアップ**（etcd / Velero / PBS） | 冗長化はバックアップではない。障害の種類ごとに手段を分ける |
 | [0009](adr/0009-drop-ceph-adopt-longhorn.md) | **Ceph を廃止し Longhorn へ** | 実測で SSD の性能不足が判明。維持には 10〜20 万円の換装が必要で、利用実態に見合わなかった |
 | [0010](adr/0010-gateway-api.md) | **ingress-nginx をやめ Cilium Gateway API へ** | ingress-nginx は 2026年3月に EOL。外部公開の入口に修正されないコンポーネントは置けない |
+| [0011](adr/0011-dedicated-worker-plane.md) | **control-plane 3台 + worker 3台へ分離** | AI実行負荷とLonghornデータを制御系から隔離し、Talos APIで冪等に管理する |
 
 ## コンポーネント別の手順書
 

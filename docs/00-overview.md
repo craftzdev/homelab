@@ -21,7 +21,7 @@
 
 | # | ゴール | 達成条件 |
 | --- | --- | --- |
-| G1 | Proxmox 上に**セキュアな** Kubernetes クラスタを構築する | HA 構成（3 ノード / etcd クォーラム 3）で稼働し、CIS 相当のハードニングが既定で効いている |
+| G1 | Proxmox 上に**セキュアな** Kubernetes クラスタを構築する | HA構成（control-plane 3台 + worker 3台 / etcdクォーラム3）で稼働し、CIS相当のハードニングが既定で効いている |
 | G2 | 一部サービスを**外部の SaaS から安全に**呼び出せるようにする | Cloudflare Workers 上の SaaS からのみ到達でき、それ以外からは到達不能 |
 | G3 | 永続ストレージを確保する | PVC が動的にプロビジョニングされ、1 ノード障害でデータを失わない |
 | G4 | 構築は**常にコード**であり、リポジトリで管理される | 手作業の構築手順が実質ゼロ。クラスタを破棄しても同じものが再現できる |
@@ -75,7 +75,7 @@
 | 外部公開 | **Cloudflare Tunnel + Access** | インバウンド開放ゼロ。認可を Cloudflare エッジで完結でき、監査ログも残る | [ADR-0005](adr/0005-cloudflare-zero-trust.md) |
 | GitOps | **ArgoCD v3.5.2** | 宣言的同期・差分可視化・自己修復。既存リポジトリの資産とも整合 | [ADR-0006](adr/0006-argocd-sops.md) |
 | 秘密管理 | **SOPS v3.13 + age** | 外部の秘密ストアに依存せず、Git だけで完結する。ホームラボの規模に最適 | [ADR-0006](adr/0006-argocd-sops.md) |
-| ノード構成 | **3 VM（control-plane 兼 worker）** | 1 物理ノード = 1 K8s ノード。Ceph 廃止で共有基盤が無くなり、障害ドメインを揃える方が明確 | [ADR-0009](adr/0009-drop-ceph-adopt-longhorn.md) |
+| ノード構成 | **control-plane 3 VM + worker 3 VM** | 各Proxmoxホストに両役割を1台ずつ置き、AI実行負荷と永続データを制御系から隔離 | [ADR-0011](adr/0011-dedicated-worker-plane.md) |
 | バックアップ | **etcd snapshot + Velero + PBS** | 3階層（クラスタ状態 / アプリ / VM）で復旧点を確保 | [ADR-0008](adr/0008-backup-strategy.md) |
 
 ## 6. 現状で判明している注意点

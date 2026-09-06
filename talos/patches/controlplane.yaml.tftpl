@@ -213,9 +213,9 @@ cluster:
       service:
         disabled: true
 
-  # 3 台の control-plane を worker と兼用する。物理ホストも 3 台のため、
-  # 専用 worker VM をさらに重ねず、障害ドメインを 1 ホスト = 1 ノードに保つ。
-  allowSchedulingOnControlPlanes: true
+  # AI実行workloadとcontrol-planeを分離する。3台の専用workerが停止しても、
+  # API serverとetcd quorumがworkloadの資源競合に巻き込まれないようにする。
+  allowSchedulingOnControlPlanes: false
 
   # -------------------------------------------------------------------------
   # kube-apiserver

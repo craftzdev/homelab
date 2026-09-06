@@ -132,6 +132,21 @@ kubectl get pvc longhorn-test        # Bound になること
 kubectl delete pvc longhorn-test     # 後片付け
 ```
 
+## dedicated worker planeのreconcile
+
+LonghornのHelm設定はworker selectorを宣言しているが、CSI Deploymentや
+engine-image DaemonSetの一部はLonghorn自身が生成する。既存クラスタを3+3へ
+移行した場合は、次の冪等スクリプトでcontrol-plane上のレプリカを1台ずつ
+安全に退避し、生成済みリソースにもselectorを反映する。
+
+```bash
+export KUBECONFIG=_out/kubeconfig
+scripts/reconcile-longhorn-worker-plane.sh
+```
+
+各control-planeのレプリカが0件、全volumeが`healthy`になるまで待ってから
+次のノードへ進む。全control-planeを連続再起動してはならない。
+
 ## よくある失敗
 
 | 症状 | 原因 | 対処 |

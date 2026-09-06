@@ -5,6 +5,9 @@
 - **決定者**: クラフト
 - **影響**: [ADR-0004](0004-ceph-csi.md) を **Superseded**、[ADR-0007](0007-dual-nic-topology.md) を **Superseded**
 
+> **2026-09-06追記**: ストレージ判断は有効。ノードを3台へ集約する判断だけは
+> [ADR-0011](0011-dedicated-worker-plane.md) により置き換えられた。
+
 ## 背景
 
 [ADR-0004](0004-ceph-csi.md) では「既存の Proxmox Ceph をそのまま活かす」判断をし、
@@ -72,7 +75,7 @@ ceph-csi で Kubernetes へ統合する設計を作った。しかしその後�
 | VM ディスク | Ceph RBD（`cephrdb_k8s`） | 各ノードの **local-ZFS**（SATA SSD 1TB） |
 | Kubernetes PV | ceph-csi（RBD / CephFS） | **Longhorn**（3 レプリカ） |
 | ISO 置き場 | CephFS（`cephfs01`） | 各ノードの `local` |
-| ノード構成 | control-plane 3 + worker 3（6 VM） | **control-plane 兼 worker 3 VM** |
+| ノード構成 | control-plane 3 + worker 3（6 VM） | ~~control-plane兼worker 3 VM~~（[ADR-0011](0011-dedicated-worker-plane.md)で6 VMへ復帰） |
 | ノードの NIC | VLAN40 + VLAN20（Ceph public） | **VLAN40 のみ** |
 
 ### VM ディスクをローカルに置いてよい理由
@@ -88,7 +91,7 @@ Talos ノードはステートレスに近く、壊れたら `tofu apply` で作
 **作り直せないのは PV のデータだけ**であり、そこは Longhorn が
 3 レプリカで保護する。守るべきものと守り方が対応している。
 
-### 3 ノードへ集約した理由
+### 3ノードへ集約した理由（履歴・ADR-0011で置換済み）
 
 Ceph という共有基盤が無くなったことで、「1 物理ノード = 1 Kubernetes ノード」
 の方が障害ドメインが明確になる。
@@ -100,9 +103,12 @@ Ceph という共有基盤が無くなったことで、「1 物理ノード = 1
 - CPU（Ryzen 5700G）が先に不足するため、VM 数を増やすより
   1 VM あたりの割当を増やす方が効率的
 
-`cluster.allowSchedulingOnControlPlanes: true` にしてワークロードを載せる。
+当時は`cluster.allowSchedulingOnControlPlanes: true` にしてワークロードを載せた。
 「control-plane を分離する」原則より、この規模では
 「ノードを遊ばせない」ことを優先した。
+
+その後AIコード実行の負荷・信頼境界を分離する必要が明確になり、現在は
+`allowSchedulingOnControlPlanes: false` としている。現行判断はADR-0011を参照。
 
 ## Talos 側で必要になったこと
 
