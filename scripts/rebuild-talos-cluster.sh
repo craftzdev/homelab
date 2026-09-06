@@ -361,6 +361,16 @@ restore_platform() {
   kubectl wait -n ai-worker --for=jsonpath='{.status.phase}'=Bound \
     pvc/ai-business-worker-data --timeout=10m
 
+  # A resumed restore may already have a Worker using this ReadWriteOnce PVC.
+  # Stop it before mounting the volume in the restore Pod, and remove a restore
+  # Pod left by an interrupted attempt.
+  if kubectl -n ai-worker get deployment ai-business-worker >/dev/null 2>&1; then
+    kubectl -n ai-worker scale deployment ai-business-worker --replicas=0 >/dev/null
+    kubectl -n ai-worker rollout status deployment/ai-business-worker --timeout=5m
+  fi
+  kubectl -n ai-worker delete pod rebuild-data-restore \
+    --ignore-not-found --wait=true --timeout=5m >/dev/null
+
   worker_image="$(cat "${BACKUP_DIR}/worker-image.txt")"
   cat <<EOF | kubectl apply -f - >/dev/null
 apiVersion: v1
