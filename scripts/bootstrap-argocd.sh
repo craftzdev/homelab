@@ -101,6 +101,14 @@ fi
 info "AppProject を作成しています..."
 kubectl apply -f "${REPO_ROOT}/kubernetes/apps/project.yaml"
 
+# 旧構成の Application は app-of-apps の対象外にしただけでは feature branch
+# 検証時に残り続ける。finalizer による配下リソースの削除まで待ち、未設定の
+# Velero と Gateway VM に移行済みの cloudflared を確実に退役させる。
+for retired_app in cloudflared velero; do
+  kubectl -n argocd delete application "${retired_app}" \
+    --ignore-not-found --wait=true --timeout=5m
+done
+
 if [[ "${GITOPS_REVISION}" == "main" ]]; then
   info "root Application を作成しています（app-of-apps / revision: main）..."
   kubectl apply -f "${REPO_ROOT}/kubernetes/apps/root.yaml"
@@ -171,8 +179,5 @@ cat <<'EOF'
   同期状況の確認:
     kubectl -n argocd get applications
     watch kubectl -n argocd get applications
-
-  ⚠️ Velero はバックアップ先の設定が済むまで同期に失敗します。
-     kubernetes/infra/velero/README.md を参照してください。
 
 EOF

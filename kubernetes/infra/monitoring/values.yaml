@@ -13,7 +13,7 @@ prometheus:
   prometheusSpec:
     replicas: 1
 
-    # 保持期間。Ceph の容量を圧迫しないよう抑えめにする。
+    # 保持期間。Longhorn の容量を圧迫しないよう抑えめにする。
     retention: 15d
     retentionSize: 20GB
 
@@ -33,14 +33,14 @@ prometheus:
     # -----------------------------------------------------------------------
     # ストレージ
     #
-    # ceph-rbd-retain を使う理由: Prometheus のデータは
+    # longhorn-retain を使う理由: Prometheus のデータは
     # 「障害時に何が起きたか」を後から追うための唯一の記録である。
     # PVC を誤削除したときに即座に消えては困る。
     # -----------------------------------------------------------------------
     storageSpec:
       volumeClaimTemplate:
         spec:
-          storageClassName: ceph-rbd-retain
+          storageClassName: longhorn-retain
           accessModes: ["ReadWriteOnce"]
           resources:
             requests:
@@ -76,7 +76,7 @@ alertmanager:
     storage:
       volumeClaimTemplate:
         spec:
-          storageClassName: ceph-rbd
+          storageClassName: longhorn-retain
           accessModes: ["ReadWriteOnce"]
           resources:
             requests:
@@ -136,9 +136,8 @@ grafana:
   # 起動しないため、設定漏れが**明確な失敗**として現れる。
   # これは「静かに安全でない状態になる」より遥かに良い。
   #
-  # Secret は SOPS で暗号化して Git 管理する:
-  #   kubernetes/infra/monitoring/grafana-admin.sops.yaml
-  # 作成手順は同ディレクトリの README.md を参照。
+  # Secret は再構築スクリプトが macOS Keychain の値から投入する。
+  # Git に平文または暗号文の Secret を置かず、初回は安全な乱数を生成する。
   # -------------------------------------------------------------------------
   admin:
     existingSecret: grafana-admin
@@ -147,7 +146,7 @@ grafana:
 
   persistence:
     enabled: true
-    storageClassName: ceph-rbd
+    storageClassName: longhorn-retain
     size: 5Gi
 
   # -------------------------------------------------------------------------

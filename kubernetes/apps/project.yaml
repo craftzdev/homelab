@@ -30,7 +30,6 @@ spec:
     - https://charts.longhorn.io
     - https://charts.jetstack.io
     - https://prometheus-community.github.io/helm-charts
-    - https://vmware-tanzu.github.io/helm-charts
     - https://aquasecurity.github.io/helm-charts/
     - https://backube.github.io/helm-charts/
     - https://piraeus.io/helm-charts/
@@ -45,18 +44,17 @@ spec:
   destinations:
     - server: https://kubernetes.default.svc
       namespace: kube-system
+    # Cilium が Gateway API 用 TLS Secret を隔離して保存する namespace
+    - server: https://kubernetes.default.svc
+      namespace: cilium-secrets
     - server: https://kubernetes.default.svc
       namespace: longhorn-system
     - server: https://kubernetes.default.svc
       namespace: gateway
     - server: https://kubernetes.default.svc
-      namespace: cloudflared
-    - server: https://kubernetes.default.svc
       namespace: cert-manager
     - server: https://kubernetes.default.svc
       namespace: monitoring
-    - server: https://kubernetes.default.svc
-      namespace: velero
     - server: https://kubernetes.default.svc
       namespace: security
     - server: https://kubernetes.default.svc

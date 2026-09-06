@@ -12,10 +12,11 @@
 #     1  tailscale       : Tailnet ingress / egress
 #     2  cert-manager    : 証明書管理（他が依存する）
 #     3  gateway         : HTTP ルーティング（Cilium Gateway API）
-#     4  cloudflared     : 外部公開（ingress-nginx が先に必要）
 #     5  monitoring      : 監視
 #     6  security        : Trivy / kubelet 証明書承認
-#     7  velero          : バックアップ
+#
+# cloudflared は Business Gateway VM 1200 で稼働するためクラスタには置かない。
+# Velero は外部オブジェクトストレージ設定後に別変更として有効化する。
 #
 # ---------------------------------------------------------------------------
 # バージョンの固定について
@@ -399,38 +400,6 @@ spec:
 
 ---
 # ---------------------------------------------------------------------------
-# cloudflared（外部公開）
-#
-# ⚠️ このアプリが同期されると、設定された公開ホスト名が
-#    インターネットから（Access の認可を経て）到達可能になる。
-#    ingress ConfigMap は tofu/20-cloudflare が生成する。
-#    転送先は Gateway の ClusterIP Service。
-# ---------------------------------------------------------------------------
-apiVersion: argoproj.io/v1alpha1
-kind: Application
-metadata:
-  name: cloudflared
-  namespace: argocd
-  annotations:
-    argocd.argoproj.io/sync-wave: "4"
-  finalizers:
-    - resources-finalizer.argocd.argoproj.io
-spec:
-  project: infrastructure
-  source:
-    repoURL: https://github.com/craftzdev/homelab.git
-    targetRevision: main
-    path: kubernetes/infra/cloudflared
-  destination:
-    server: https://kubernetes.default.svc
-    namespace: cloudflared
-  syncPolicy:
-    automated:
-      prune: true
-      selfHeal: true
-
----
-# ---------------------------------------------------------------------------
 # 監視
 # ---------------------------------------------------------------------------
 apiVersion: argoproj.io/v1alpha1
@@ -579,51 +548,3 @@ spec:
       selfHeal: true
     syncOptions:
       - ServerSideApply=true
-
----
-# ---------------------------------------------------------------------------
-# Velero（バックアップ）
-#
-# ⚠️ バックアップ先（外部オブジェクトストレージ）の設定が済むまで
-#    同期は失敗する。これは想定通りの挙動である。
-#    セットアップ手順は kubernetes/infra/velero/README.md を参照。
-#
-# ⚠️ 認証情報（velero-credentials Secret）を KSOPS で管理する場合は、
-#    velero ディレクトリに kustomization.yaml を置いた上で、
-#    下の Git source から `directory.include` を削除すること。
-#    include を指定していると kustomization.yaml が無視される。
-# ---------------------------------------------------------------------------
-apiVersion: argoproj.io/v1alpha1
-kind: Application
-metadata:
-  name: velero
-  namespace: argocd
-  annotations:
-    argocd.argoproj.io/sync-wave: "7"
-  finalizers:
-    - resources-finalizer.argocd.argoproj.io
-spec:
-  project: infrastructure
-  sources:
-    - repoURL: https://vmware-tanzu.github.io/helm-charts
-      chart: velero
-      targetRevision: 12.1.0
-      helm:
-        releaseName: velero
-        valueFiles:
-          - $values/kubernetes/infra/velero/values.yaml
-    - repoURL: https://github.com/craftzdev/homelab.git
-      targetRevision: main
-      path: kubernetes/infra/velero
-      directory:
-        include: "{namespace-and-policy.yaml,schedules.yaml}"
-    - repoURL: https://github.com/craftzdev/homelab.git
-      targetRevision: main
-      ref: values
-  destination:
-    server: https://kubernetes.default.svc
-    namespace: velero
-  syncPolicy:
-    automated:
-      prune: true
-      selfHeal: true

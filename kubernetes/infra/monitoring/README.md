@@ -10,44 +10,23 @@
 そのため `admin.existingSecret` を必須にし、**設定漏れが明確な失敗として現れる**
 ようにしています。
 
-### 手順
+再構築スクリプトは Keychain service
+`dev.craftz.homelab.grafana-admin`（account: `admin`）を参照します。値が無い
+初回だけ強い乱数を生成してKeychainへ保存し、Kubernetes Secretへ投入します。
+パスワードを標準出力やGitへ出さないため、通常は手作業不要です。
+
+### パスワードの確認・ローテーション
 
 ```bash
-cd kubernetes/infra/monitoring
+# 確認（端末上に表示されるため必要なときだけ実行）
+security find-generic-password \
+  -s dev.craftz.homelab.grafana-admin -a admin -w
 
-# 1) 強いパスワードを生成する
-PASSWORD="$(openssl rand -base64 24)"
-echo "生成されたパスワード（パスワードマネージャに保存してください）:"
-echo "$PASSWORD"
-
-# 2) Secret のマニフェストを作る（一時ファイルは umask で保護）
-umask 077
-cat > /tmp/grafana-admin.yaml <<EOF
-apiVersion: v1
-kind: Secret
-metadata:
-  name: grafana-admin
-  namespace: monitoring
-type: Opaque
-stringData:
-  admin-user: admin
-  admin-password: "${PASSWORD}"
-EOF
-
-# 3) SOPS で暗号化する
-sops --encrypt --config ../../../.sops.yaml /tmp/grafana-admin.yaml \
-  > grafana-admin.sops.yaml
-
-# 4) 一時ファイルを消し、暗号化されたことを確認する
-rm -f /tmp/grafana-admin.yaml
-grep -q 'ENC\[' grafana-admin.sops.yaml && echo "OK: 暗号化されています"
-grep -q "$PASSWORD" grafana-admin.sops.yaml && echo "NG: 平文が残っています！" || echo "OK: 平文は含まれていません"
-
-unset PASSWORD
-
-# 5) コミットする
-git add grafana-admin.sops.yaml
-git commit -m "feat(monitoring): Grafana の管理者認証情報を追加（SOPS 暗号化済み）"
+# ローテーション（次の再構築または bootstrap-cluster-secrets.sh で反映）
+security add-generic-password -U \
+  -s dev.craftz.homelab.grafana-admin -a admin \
+  -w "$(openssl rand -base64 32)"
+./scripts/bootstrap-cluster-secrets.sh
 ```
 
 ## アクセス方法

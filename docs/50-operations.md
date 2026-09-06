@@ -358,26 +358,31 @@ talosctl -n 172.16.40.11 etcd remove-member <member-id>
 
 ### 6.2 クラスタ全損
 
-**前提**: `_out/talosconfig`、age 秘密鍵、etcd スナップショット、
-OpenTofu のステートが手元にあること。
+通常の計画確認は読み取り専用です。
 
 ```bash
-# 1) VM を作り直す
-cd tofu/10-proxmox-talos
-tofu apply
-
-# 2) etcd スナップショットから復元する
-talosctl -n 172.16.40.11 bootstrap \
-  --recover-from ./_out/etcd-snapshots/etcd-<timestamp>.snapshot
-
-# 3) Cilium と ArgoCD を再導入する
-./scripts/bootstrap-cluster.sh
-./scripts/bootstrap-argocd.sh
-./scripts/reconcile-longhorn-worker-plane.sh
+./scripts/rebuild-talos-cluster.sh
 ```
 
-etcd スナップショットが無い場合でも、GitOps を徹底していればクラスタは
-Git から再構築できます。ただし PVC の中身は Velero から復元する必要があります。
+完全再構築は次の**1コマンド**で行います。削除対象はVMID
+`1001,1002,1003,1101,1102,1103`に固定され、Gateway VM `1200`はガードで
+除外されます。
+
+```bash
+./scripts/rebuild-talos-cluster.sh \
+  --execute --confirm-destroy-six-k8s-vms
+```
+
+このコマンドは、暗号化したWorker/RegistryデータとSecretの退避、PBSへの6 VM
+スナップショット、VM破棄・OpenTofu/Talos再作成、Cilium/Argo CD/Longhornと
+全GitOps Applicationの復元、Tailnet identityの再作成を順番に行います。最後に
+全Applicationの`Synced/Healthy`、全Pod、Gateway API、Worker API、callbackを
+検証し、どれか一つでも満たさなければ失敗します。
+
+Grafana管理者パスワードはmacOS Keychain service
+`dev.craftz.homelab.grafana-admin`に保存され、初回だけ自動生成されます。
+外部バックアップ先が未設定のVeleroはベースラインに含めません。現在の復旧点は
+PBSスナップショットと、再構築時に作るage暗号化済みApplicationバックアップです。
 
 ### 6.3 Longhorn 全損
 
@@ -403,8 +408,8 @@ Git から再構築できます。ただし PVC の中身は Velero から復元
 | etcd スナップショット | 日次 | `./scripts/etcd-snapshot.sh`（cron 化推奨） |
 | 脆弱性レポートの確認 | 週次 | `kubectl get vulnerabilityreports -A` |
 | Renovate の PR 対応 | 週次 | GitHub の PR を確認 |
-| Ceph の状態確認 | 週次 | `ssh root@172.16.10.11 ceph -s` |
-| Velero の復元テスト | 四半期 | [velero/README.md](../kubernetes/infra/velero/README.md) §5 |
+| Longhorn volumeの状態確認 | 週次 | `kubectl -n longhorn-system get volumes.longhorn.io` |
+| PBS/暗号化バックアップからの再構築テスト | 四半期 | `rebuild-talos-cluster.sh` の完全再構築 |
 | Service Token のローテーション | 90 日 | `service_token_secret_version` を +1 して apply |
 | age 鍵のバックアップ確認 | 半期 | パスワードマネージャの内容を確認 |
 

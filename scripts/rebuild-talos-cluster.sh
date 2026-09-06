@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Rebuild all six Talos Kubernetes VMs from OpenTofu and restore the AI Worker.
+# Rebuild all six Talos Kubernetes VMs and the complete GitOps platform.
 #
 # Default execution is a read-only destroy-plan audit. Destruction requires the
 # exact confirmation flag below. The hard-coded VMID allowlist deliberately
@@ -15,6 +15,7 @@
 #   AI_WORKER_REPO=...    ai-business-worker checkout
 #   BACKUP_DIR=...        existing recovery set when using --resume-after-backup
 #   TAILSCALE_WORKER_FQDN=... canonical Worker MagicDNS name
+#   GATEWAY_SMOKE=0      skip the external Gateway-to-Worker test (default: 1)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -24,6 +25,7 @@ KUBECONFIG_PATH="${REPO_ROOT}/_out/kubeconfig"
 AI_WORKER_REPO="${AI_WORKER_REPO:-${REPO_ROOT}/../ai-business-worker}"
 GITOPS_REVISION="${GITOPS_REVISION:-$(git -C "${REPO_ROOT}" branch --show-current)}"
 PBS_BACKUP="${PBS_BACKUP:-1}"
+GATEWAY_SMOKE="${GATEWAY_SMOKE:-1}"
 TAILSCALE_WORKER_FQDN="${TAILSCALE_WORKER_FQDN:-ai-worker-k8s.tailb6c7d.ts.net}"
 EXPECTED_VMIDS=(1001 1002 1003 1101 1102 1103)
 EXPECTED_NAMES=(k8s-1 k8s-2 k8s-3 k8s-worker-1 k8s-worker-2 k8s-worker-3)
@@ -61,6 +63,8 @@ done
   || die "AI Worker repository not found: ${AI_WORKER_REPO}"
 [[ "${PBS_BACKUP}" == 0 || "${PBS_BACKUP}" == 1 ]] \
   || die "PBS_BACKUP must be 0 or 1"
+[[ "${GATEWAY_SMOKE}" == 0 || "${GATEWAY_SMOKE}" == 1 ]] \
+  || die "GATEWAY_SMOKE must be 0 or 1"
 
 export TF_VAR_state_encryption_passphrase
 export TF_VAR_proxmox_api_token
@@ -86,6 +90,24 @@ cleanup() {
   unset TF_VAR_state_encryption_passphrase TF_VAR_proxmox_api_token AGE_RECIPIENT
 }
 trap cleanup EXIT
+
+verify_gitops_revision() {
+  local current_branch remote_head
+  current_branch="$(git -C "${REPO_ROOT}" branch --show-current)"
+  if [[ "${GITOPS_REVISION}" == "${current_branch}" ]]; then
+    git -C "${REPO_ROOT}" diff --quiet \
+      || die "tracked files are modified; commit them before rebuilding"
+    git -C "${REPO_ROOT}" diff --cached --quiet \
+      || die "staged files are not committed; commit them before rebuilding"
+    remote_head="$(git -C "${REPO_ROOT}" ls-remote origin \
+      "refs/heads/${GITOPS_REVISION}" | awk 'NR == 1 {print $1}')"
+    [[ -n "${remote_head}" ]] \
+      || die "GitOps branch does not exist on origin: ${GITOPS_REVISION}"
+    [[ "${remote_head}" == "$(git -C "${REPO_ROOT}" rev-parse HEAD)" ]] \
+      || die "local HEAD is not pushed to origin/${GITOPS_REVISION}"
+  fi
+  ok "GitOps revision is available remotely: ${GITOPS_REVISION}"
+}
 
 plan_and_guard() {
   info "Creating an encrypted destroy plan"
@@ -249,13 +271,6 @@ restore_secret() {
     | kubectl --kubeconfig "${KUBECONFIG_PATH}" apply -f - >/dev/null
 }
 
-wait_for_application() {
-  local name=$1
-  kubectl --kubeconfig "${KUBECONFIG_PATH}" -n argocd wait \
-    --for=jsonpath='{.status.health.status}'=Healthy "application/${name}" \
-    --timeout=20m
-}
-
 restore_platform() {
   export KUBECONFIG="${KUBECONFIG_PATH}"
   info "Waiting for the new kube-apiserver VIP"
@@ -279,17 +294,13 @@ restore_platform() {
       node.longhorn.io/create-default-disk=true --overwrite
   done
 
-  kubectl create namespace image-registry --dry-run=client -o yaml | kubectl apply -f - >/dev/null
-  kubectl create namespace tailscale --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+  "${SCRIPT_DIR}/bootstrap-cluster-secrets.sh"
   restore_secret "${BACKUP_DIR}/registry-tls.secret.json.age"
   restore_secret "${BACKUP_DIR}/tailscale-oauth.secret.json.age"
 
   info "Bootstrapping Argo CD at revision ${GITOPS_REVISION}"
   GITOPS_REVISION="${GITOPS_REVISION}" "${SCRIPT_DIR}/bootstrap-argocd.sh"
-  wait_for_application snapshot-controller
-  wait_for_application longhorn
-  wait_for_application image-registry
-  wait_for_application tailscale-operator
+  "${SCRIPT_DIR}/reconcile-cluster-platform.sh"
   kubectl -n tailscale rollout status deployment/operator --timeout=10m
   kubectl wait --for=jsonpath='{.status.conditions[?(@.type=="ProxyClassReady")].status}'=True \
     proxyclass/restricted-userspace proxyclass/kernel-egress --timeout=5m
@@ -394,20 +405,80 @@ verify_rebuild() {
       '.items[] | select(.spec.nodeID | test("^k8s-[123]$"))' >/dev/null; then
     die "a Longhorn replica is scheduled on the control plane"
   fi
+  kubectl -n argocd get applications -o json | jq -e '
+    all(.items[];
+      .status.sync.status == "Synced" and .status.health.status == "Healthy")
+  ' >/dev/null || {
+    kubectl -n argocd get applications >&2
+    die "an Argo CD Application is not Synced/Healthy"
+  }
+  kubectl get pods -A -o json | jq -e '
+    all(.items[];
+      .metadata.deletionTimestamp != null or
+      .status.phase == "Succeeded" or
+      (.status.phase == "Running" and
+        all(.status.containerStatuses // []; .ready == true)))
+  ' >/dev/null || {
+    kubectl get pods -A >&2
+    die "a cluster Pod is not healthy"
+  }
+  kubectl -n gateway get gateway external -o json | jq -e '
+    any(.status.conditions[];
+      .type == "Programmed" and .status == "True")
+  ' >/dev/null || die "Gateway external is not Programmed"
   curl -fsS --retry 12 --retry-all-errors --retry-delay 5 \
     "https://${TAILSCALE_WORKER_FQDN}/health" >/dev/null
-  ok "Six-node cluster and Tailnet Worker health verified"
+  ok "Six-node cluster, GitOps platform, and Tailnet Worker health verified"
+}
+
+verify_gateway_worker_path() {
+  [[ "${GATEWAY_SMOKE}" == 1 ]] || {
+    info "Gateway-to-Worker smoke test skipped"
+    return
+  }
+
+  local cloudflare_dir client_id client_secret
+  cloudflare_dir="${REPO_ROOT}/tofu/20-cloudflare"
+  info "Running the authenticated Cloudflare/Gateway/Worker smoke test"
+
+  # `tofu output` still needs provider schemas. The API token is not used to
+  # read local encrypted state, but the required input variable must be set.
+  TF_VAR_cloudflare_api_token=not-used-for-local-output \
+    tofu -chdir="${cloudflare_dir}" init -input=false >/dev/null
+  client_id="$(TF_VAR_cloudflare_api_token=not-used-for-local-output \
+    tofu -chdir="${cloudflare_dir}" output -raw service_token_client_id)"
+  client_secret="$(TF_VAR_cloudflare_api_token=not-used-for-local-output \
+    tofu -chdir="${cloudflare_dir}" output -raw service_token_client_secret)"
+  [[ -n "${client_id}" && -n "${client_secret}" ]] \
+    || die "Cloudflare Access service token is empty"
+
+  # Pass the short-lived in-memory values over SSH stdin, not command-line
+  # arguments or files. The Gateway smoke script loads its application tokens
+  # locally and verifies the complete callback lifecycle.
+  printf '%s\n%s\n' "${client_id}" "${client_secret}" \
+    | ssh -o BatchMode=yes -o ConnectTimeout=10 craftz@172.16.40.30 '
+        IFS= read -r CF_ACCESS_CLIENT_ID
+        IFS= read -r CF_ACCESS_CLIENT_SECRET
+        export CF_ACCESS_CLIENT_ID CF_ACCESS_CLIENT_SECRET
+        sudo -n --preserve-env=CF_ACCESS_CLIENT_ID,CF_ACCESS_CLIENT_SECRET \
+          /opt/ai-business-gateway/scripts/smoke-test.sh
+      '
+  unset client_id client_secret
+  ok "Cloudflare Access, Gateway dispatch, Worker execution, and callback verified"
 }
 
 if [[ "${RESTORE_ONLY}" == 1 ]]; then
+  verify_gitops_revision
   verify_recovery_set
   restore_platform
   verify_rebuild
+  verify_gateway_worker_path
   printf '\nRestore completed successfully.\nRecovery set: %s\nGitOps revision: %s\n' \
     "${BACKUP_DIR}" "${GITOPS_REVISION}"
   exit 0
 fi
 
+verify_gitops_revision
 plan_and_guard
 if [[ "${EXECUTE}" != 1 ]]; then
   info "Read-only audit complete. Re-run with both destructive flags to rebuild."
@@ -432,6 +503,7 @@ info "Recreating all OpenTofu and Talos resources"
 (cd "${TOFU_DIR}" && tofu apply -auto-approve)
 restore_platform
 verify_rebuild
+verify_gateway_worker_path
 
 printf '\nRebuild completed successfully.\nRecovery set: %s\nGitOps revision: %s\n' \
   "${BACKUP_DIR}" "${GITOPS_REVISION}"

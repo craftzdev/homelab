@@ -18,32 +18,6 @@ spec:
     # -----------------------------------------------------------------------
     - name: homelab.storage
       rules:
-        - alert: CephClusterNotHealthy
-          expr: ceph_health_status != 0
-          for: 15m
-          labels:
-            severity: warning
-          annotations:
-            summary: "Ceph クラスタが HEALTH_OK ではありません"
-            description: |
-              Ceph の状態が正常ではありません。PV の性能・可用性に直結します。
-              確認: ssh root@172.16.10.11 ceph -s
-              参考: docs/30-storage-design.md §2
-
-        - alert: CephPoolNearFull
-          # Ceph は使用率 85% で書き込みを制限する。80% で警告を出して
-          # 対処の時間を確保する。
-          expr: |
-            (ceph_pool_bytes_used / (ceph_pool_bytes_used + ceph_pool_max_avail)) > 0.80
-          for: 30m
-          labels:
-            severity: warning
-          annotations:
-            summary: "Ceph プール {{ $labels.name }} の使用率が 80% を超えました"
-            description: |
-              85% に達すると Ceph は書き込みを制限します。
-              不要な PV / RBD イメージを整理するか、OSD を追加してください。
-
         - alert: PersistentVolumeFillingUp
           expr: |
             (kubelet_volume_stats_available_bytes / kubelet_volume_stats_capacity_bytes) < 0.10
@@ -52,46 +26,6 @@ spec:
             severity: warning
           annotations:
             summary: "PVC {{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }} の空き容量が 10% を切りました"
-
-    # -----------------------------------------------------------------------
-    # 外部公開経路
-    #
-    # cloudflared が落ちると外部の SaaS からアクセスできなくなる。
-    # 自宅側で気づける唯一の手段がこのアラート。
-    # -----------------------------------------------------------------------
-    - name: homelab.external-access
-      rules:
-        - alert: CloudflaredDown
-          expr: |
-            sum(up{job=~".*cloudflared.*"}) == 0
-          for: 5m
-          labels:
-            severity: critical
-          annotations:
-            summary: "cloudflared が全レプリカ停止しています"
-            description: |
-              外部の SaaS から宅内サービスへ到達できません。
-              確認: kubectl -n cloudflared get pods
-              参考: docs/40-external-access.md §8
-
-        - alert: CloudflaredSingleReplica
-          expr: |
-            sum(up{job=~".*cloudflared.*"}) == 1
-          for: 15m
-          labels:
-            severity: warning
-          annotations:
-            summary: "cloudflared が 1 レプリカのみ稼働しています"
-            description: "冗長性が失われています。残り 1 つが落ちると外部アクセスが全断します。"
-
-        - alert: CloudflareTunnelConnectionLost
-          expr: |
-            cloudflared_tunnel_ha_connections < 1
-          for: 5m
-          labels:
-            severity: critical
-          annotations:
-            summary: "Cloudflare エッジへのトンネル接続が確立していません"
 
     # -----------------------------------------------------------------------
     # セキュリティ
