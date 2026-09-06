@@ -59,7 +59,12 @@ resource "talos_machine_configuration_apply" "node" {
   # これを false にすると、VM を作り直したときに古い etcd メンバー情報が
   # 残って join に失敗する事故が起きる。
   on_destroy = {
-    graceful = true
+    # A full six-node rebuild destroys all etcd members. Graceful leave cannot
+    # succeed for the final member after quorum has already disappeared, and
+    # parallel provider deletion makes the failure nondeterministic. The VMs
+    # and their disks are deleted immediately afterwards, so forced reset is
+    # the correct whole-cluster lifecycle behavior.
+    graceful = false
     reboot   = false
     reset    = true
   }

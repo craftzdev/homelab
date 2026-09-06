@@ -80,6 +80,13 @@ defaultSettings:
   # Longhorn 側の自動アップグレードは無効にする
   upgradeChecker: false
 
+# The chart explicitly requires this hook to be disabled under Argo CD.
+# On a fresh GitOps install the pre-upgrade hook runs before the Longhorn
+# ServiceAccount exists and can never create its Pod.
+preUpgradeChecker:
+  jobEnabled: false
+  upgradeVersionCheck: false
+
 # ---------------------------------------------------------------------------
 # 既定の StorageClass
 # ---------------------------------------------------------------------------

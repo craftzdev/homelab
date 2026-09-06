@@ -95,7 +95,6 @@ cat <<'EOF'
     cilium connectivity test        # 数分かかる
 
   次の手順:
-    ./scripts/ceph-create-k8s-user.sh    # Ceph の認証情報を作成
     ./scripts/bootstrap-argocd.sh        # GitOps 基盤を導入
 
 EOF

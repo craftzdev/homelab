@@ -46,6 +46,7 @@ override.tf.json
 terraform.rc
 tfplan
 *.tfplan
+destroy-plan-guard.json
 
 # ---------------------------------------------------------------------------
 # 生成物 / 一時ファイル

@@ -15,6 +15,7 @@ KUBECONFIG_PATH="${KUBECONFIG:-${REPO_ROOT}/_out/kubeconfig}"
 ARGOCD_CHART_VERSION="${ARGOCD_CHART_VERSION:-10.4.2}"
 AGE_KEY_FILE="${SOPS_AGE_KEY_FILE:-${HOME}/.config/sops/age/keys.txt}"
 VALUES_FILE="${REPO_ROOT}/kubernetes/bootstrap/argocd/values.yaml"
+GITOPS_REVISION="${GITOPS_REVISION:-main}"
 
 readonly C_RED=$'\033[0;31m' C_GREEN=$'\033[0;32m' C_YELLOW=$'\033[0;33m'
 readonly C_BLUE=$'\033[0;34m' C_RESET=$'\033[0m'
@@ -100,9 +101,30 @@ fi
 info "AppProject を作成しています..."
 kubectl apply -f "${REPO_ROOT}/kubernetes/apps/project.yaml"
 
-info "root Application を作成しています（app-of-apps）..."
-kubectl apply -f "${REPO_ROOT}/kubernetes/apps/root.yaml"
-ok "GitOps 管理を開始しました"
+if [[ "${GITOPS_REVISION}" == "main" ]]; then
+  info "root Application を作成しています（app-of-apps / revision: main）..."
+  kubectl apply -f "${REPO_ROOT}/kubernetes/apps/root.yaml"
+  ok "GitOps 管理を開始しました"
+else
+  # root Application はリポジトリ上の Application 定義を継続的に同期する。
+  # feature branch の検証時に root を作ると、子 Application にハードコード
+  # された main が即座に適用され、試験対象と実際の構成が食い違う。
+  # そこで非 main のときはローカルの Application 定義だけを一時レンダリングし、
+  # homelab Git source の revision をまとめて差し替える。main へマージ後に
+  # GITOPS_REVISION=main で再実行すれば、通常の app-of-apps 管理へ移行できる。
+  [[ "${GITOPS_REVISION}" =~ ^[A-Za-z0-9._/-]+$ ]] \
+    || die "GITOPS_REVISION に使用できない文字が含まれています"
+
+  rendered_apps="$(mktemp)"
+  trap 'rm -f "${rendered_apps:-}"' EXIT
+  sed "s|targetRevision: main|targetRevision: ${GITOPS_REVISION}|g" \
+    "${REPO_ROOT}/kubernetes/apps/infrastructure.yaml" >"${rendered_apps}"
+
+  info "feature revision ${GITOPS_REVISION} の Application を適用しています..."
+  kubectl apply -f "${rendered_apps}"
+  ok "feature revision の GitOps Application を登録しました（root は未作成）"
+  warn "main へマージ後、GITOPS_REVISION=main で再実行して root 管理へ切り替えてください。"
+fi
 
 # ---------------------------------------------------------------------------
 # 初期パスワードの案内

@@ -59,6 +59,11 @@ repoServer:
         allowPrivilegeEscalation: false
         readOnlyRootFilesystem: true
         runAsNonRoot: true
+        # The upstream image declares USER "nonroot" by name. Kubernetes
+        # cannot prove a non-numeric user is non-root and rejects the Pod under
+        # restricted policy, so pin the image's actual passwd UID/GID.
+        runAsUser: 65532
+        runAsGroup: 65532
         capabilities:
           drop: [ALL]
         seccompProfile:

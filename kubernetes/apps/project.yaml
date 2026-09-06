@@ -142,6 +142,8 @@ spec:
     - group: tailscale.com
       kind: DNSConfig
     - group: tailscale.com
+      kind: ProxyClass
+    - group: tailscale.com
       kind: ProxyGroup
 
     # --- cert-manager ---
