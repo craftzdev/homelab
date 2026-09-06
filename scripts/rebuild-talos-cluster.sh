@@ -14,6 +14,7 @@
 #   GITOPS_REVISION=...   Git revision used by Argo CD (default: current branch)
 #   AI_WORKER_REPO=...    ai-business-worker checkout
 #   BACKUP_DIR=...        existing recovery set when using --resume-after-backup
+#   TAILSCALE_WORKER_FQDN=... canonical Worker MagicDNS name
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -23,6 +24,7 @@ KUBECONFIG_PATH="${REPO_ROOT}/_out/kubeconfig"
 AI_WORKER_REPO="${AI_WORKER_REPO:-${REPO_ROOT}/../ai-business-worker}"
 GITOPS_REVISION="${GITOPS_REVISION:-$(git -C "${REPO_ROOT}" branch --show-current)}"
 PBS_BACKUP="${PBS_BACKUP:-1}"
+TAILSCALE_WORKER_FQDN="${TAILSCALE_WORKER_FQDN:-ai-worker-k8s.tailb6c7d.ts.net}"
 EXPECTED_VMIDS=(1001 1002 1003 1101 1102 1103)
 EXPECTED_NAMES=(k8s-1 k8s-2 k8s-3 k8s-worker-1 k8s-worker-2 k8s-worker-3)
 PVE_HOSTS=(172.16.10.11 172.16.10.12 172.16.10.13)
@@ -52,7 +54,7 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
-for tool in tofu jq kubectl talosctl helm age age-keygen security ssh git; do
+for tool in tofu jq kubectl talosctl helm age age-keygen security ssh git curl; do
   command -v "${tool}" >/dev/null || die "required command not found: ${tool}"
 done
 [[ -d "${AI_WORKER_REPO}/deploy/kubernetes" ]] \
@@ -137,7 +139,8 @@ backup_cluster_data() {
   info "Creating encrypted application-level backups"
 
   kubectl --kubeconfig "${KUBECONFIG_PATH}" -n ai-worker \
-    exec deploy/ai-business-worker -c worker -- tar -C /data -cf - . \
+    exec deploy/ai-business-worker -c worker -- \
+      tar -C /data --exclude=./lost+found -cf - . \
     | age -r "${AGE_RECIPIENT}" -o "${BACKUP_DIR}/ai-worker-data.tar.age"
   kubectl --kubeconfig "${KUBECONFIG_PATH}" -n image-registry \
     exec deploy/registry -- tar -C /var/lib/registry -cf - . \
@@ -192,6 +195,46 @@ verify_recovery_set() {
   ok "Existing encrypted recovery set verified"
 }
 
+remove_stale_tailnet_worker() {
+  local oauth_json client_id client_secret token_json access_token devices_json
+  local device_ids device_count device_id delete_code
+
+  info "Removing the previous Tailnet Worker identity before recreation"
+  oauth_json="$(age -d -i "${AGE_KEY_FILE}" \
+    "${BACKUP_DIR}/tailscale-oauth.secret.json.age")"
+  client_id="$(jq -er '.data.client_id | @base64d' <<<"${oauth_json}")"
+  client_secret="$(jq -er '.data.client_secret | @base64d' <<<"${oauth_json}")"
+  token_json="$(curl -fsS -u "${client_id}:${client_secret}" \
+    --data-urlencode 'grant_type=client_credentials' \
+    --data-urlencode 'scope=devices:core' \
+    --data-urlencode 'tags=tag:ai-worker-trusted' \
+    https://api.tailscale.com/api/v2/oauth/token)"
+  access_token="$(jq -er '.access_token' <<<"${token_json}")"
+  devices_json="$(curl -fsS -H "Authorization: Bearer ${access_token}" \
+    https://api.tailscale.com/api/v2/tailnet/-/devices)"
+  device_ids="$(jq -r --arg fqdn "${TAILSCALE_WORKER_FQDN}" '
+    [.devices[]
+      | select(.name == $fqdn)
+      | select((.tags // []) | index("tag:ai-worker-trusted"))
+      | .id][]' <<<"${devices_json}")"
+  device_count="$(sed '/^$/d' <<<"${device_ids}" | wc -l | tr -d ' ')"
+  [[ "${device_count}" -le 1 ]] \
+    || die "multiple canonical Tailnet Worker devices matched; refusing cleanup"
+
+  if [[ "${device_count}" == 1 ]]; then
+    device_id="${device_ids}"
+    delete_code="$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE \
+      -H "Authorization: Bearer ${access_token}" \
+      "https://api.tailscale.com/api/v2/device/${device_id}")"
+    [[ "${delete_code}" == 200 || "${delete_code}" == 204 ]] \
+      || die "Tailnet device cleanup failed with HTTP ${delete_code}"
+    ok "Previous Tailnet Worker identity removed"
+  else
+    info "No previous canonical Tailnet Worker identity found"
+  fi
+  unset oauth_json client_id client_secret token_json access_token devices_json
+}
+
 restore_secret() {
   local input=$1
   age -d -i "${AGE_KEY_FILE}" "${input}" \
@@ -239,6 +282,9 @@ restore_platform() {
   wait_for_application longhorn
   wait_for_application image-registry
   wait_for_application tailscale-operator
+  kubectl -n tailscale rollout status deployment/operator --timeout=10m
+  kubectl wait --for=jsonpath='{.status.conditions[?(@.type=="ProxyClassReady")].status}'=True \
+    proxyclass/restricted-userspace proxyclass/kernel-egress --timeout=5m
   kubectl -n longhorn-system rollout status daemonset/longhorn-manager --timeout=15m
   "${SCRIPT_DIR}/reconcile-longhorn-worker-plane.sh"
 
@@ -300,10 +346,18 @@ spec:
 EOF
   kubectl wait -n ai-worker --for=condition=Ready pod/rebuild-data-restore --timeout=10m
   age -d -i "${AGE_KEY_FILE}" "${BACKUP_DIR}/ai-worker-data.tar.age" \
-    | kubectl -n ai-worker exec -i rebuild-data-restore -- tar -C /data -xf -
+    | kubectl -n ai-worker exec -i rebuild-data-restore -- \
+      sh -c 'mkdir -p /tmp/restore && tar -C /tmp/restore --exclude=./lost+found -xf - && cp -R /tmp/restore/. /data/'
+  kubectl -n ai-worker exec rebuild-data-restore -- \
+    sh -c 'test -f /data/worker.db && test -d /data/jobs'
   kubectl -n ai-worker delete pod rebuild-data-restore --wait=true >/dev/null
   kubectl apply -k "${AI_WORKER_REPO}/deploy/kubernetes"
   kubectl -n ai-worker rollout status deployment/ai-business-worker --timeout=15m
+  kubectl -n tailscale wait --for=condition=Ready pod \
+    -l tailscale.com/parent-resource=ai-business-worker --timeout=10m
+  kubectl -n ai-worker wait \
+    --for=jsonpath='{.status.loadBalancer.ingress[0].hostname}'="${TAILSCALE_WORKER_FQDN}" \
+    ingress/ai-business-worker --timeout=10m
 }
 
 verify_rebuild() {
@@ -329,7 +383,7 @@ verify_rebuild() {
     die "a Longhorn replica is scheduled on the control plane"
   fi
   curl -fsS --retry 12 --retry-all-errors --retry-delay 5 \
-    https://ai-worker-k8s.tailb6c7d.ts.net/health >/dev/null
+    "https://${TAILSCALE_WORKER_FQDN}/health" >/dev/null
   ok "Six-node cluster and Tailnet Worker health verified"
 }
 
@@ -360,6 +414,7 @@ fi
 info "Destroying the six allowlisted Kubernetes VMs using the audited plan"
 (cd "${TOFU_DIR}" && tofu apply -auto-approve "${DESTROY_PLAN}")
 ok "Six Kubernetes VMs destroyed"
+remove_stale_tailnet_worker
 
 info "Recreating all OpenTofu and Talos resources"
 (cd "${TOFU_DIR}" && tofu apply -auto-approve)

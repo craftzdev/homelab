@@ -39,8 +39,8 @@
 #                 protocol: TCP
 # ===========================================================================
 ---
-apiVersion: cilium.io/v2
-kind: CiliumNetworkPolicy
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
 metadata:
   name: default-deny
   namespace: gateway
@@ -48,6 +48,5 @@ spec:
   # この namespace には Gateway / HTTPRoute リソースしか無く、Pod は動かない。
   # それでも default-deny を置いておくことで、
   # 「将来ここに Pod を置いたときに無防備にならない」ようにする。
-  endpointSelector: {}
-  ingress: []
-  egress: []
+  podSelector: {}
+  policyTypes: [Ingress, Egress]

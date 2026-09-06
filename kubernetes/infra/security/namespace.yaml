@@ -16,15 +16,14 @@ metadata:
 # ===========================================================================
 # セキュリティコンポーネントの通信制限
 # ===========================================================================
-apiVersion: cilium.io/v2
-kind: CiliumNetworkPolicy
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
 metadata:
   name: default-deny
   namespace: security
 spec:
-  endpointSelector: {}
-  ingress: []
-  egress: []
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
 
 ---
 apiVersion: cilium.io/v2

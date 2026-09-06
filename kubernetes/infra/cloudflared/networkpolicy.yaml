@@ -11,18 +11,14 @@
 # 明示的に許可しない限り、この namespace の Pod は
 # 送受信ともに何もできない。
 # ---------------------------------------------------------------------------
-apiVersion: cilium.io/v2
-kind: CiliumNetworkPolicy
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
 metadata:
   name: default-deny
   namespace: cloudflared
 spec:
-  endpointSelector: {}
-  # ingress / egress のルールを空で定義することが「default-deny」を意味する。
-  # ルールを書かない（フィールド自体を省略する）と制限が掛からないため、
-  # 空配列を明示している点が重要。
-  ingress: []
-  egress: []
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
 
 ---
 # ---------------------------------------------------------------------------

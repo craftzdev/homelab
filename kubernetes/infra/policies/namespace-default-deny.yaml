@@ -44,15 +44,14 @@
 # ⚠️ ArgoCD はクラスタに何でもデプロイできる権限を持つ。侵害された場合の
 #    影響が最も大きい namespace の 1 つであり、default-deny の価値が高い。
 # ---------------------------------------------------------------------------
-apiVersion: cilium.io/v2
-kind: CiliumNetworkPolicy
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
 metadata:
   name: default-deny
   namespace: argocd
 spec:
-  endpointSelector: {}
-  ingress: []
-  egress: []
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
 
 ---
 apiVersion: cilium.io/v2
@@ -126,15 +125,14 @@ spec:
 # ---------------------------------------------------------------------------
 # cert-manager
 # ---------------------------------------------------------------------------
-apiVersion: cilium.io/v2
-kind: CiliumNetworkPolicy
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
 metadata:
   name: default-deny
   namespace: cert-manager
 spec:
-  endpointSelector: {}
-  ingress: []
-  egress: []
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
 
 ---
 apiVersion: cilium.io/v2
@@ -201,15 +199,14 @@ spec:
 #    ときに無防備にならないよう default-deny を敷いておく。
 #    アプリを置く場合は専用 namespace を作ること。
 # ---------------------------------------------------------------------------
-apiVersion: cilium.io/v2
-kind: CiliumNetworkPolicy
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
 metadata:
   name: default-deny
   namespace: default
 spec:
-  endpointSelector: {}
-  ingress: []
-  egress: []
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
 
 ---
 apiVersion: cilium.io/v2

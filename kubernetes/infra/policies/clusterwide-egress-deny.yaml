@@ -61,6 +61,13 @@ spec:
           - kube-system
           - velero
 
+  # A deny-only policy also turns on egress enforcement for every selected
+  # endpoint. Explicitly allow all non-denied destinations; egressDeny has
+  # precedence and remains the hard boundary below.
+  egress:
+    - toEntities:
+        - all
+
   egressDeny:
     - toCIDR:
         # --- Proxmox 管理セグメント（Proxmox VE / PBS）---

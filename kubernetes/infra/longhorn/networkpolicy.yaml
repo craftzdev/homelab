@@ -19,15 +19,14 @@
 # である。Ceph 時代の ceph-csi と同じ構造的な制約である。
 # ===========================================================================
 ---
-apiVersion: cilium.io/v2
-kind: CiliumNetworkPolicy
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
 metadata:
   name: default-deny
   namespace: longhorn-system
 spec:
-  endpointSelector: {}
-  ingress: []
-  egress: []
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
 
 ---
 apiVersion: cilium.io/v2

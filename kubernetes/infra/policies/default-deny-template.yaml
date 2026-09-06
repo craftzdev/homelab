@@ -28,21 +28,15 @@
 #
 # ===========================================================================
 ---
-apiVersion: cilium.io/v2
-kind: CiliumNetworkPolicy
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
 metadata:
   name: default-deny
   namespace: <NAMESPACE>
 spec:
-  # 空の endpointSelector = namespace 内の全 Pod
-  endpointSelector: {}
-
-  # ⚠️ 空配列を明示することが重要。
-  #    ingress/egress のフィールド自体を省略すると
-  #    「そのポリシーは ingress/egress を制御しない」と解釈され、
-  #    default-deny にならない。
-  ingress: []
-  egress: []
+  # 空の podSelector = namespace 内の全 Pod
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
 
 ---
 # ---------------------------------------------------------------------------
