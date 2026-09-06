@@ -47,17 +47,27 @@ ok "接続を確認しました"
 #   設定が食い違わない。--set で上書きすると、ArgoCD が引き継いだ瞬間に
 #   設定が巻き戻る。
 # ---------------------------------------------------------------------------
-info "Cilium ${CILIUM_VERSION} を導入しています..."
-helm repo add cilium https://helm.cilium.io/ >/dev/null 2>&1 || true
-helm repo update cilium >/dev/null
+if kubectl -n kube-system get daemonset cilium >/dev/null 2>&1; then
+  # 初回bootstrap後はArgo CDが同じvaluesでCiliumを所有する。ここでHelmを
+  # 再実行すると、Argoがserver-side applyしたcluster-scoped resourceの
+  # ownership metadataと衝突するため、既存releaseはGitOpsへ委ねる。
+  info "既存のCiliumを検出しました。Helm bootstrapをスキップします..."
+  kubectl -n kube-system rollout status daemonset/cilium --timeout=10m
+  kubectl -n kube-system rollout status deployment/cilium-operator --timeout=10m
+  ok "既存のCiliumが利用可能です"
+else
+  info "Cilium ${CILIUM_VERSION} を導入しています..."
+  helm repo add cilium https://helm.cilium.io/ >/dev/null 2>&1 || true
+  helm repo update cilium >/dev/null
 
-helm upgrade --install cilium cilium/cilium \
-  --version "${CILIUM_VERSION}" \
-  --namespace kube-system \
-  --values "${VALUES_FILE}" \
-  --wait --timeout 10m
+  helm upgrade --install cilium cilium/cilium \
+    --version "${CILIUM_VERSION}" \
+    --namespace kube-system \
+    --values "${VALUES_FILE}" \
+    --wait --timeout 10m
 
-ok "Cilium を導入しました"
+  ok "Cilium を導入しました"
+fi
 
 # ---------------------------------------------------------------------------
 # LoadBalancer IP プールと L2 広告ポリシー
