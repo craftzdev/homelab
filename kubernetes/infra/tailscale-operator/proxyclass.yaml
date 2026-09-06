@@ -1,0 +1,36 @@
+apiVersion: tailscale.com/v1alpha1
+kind: ProxyClass
+metadata:
+  name: restricted-userspace
+spec:
+  statefulSet:
+    pod:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      tailscaleContainer:
+        env:
+          - name: HOME
+            value: /tmp
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+              - ALL
+          runAsNonRoot: true
+          runAsUser: 1000
+          runAsGroup: 1000
+          seccompProfile:
+            type: RuntimeDefault
+---
+# Egress proxying uses kernel forwarding. The generated sysctler init container
+# must run as root/privileged, but is confined to the dedicated tailscale
+# namespace; application workloads never receive this class.
+apiVersion: tailscale.com/v1alpha1
+kind: ProxyClass
+metadata:
+  name: kernel-egress
+spec: {}

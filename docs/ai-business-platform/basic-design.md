@@ -3,28 +3,28 @@
 | 項目 | 内容 |
 |---|---|
 | 文書名 | AI自律事業運営基盤 基本設計書 |
-| バージョン | 0.5 |
+| バージョン | 0.6 |
 | 作成日 | 2026-09-06 |
 | 入力文書 | AI自律事業運営基盤 要件定義書 v1.0 |
 | 対象フェーズ | Phase 1 MVP |
-| ステータス | Gateway and external tunnel deployed / Access configured / Worker implementation in progress |
+| ステータス | Gateway / Cloudflare Access / Talos Kubernetes Worker deployed and E2E verified |
 
 ## 1. 目的
 
-本書は、要件定義書で示された「AI自律事業運営基盤」の Phase 1 を、自宅の Proxmox 3ノードと Mac Studio 上に安全に構築するための基本設計を定義する。
+本書は、要件定義書で示された「AI自律事業運営基盤」の Phase 1 を、自宅の Proxmox 3ノード上のGateway VMとTalos Kubernetesに安全に構築するための基本設計を定義する。
 
 設計の中心は、外部AIとオンプレミスの実行環境の間に Business Gateway を置き、任意コマンド実行ではなく、許可済みの業務 Action だけを、予算・権限・監査の制約下で非同期 Job として実行することである。
 
 ## 2. 設計方針
 
-1. 外部AIから Proxmox、Mac Studio、PBS への直接 SSH を許可しない。
+1. 外部AIから Proxmox、Kubernetes、PBS への直接 SSH を許可しない。
 2. Business Gateway に汎用 Shell API を実装しない。
 3. ネットワーク、アプリケーション、Action Policy の3層で拒否を重ねる。
-4. Gateway は Tailscale Serve で公開された型付き Worker API へ Job を dispatch し、SSHや任意コマンド実行を使わない。
+4. Gateway は Tailscale Kubernetes Operatorで公開された型付き Worker API へ Job を dispatch し、SSHや任意コマンド実行を使わない。
 5. すべての副作用を Job、Event、Audit Log として追跡可能にする。
 6. 予算判定と Job 登録を同一トランザクションで行い、並行実行時の超過を防ぐ。
 7. ソースコードと仕様は GitHub、実行状態は PostgreSQL、成果物は GitHub または外部オブジェクトストレージを正とする。
-8. Phase 1 では Kubernetes、Redis Cluster、HA PostgreSQL を導入しない。
+8. WorkerはTalos Kubernetesに配置する。Redis ClusterとHA PostgreSQLは導入しない。
 9. 販売中の Micro SaaS は自宅環境に配置しない。
 10. Bot 固有処理は Adapter に閉じ込め、Control Plane を将来交換できるようにする。
 
@@ -34,16 +34,16 @@
 
 - Proxmox 上の Business Gateway VM 1台
 - Gateway API、認証、認可、Policy、Job、Event、Audit、Budget 機能
-- Mac Studio 上の Worker API とローカルJob Runner
+- Talos Kubernetes 上の Worker API とJob Runner
 - Builder、Browser、Test、Data の各 Executor
 - Cloudflare Tunnel と Cloudflare Access による外部AI向け入口
-- Tailscale Serve HTTPS による Gateway と Mac Studio の通信
+- Tailscale Kubernetes Operatorによる Gateway と Worker のTailnet HTTPS通信
 - GitHub、デプロイ先、Stripe、Analytics との最小連携
 - PBS を用いた Gateway VM バックアップ
 
 ### 3.2 Phase 1 で構築しないもの
 
-- Kubernetes 上への本基盤の配置
+- GatewayのKubernetes移行
 - Gateway のアプリケーションレベル Active-Active 構成
 - 高可用 PostgreSQL、Redis、メッセージブローカ専用クラスタ
 - Local LLM、RTX Worker、Proxmox Sandbox Worker
@@ -56,9 +56,9 @@
 | リポジトリ | 管理対象 |
 |---|---|
 | `craftzdev/homelab` | Proxmox、Gateway VM、Cloudflare Tunnel、Tailscale Grants、Gatewayの配置と運用 |
-| `craftzdev/ai-business-worker` | Mac Studio Worker API、executor、macOS常駐化、Workerのテストとリリース |
+| `craftzdev/ai-business-worker` | Kubernetes Worker API、executor、コンテナ、Workerのテストとリリース |
 
-WorkerはMac固有の権限、依存関係、リリース周期を持つため、Gatewayおよび
+Workerは独立した実行権限、依存関係、リリース周期を持つため、Gatewayおよび
 インフラとは別リポジトリで管理する。Phase 1では共有ライブラリを作らず、
 Workerリポジトリから生成するOpenAPIをGateway→Worker API契約の正とする。
 
@@ -76,7 +76,7 @@ Workerリポジトリから生成するOpenAPIをGateway→Worker API契約の�
 | Ceph Cluster | VLAN 30 / `172.16.30.0/24` |
 | VM/Kubernetes | VLAN 40 / `172.16.40.0/24` |
 | VLAN 40 Gateway | `172.16.40.1` |
-| 主実行ノード | Mac Studio M1 Max / RAM 64 GB |
+| 主実行基盤 | Talos Kubernetes 3ノード / Longhorn 3レプリカ |
 | バックアップ | PBS を継続利用 |
 | リモート接続 | PBS の Tailscale Subnet Router を継続利用 |
 
@@ -89,14 +89,14 @@ Workerリポジトリから生成するOpenAPIをGateway→Worker API契約の�
 | VM/LXC | VM `1200` `ai-gateway-01` を作成済み | 稼働中 |
 | `172.16.40.30` | Gateway VMの固定IPとして設定 | 稼働中 |
 | `gateway.craftz.dev` | 専用Cloudflare Tunnel経由でloopback APIへ接続 | 稼働中 |
-| Ceph OSD | 3 OSDすべて up/in、全129 PGが `active+clean` | データ整合性は正常 |
-| Ceph容量 | raw約3.07 TB、利用約30.3 GB、空き約3.04 TB | Gateway配置に十分 |
-| `cephrdb_vm` | 3ノードで active、shared、replica size 3 / min_size 2 | Gateway diskに採用 |
-| Ceph health | `HEALTH_WARN`。`osd.0` と `osd.2` に BlueStore slow-op indication | PGはclean、警告継続監視 |
-| `osd.0` device | SMART PASSED、reallocated/pending/CRC error 0、現在のcommit/apply latency 0 ms | 即時故障の兆候なし |
+| Ceph | GatewayのPBSバックアップとCephFS archive確認後、3ノードから廃止 | 完了 |
+| `local-zfs` | 3ノードのSATA SSDへ作成 | online |
+| Gateway storage | VM 1200を `local-zfs` へ復元 | 稼働中 |
+| Gateway replication | node 2/3へ5分間隔のZFS replication | 稼働中 |
+| Kubernetes storage | Longhorn 1.12.1、Worker PVは3レプリカ | healthy |
 | Proxmox HA | 3ノードのCRM/LRM/watchdog active、quorum OK | HA利用可能 |
 | HA設定 | `vm:1200` と Node Affinity Rule `ai-gateway-placement` を登録済み | `started` / `in use` |
-| PBS連携 | ProxmoxにPBS storage登録なし、backup jobなし | 本稼働前の必須作業 |
+| PBS連携 | `172.16.10.51`へGatewayバックアップ取得済み | 成功 |
 | Tailscale | MagicDNS `tailb6c7d.ts.net`、Gateway `100.104.73.43` | Serve HTTPS、Gateway tag、Grants稼働中 |
 | Gateway復旧試験 | live migration往復、再起動、local backupから隔離restore | 成功 |
 
@@ -109,7 +109,7 @@ Workerリポジトリから生成するOpenAPIをGateway→Worker API契約の�
 | Gateway IP | `172.16.40.30/24` |
 | Gateway DNS | `172.16.40.1` |
 | Gateway primary node | `sv-proxmox-01` |
-| Gateway disk storage | `cephrdb_vm` |
+| Gateway disk storage | `local-zfs` + node 2/3への5分間隔ZFS replication |
 | Gateway public hostname | `gateway.craftz.dev` |
 | Cloudflare Tunnel | `ai-business-gateway` / `1cb360c1-26be-4f23-b3d3-728689073a04` |
 | Gateway external API backend | `http://127.0.0.1:8080`（cloudflared専用） |
@@ -118,12 +118,11 @@ Workerリポジトリから生成するOpenAPIをGateway→Worker API契約の�
 | Gateway Tailnet node name | `ai-gateway-01` |
 | Gateway Tailnet node tag | `tag:ai-gateway` |
 | Gateway callback backend | `http://127.0.0.1:8081`（Tailscale Serve専用） |
-| Mac Studio Tailnet node name | 現在 `macstudio`、Policy alias `ai-worker-mac-01` |
-| Mac Studio Tailnet identity | 現在はuser-owned端末のままhost aliasで限定。専用化時は `tag:ai-worker-trusted` |
-| 将来のProxmox Worker tag | `tag:ai-worker-sandbox` |
-| Worker API backend | `http://127.0.0.1:8080` |
-| Worker API endpoint | `https://macstudio.<tailnet>.ts.net:443` |
-| Gateway→Worker transport | Tailscale Serve / HTTPS REST |
+| Worker Tailnet identity | Tailscale Operator proxy / `tag:ai-worker-trusted` |
+| 将来の隔離Worker tag | `tag:ai-worker-sandbox` |
+| Worker API backend | Kubernetes ClusterIP / TCP 8080 |
+| Worker API endpoint | `https://ai-worker-k8s.<tailnet>.ts.net:443` |
+| Gateway→Worker transport | Tailscale Operator Ingress / HTTPS REST |
 | Gateway→Worker authentication | Tailscale Grant + Bearer API Token |
 | Worker→Gateway callback | `POST https://ai-gateway-01.<tailnet>.ts.net/v1/worker-events` |
 | タイムゾーン | DBはUTC、表示・予算日界はAsia/Tokyo |
@@ -148,9 +147,9 @@ flowchart TB
 
     TS[Tailscale]
 
-    subgraph MAC[Mac Studio]
-      SERVE[Tailscale Serve\nHTTPS :443]
-      WD[Worker API\n127.0.0.1:8080]
+    subgraph K8S[Talos Kubernetes]
+      SERVE[Tailscale Operator Ingress\nHTTPS :443]
+      WD[Worker API\nClusterIP :8080]
       BW[Builder Executor]
       PW[Browser Executor]
       TW[Test Executor]
@@ -187,7 +186,7 @@ flowchart TB
 |---|---|---|
 | Internet / Grok Cloud | 非信頼 | Cloudflare Access、レート制限、Bot署名 |
 | Business Gateway | Control Plane | Action Allow List、Policy、Budget、Audit |
-| Mac Studio Worker | 制限付き実行環境 | Tailscale Serve、API Token、専用ユーザー、Jobごとの分離、Executor Allow List |
+| Talos Kubernetes Worker | 制限付き実行環境 | Tailscale Operator、API Token、非root Pod、Jobごとの分離、Executor Allow List |
 | GitHub / Managed Platform | 外部サービス | 最小権限の短期Credential、対象リポジトリ・プロジェクト制限 |
 | Proxmox / PBS / Router | 管理基盤 | AI系ノードからのアクセスをネットワークで拒否 |
 
@@ -203,7 +202,7 @@ flowchart TB
 | vCPU | 2 vCPU |
 | Memory | 4 GB 固定 |
 | Disk | 64 GB、SCSI、discard 有効 |
-| Storage | 共有 RBD `cephrdb_vm` |
+| Storage | `local-zfs`、node 2/3へ5分間隔でZFS replication |
 | NIC | VirtIO 1枚、`vmbr1`、VLAN Tag 40 |
 | IP | `172.16.40.30/24` |
 | Default Gateway | `172.16.40.1` |
@@ -220,8 +219,8 @@ flowchart TB
 - VM `1200` は HA Resource として `max_restart=1`、`max_relocate=1`、`failback=0` で登録する。復旧後の不要な自動戻しを避ける。
 - ホスト障害時は同一 VM を別ノードで再起動する。Phase 1 は単一 Gateway/DB のため、再起動中は Job の新規受付が停止する。
 - Gateway復旧後、Worker APIから実行状態を再取得する。副作用のある Job は自動再実行せず、冪等性が確認できる Job だけを再dispatchする。
-- CephはGateway用storageとして採用する。HA Resourceはclean PG、正常なquorum、live migration成功を確認して有効化したが、`osd.0` と `osd.2` の slow-op warning は継続監視し、増加時はデバイスとI/O経路を調査する。
-- local backupからの隔離restore testは完了した。PBS storage登録、PBS backup job作成、PBSからのrestore test完了は引き続き本稼働条件とする。
+- Gateway diskは各ノードの`local-zfs`へ配置し、node 2/3への5分間隔ZFS replicationでHA再起動先の復旧点を作る。
+- local backupからの隔離restore test、PBS `172.16.10.51`へのbackup、node 2へのonline migration往復は完了した。定期的なPBS restore testは継続運用とする。
 
 HA登録済みの確定パラメータは次のとおりである。
 
@@ -257,17 +256,17 @@ ai-gateway-01
 |---|---|---:|---|---|
 | Grok Cloud | Cloudflare Edge | TCP/443 | Job API | 許可 |
 | cloudflared | Cloudflare Edge | TCP/443 または QUIC/7844 | Tunnel | Outbound のみ許可 |
-| Gateway | Mac Studio Tailscale Serve | TCP/443 | typed Job dispatch、状態照会 | Tailnet内だけ許可 |
-| Mac Studio | Gateway Tailscale Serve | TCP/443 | Job event callback | Tailnet内だけ許可 |
+| Gateway | Kubernetes Worker Ingress | TCP/443 | typed Job dispatch、状態照会 | Tailnet内だけ許可 |
+| Kubernetes Worker | Gateway Tailscale Serve | TCP/443 | Job event callback | Operator egress proxy経由のみ許可 |
 | MacBook Pro | Gateway 管理API | TCP/443 | 承認、状態確認 | Cloudflare Accessの人間認証経由のみ許可 |
 | Gateway | GitHub / Event先 | TCP/443 | Event、Issue、Credential交換 | 宛先 Allow List |
-| Mac Studio | GitHub / package registry | TCP/443 | clone、build、push | 宛先 Allow List |
-| Mac Studio | Preview/Production | TCP/443 | deploy、E2E | Jobで許可された対象のみ |
+| Kubernetes Worker | GitHub / package registry | TCP/443 | clone、build | 宛先 Allow List |
+| Kubernetes Worker | Preview/Production | TCP/443 | deploy、E2E | Jobで許可された対象のみ |
 | Proxmox host | PBS | 既存バックアップ通信 | VM Backup | 既存設定を使用 |
 
 ### 7.2 明示的に拒否する通信
 
-Gateway と Mac Studio の AI 用アカウントから、次の管理面への新規接続を拒否する。
+Gateway と Kubernetes Worker から、次の管理面への新規接続を拒否する。
 
 - `172.16.10.0/24` の Proxmox 管理GUI、SSH
 - `172.16.20.0/24` の Ceph Public（Gatewayには不要）
@@ -280,25 +279,23 @@ Gateway と Mac Studio の AI 用アカウントから、次の管理面への�
 
 ### 7.3 Tailscale 方針
 
-- 既存の PBS Subnet Router は既存管理用途として維持するが、GatewayとMac Studio間の経路には使用しない。
-- Gateway VM と Mac Studio 自身に Tailscale client を入れ、端末Identityで相互を識別する。
+- 既存の PBS Subnet Router は既存管理用途として維持するが、GatewayとWorker間の経路には使用しない。
+- Gateway VM と Kubernetes Operator proxy をTailnetへ直接参加させ、tag identityで相互を識別する。
 - Tailscale Funnelは両ノードとも無効とし、Serveの公開範囲をTailnet内に限定する。
-- Mac StudioのWorker APIは `127.0.0.1:8080` だけでlistenし、Tailscale ServeがTailnet内のHTTPS `:443` としてproxyする。
+- Worker APIはPod内の `0.0.0.0:8080` でlistenし、ClusterIP以外へ直接公開しない。Tailscale Operator IngressがTailnet内のHTTPS `:443` としてproxyする。
 - Gatewayのcallback受信APIは外部APIと分離して `127.0.0.1:8081` だけでlistenし、Gateway上のTailscale ServeでTailnet内に公開する。このlistenerは `/v1/worker-events` 以外を提供しない。
-- `tag:ai-gateway` から現Mac Studioのhost aliasおよびWorker tagのTCP/443をJob dispatch用に許可する。
-- 現Mac Studioのhost aliasおよびWorker tagから `tag:ai-gateway` のTCP/443をcallback用に許可する。
+- `tag:ai-gateway` から `tag:ai-worker-trusted` のTCP/443をJob dispatch用に許可する。
+- `tag:ai-worker-trusted` から `tag:ai-gateway` のTCP/443をcallback用に許可する。
+- Tailnet memberから `tag:ai-worker-trusted` のTCP/443を署名付きレビュー画面の確認用に許可する。API操作には別途Bearer tokenが必要である。
 - 将来のProxmox Worker VMには `tag:ai-worker-sandbox` を付与し、Proxmox host自体をAI実行経路へ参加させない。
 - 新規ポリシーは deny-by-default とし、Tailscale の現行推奨である Grants を優先する。
 - SSH、Screen Sharing、SMB、Worker API以外のポートは両方向とも許可しない。
 - タグ付き端末ではTailscale ServeのユーザーIdentity Headerに依存できないため、API Token認証を必須とする。
 
-適用済みポリシーは `ai-business-platform/infra/tailscale/policy.hujson` を正とする。Mac Studioは管理用ワークステーションも兼ねるため、端末tagを付けるとuser identityを失う点を避け、現時点では固定Tailscale IPのhost aliasを使用する。Gatewayはtagged deviceとし、従来の全端末向けallow-all ACLは削除済みである。
+適用済みポリシーは `ai-business-platform/infra/tailscale/policy.hujson` を正とする。GatewayとWorker proxyはtagged deviceとし、従来の全端末向けallow-all ACLは削除済みである。
 
 ```json
 {
-  "hosts": {
-    "ai-worker-mac-01": "100.105.200.6"
-  },
   "tagOwners": {
     "tag:ai-gateway": ["autogroup:admin"],
     "tag:ai-worker-trusted": ["autogroup:admin"],
@@ -306,12 +303,17 @@ Gateway と Mac Studio の AI 用アカウントから、次の管理面への�
   },
   "grants": [
     {
-      "src": ["tag:ai-gateway"],
-      "dst": ["ai-worker-mac-01", "tag:ai-worker-trusted", "tag:ai-worker-sandbox"],
+      "src": ["autogroup:member"],
+      "dst": ["tag:ai-worker-trusted"],
       "ip": ["tcp:443"]
     },
     {
-      "src": ["ai-worker-mac-01", "tag:ai-worker-trusted", "tag:ai-worker-sandbox"],
+      "src": ["tag:ai-gateway"],
+      "dst": ["tag:ai-worker-trusted", "tag:ai-worker-sandbox"],
+      "ip": ["tcp:443"]
+    },
+    {
+      "src": ["tag:ai-worker-trusted", "tag:ai-worker-sandbox"],
       "dst": ["tag:ai-gateway"],
       "ip": ["tcp:443"]
     }
@@ -325,7 +327,7 @@ Gateway と Mac Studio の AI 用アカウントから、次の管理面への�
 - 専用Tunnel `ai-business-gateway` が外向きに接続し、`gateway.craftz.dev` を同一VMの loopback listenerへproxyする。Tunnel、DNS、HTTPS疎通は構築済みである。
 - Bot 用 Access Application は `Service Auth` とし、Bot ごとに別 Service Token を発行する。
 - 人間用管理入口は別 Access Application または別 hostname に分離し、IdP + MFA を必須にする。
-- Mac Studio Worker APIはTailscale Serve以外では公開しない。LAN IPの直接利用はfallbackにも採用しない。
+- Worker APIはTailscale Operator Ingress以外では公開しない。LAN IPの直接利用はfallbackにも採用しない。
 - 外部 listener は Cloudflare が付与する Access JWT の署名、issuer、audience、有効期限を Gateway でも検証する。
 
 ## 8. Business Gateway 論理構成
@@ -573,7 +575,7 @@ stateDiagram-v2
 | POST | `/v1/approvals/{approval_id}/approve` | 期限・上限付き承認（人間のみ） |
 | POST | `/v1/approvals/{approval_id}/reject` | 拒否（人間のみ） |
 
-### 12.2 Mac Studio Worker API
+### 12.2 Kubernetes Worker API
 
 | Method | Path | 用途 |
 |---|---|---|
@@ -585,7 +587,7 @@ stateDiagram-v2
 | POST | `/v1/jobs/{worker_job_id}/cancel` | 未開始または安全に停止可能なJobの取消し |
 | GET | `/health` | Worker APIとlocal queueのhealth |
 
-Worker APIは `127.0.0.1:8080` でlistenし、Tailscale Serveだけが `https://macstudio.<tailnet>.ts.net:443` としてproxyする。Job受付は `202 Accepted` と次の最小応答を返す。
+Worker APIはPod内の `0.0.0.0:8080` でlistenし、ClusterIP以外へ直接公開しない。Tailscale Operator Ingressだけが `https://ai-worker-k8s.<tailnet>.ts.net:443` としてproxyする。Job受付は `202 Accepted` と次の最小応答を返す。
 
 ```json
 {
@@ -695,21 +697,20 @@ limits:
 
 値は要件定義書の例であり、本稼働前に人間が確定する。
 
-## 15. Mac Studio Worker 設計
+## 15. Talos Kubernetes Worker 設計
 
 ### 15.1 実行モデル
 
-- macOS に `business-worker` 専用ユーザーを作成する。
-- Worker API は `launchd` で常時起動し、`127.0.0.1:8080` だけでlistenする。
-- 現在のTailscale node名は `macstudio`、Policy上のhost aliasは `ai-worker-mac-01` とし、Tailscale ServeがWorker APIをTailnet内のHTTPS `:443` に公開する。専用端末へ分離する段階で `tag:ai-worker-trusted` を付与する。
+- Worker API はKubernetes Deploymentとして常時起動し、ClusterIPだけでlistenする。
+- Tailscale Kubernetes Operatorが `ai-worker-k8s` を `tag:ai-worker-trusted` でTailnetへ参加させ、HTTPS `:443` に公開する。
 - Tailscale Funnelは有効化しない。
-- WorkerはJob状態をローカルSQLiteへ永続化し、再起動後も受付済みJobとdispatch重複判定を復元する。
-- Job は `/Users/business-worker/workspaces/<job_id>/` に分離する。
-- 個人用ホーム、写真、Keychain、ブラウザプロファイルへのアクセスを与えない。
+- WorkerはJob状態をLonghorn 3レプリカPV上のSQLiteへ永続化し、Pod再起動後も受付済みJobとdispatch重複判定を復元する。
+- Job は `/data/workspaces/<job_id>/` に分離する。
+- 個人用ホーム、Keychain、ホストのブラウザプロファイルをマウントしない。
 - Job ごとに checkout または worktree を作り、終了後に保持Policyに従って削除する。
-- Builder Phase 1はCodex CLIの `workspace-write` sandboxと専用OSユーザーを併用する。
-  信頼できないrepositoryやtest commandを許可する前に、コンテナ境界を追加する。
-- macOS ホスト上で root command を実行する Action は提供しない。
+- Builder Phase 1はCodex CLIを、非root・capability drop・read-only root filesystem・
+  NetworkPolicy・専用PVからなるKubernetes sandbox境界内で実行する。
+- Kubernetes nodeやProxmox host上でroot commandを実行するActionは提供しない。
 
 ### 15.2 Executor
 
@@ -722,8 +723,8 @@ limits:
 
 ### 15.3 Sandbox と制限
 
-- 将来コンテナ化するActionでは許可imageを固定し、`latest` tag は使わない。
-- container は原則 read-only root filesystem、capability drop、host network 無効とする。
+- 許可imageは内部TLSレジストリのdigestで固定し、`latest` tag は使わない。
+- container は read-only root filesystem、capability drop、host network 無効とする。
 - repository workspace と専用temporary directoryだけをmountする。
 - CPU、memory、disk、process、runtime に上限を設ける。
 - Playwright は事業専用 browser profile を使用し、個人ブラウザの cookie を流用しない。
@@ -735,12 +736,10 @@ limits:
 - 長期 secret を Job payload に入れない。
 - GitHub は project を限定した GitHub App installation token を優先する。
 - deploy、Analytics、Stripe は scope を絞った専用Credentialを利用する。
-- Gateway が短期Credentialまたは一回限りの参照tokenを発行し、Worker は memory または一時 Keychain に保持する。
-- Worker APIのdispatch tokenとGateway callback tokenは、専用ユーザーだけが読める
-  mode `0600` のruntime設定へ別項目として保存する。対話ユーザーで動かすCredentialは
-  macOS Keychainを利用する。
-- Codex CLIは専用の `CODEX_HOME=/Users/business-worker/.codex` を使う。Phase 1では
-  現在のChatGPT認証をmode `0600` で複製し、個人ホームを直接参照しない。本稼働では
+- Gateway が短期Credentialまたは一回限りの参照tokenを発行し、Worker はmemoryまたは一時volumeに保持する。
+- Worker APIのdispatch tokenとGateway callback tokenは、Gitへ含めずKubernetes Secretから読み取り専用で渡す。
+- Codex CLIはコンテナ内の専用 `CODEX_HOME=/home/worker/.codex` を使う。Phase 1では
+  現在のChatGPT認証をKubernetes Secretとして複製し、個人ホームを直接参照しない。本稼働では
   Worker専用API project keyまたはworkload identityへの移行を検討する。
 - Job 終了時に一時Credentialと作業環境を破棄する。
 
@@ -802,7 +801,7 @@ Event envelope は Adapter に依存しない形式とする。
 - Secret は Git に平文保存しない。
 - Git 管理が必要な設定は SOPS + age で暗号化し、復号鍵は VM 外にもオフラインバックアップする。
 - Gateway runtime secret は root のみ読める場所または systemd credential として渡す。
-- Mac Studio の長期 secret は専用 Keychain または専用ユーザーのみ読めるファイルに置く。
+- Workerの長期secretはKubernetes Secretに保存し、対象ServiceAccountのPodだけへ読み取り専用で渡す。
 - Bot、Worker、Cloudflare、GitHub、Stripe のCredentialは個別に発行し、一括共用しない。
 - ローテーション周期、所有者、最終更新日、有効期限を secret inventory で管理する。
 - Credential 漏洩時は対象 Bot/Worker 単位で即時失効できることを受入条件とする。
@@ -831,7 +830,7 @@ Event envelope は Adapter に依存しない形式とする。
 
 ### 19.3 Log 方針
 
-- Gateway は構造化 JSON Log、Mac Studio は構造化 Job Log を出力する。
+- Gateway とKubernetes Workerは構造化 JSON Job Log を出力する。
 - `request_id`、`job_id`、`project_id`、`worker_id` で相関できるようにする。
 - Authorization header、cookie、API key、顧客情報、source code 全文は出力しない。
 - 初期は journald と DB Audit を利用し、必要に応じ既存 Prometheus/Grafana へ接続する。
@@ -847,7 +846,7 @@ Event envelope は Adapter に依存しない形式とする。
 | Policy / Compose / migration | GitHub | 変更ごと | Git履歴 |
 | age key / recovery secret | 暗号化したオフライン保管 | 変更時 | 旧鍵も失効確認まで保持 |
 
-2026-09-06時点では、Proxmox clusterにPBS storageもbackup jobも登録されていない。Gateway本稼働前に登録・作成する。PBS backup は Proxmox host 側から実行し、Gateway VM や AI Worker に PBS Credential を渡さない。
+2026-09-06にPBS `172.16.10.51`へGateway VMのbackupを取得済みである。PBS backup は Proxmox host 側から実行し、Gateway VM や AI Worker に PBS Credential を渡さない。
 
 ### 20.2 目標値
 
@@ -856,7 +855,7 @@ Event envelope は Adapter に依存しない形式とする。
 | RPO | 24時間以内 |
 | RTO | 60分以内 |
 | ホスト障害時 | Proxmox HA 利用時は別ノードで自動再起動 |
-| Mac Studio停止時 | 新規実行は待機。Gateway、Job、Audit は継続 |
+| Worker停止時 | 新規実行は待機。Gateway、Job、Audit は継続 |
 | Gateway停止時 | 本番 Micro SaaS は無影響。自動運営のみ停止 |
 
 四半期に1回、隔離ネットワークで Gateway VM と PostgreSQL の復元試験を行い、RPO/RTOを実測する。
@@ -865,7 +864,7 @@ Event envelope は Adapter に依存しない形式とする。
 
 | 障害 | システム挙動 | 復旧方針 |
 |---|---|---|
-| Mac Studio停止 | dispatchは失敗しJobはRETRY_WAIT。実行中Jobは状態不明になり得る | 復帰後にWorker状態を照会し、安全なJobだけ再dispatch |
+| Kubernetes Worker停止 | dispatchは失敗しJobはRETRY_WAIT。実行中Jobは状態不明になり得る | Deployment復旧後にWorker状態を照会し、安全なJobだけ再dispatch |
 | Gateway VM停止 | 新規受付とEvent配送停止。本番SaaSは継続 | Proxmox HA再起動またはPBS復元 |
 | Cloudflare障害 | 外部Botから受付不能。LAN/Tailscale管理は維持 | Job状態を保持し、復旧後再開 |
 | PostgreSQL異常 | fail closed。Job受付・Policy判定を停止 | DB復旧。Audit欠落の有無を検証 |
@@ -878,10 +877,10 @@ Event envelope は Adapter に依存しない形式とする。
 
 ### Step 0: 事前確認
 
-- 実機確認済みのProxmox cluster quorum、Ceph、HAの結果を記録する。
-- `osd.0` と `osd.2` のBlueStore slow-op warningを再確認し、継続・増加時はI/O原因を解消する。
-- PBS storageをProxmoxへ登録し、VM 1200向けbackup jobとrestore testを準備する。
-- Mac StudioとGatewayのTailnet参加、Gateway tag、Grants、MagicDNS domainは確定済み。
+- 実機確認済みのProxmox cluster quorum、local-zfs、HAの結果を記録する。
+- Ceph廃止前にPBSへVM 1200をバックアップし、CephFS archiveを確認する。
+- VM 1200向けPBS backupとZFS replicationを構成し、復元とmigrationを確認する。
+- GatewayとTailscale Kubernetes OperatorのTailnet参加、tag、Grants、MagicDNS domainは確定済み。
 - Cloudflare Zone、Tunnel、公開hostnameは確定・構築済み。
 - Grok Bot の外部HTTP、Webhook、定期 polling 能力を確認する。
 
@@ -896,7 +895,7 @@ Event envelope は Adapter に依存しない形式とする。
 
 - Cloudflare Tunnel、Access Service Auth、Gateway側JWT検証は構築済み。人間用Accessは管理UI導入時に追加する。
 - Bot HMAC、Worker/Callback API Token、replay 防止を実装する。
-- Tailscale Grants、GatewayとMac Studio双方のTailscale Serveは構築済み。
+- Tailscale Grants、Gateway Serve、Kubernetes OperatorのIngress/egress proxyは構築済み。
 - GatewayからVLAN 10/20/30への拒否は確認済み。Worker構築後にPBS、Router、NASを含む拒否を再試験する。
 
 ### Step 3: Job 基盤
@@ -905,9 +904,9 @@ Event envelope は Adapter に依存しない形式とする。
 - Job dispatch、callback、poll fallback、timeout、retry、outbox、audit を実装する。
 - 読み取り Action で状態遷移と障害復旧を検証する。
 
-### Step 4: Mac Studio Worker
+### Step 4: Talos Kubernetes Worker
 
-- 専用ユーザー、launchd、Worker API、SQLite queue、Tailscale Serveは構築済み。workspaceとcontainer sandboxを追加する。
+- 非root Worker API、Longhorn上のSQLite queue、Tailscale Operator、コンテナsandboxは構築済み。
 - Builder、Test、Browser、Data の順で Executor を追加する。
 - GitHub の専用Credentialと branch protection を設定する。
 
@@ -930,8 +929,8 @@ Event envelope は Adapter に依存しない形式とする。
 ### 23.2 セキュリティ
 
 - 期限切れ、署名不正、時刻差超過、再送 Request を拒否する。
-- Gateway以外のTailnet nodeからMac Studio Worker APIへ接続できない。
-- Mac Studio以外のTailnet nodeからGateway callback APIへ接続できない。
+- Tailnet memberはWorkerの署名付きレビューURLだけを利用でき、Bearer tokenなしではAPI操作できない。
+- Worker tag以外のTailnet nodeからGateway callback APIへ接続できない。
 - 正しいTailnet tagを持っていてもAPI TokenがなければWorker APIを利用できない。
 - Worker から Proxmox、PBS、Router、NAS 管理面へ接続できない。
 - Job payload に Shell command を入れても Schema Validation で拒否する。
@@ -948,7 +947,7 @@ Event envelope は Adapter に依存しない形式とする。
 
 ### 23.4 可用性 / 復旧
 
-- Mac Studio停止中も Gateway、Job、Audit が保持される。
+- Kubernetes Worker停止中も Gateway、Job、Audit が保持される。
 - Proxmox 1ノード停止時に、HA 設定済みなら Gateway VM が別ノードで起動する。
 - PBS から別 VM ID へ復元し、DBとAuditを検証できる。
 - Gateway停止中も外部に配置した Micro SaaS が継続稼働する。
@@ -964,8 +963,8 @@ Event envelope は Adapter に依存しない形式とする。
 | Event連携とFallback | 8.4、17章 |
 | Budget Control | 14章 |
 | Audit Log | 8.5、13、19章 |
-| Mac Studio Worker | 15章 |
-| Proxmox Gateway / 将来Sandbox | 6章。SandboxはPhase 2 |
+| Talos Kubernetes Worker | 15章 |
+| Proxmox Gateway / Worker sandbox | 6、15章 |
 | PBSの役割維持 | 7、20章 |
 | Tailscale / Cloudflare | 7章 |
 | GitHub Source of Truth | 16.1章 |
@@ -989,7 +988,7 @@ Event envelope は Adapter に依存しない形式とする。
 
 ## 26. 実装前に確定する項目
 
-1. Mac Studioの同時実行上限と専用ユーザーへの分離時期
+1. Worker Deploymentの同時実行上限と水平分割条件
 2. Cloudflare Access Service Token運用者、Audience、Gateway側JWT検証値
 3. Grok Bot が利用できる outbound HTTP、Webhook、polling の仕様
 4. GitHub organization、対象 repository、GitHub App 権限

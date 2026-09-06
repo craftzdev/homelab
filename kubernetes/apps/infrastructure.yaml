@@ -199,6 +199,39 @@ spec:
 
 ---
 # ---------------------------------------------------------------------------
+# Internal image registry
+#
+# Worker images are retained on a Longhorn-backed private registry. The TLS
+# Secret is provisioned out-of-band and is intentionally absent from Git.
+# ---------------------------------------------------------------------------
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: image-registry
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: infrastructure
+  source:
+    repoURL: https://github.com/craftzdev/homelab.git
+    targetRevision: main
+    path: kubernetes/infra/image-registry
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: image-registry
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+
+---
+# ---------------------------------------------------------------------------
 # Tailscale Kubernetes Operator
 #
 # OAuth Secret `operator-oauth` は事前に tailscale namespace へ作成する。
@@ -228,7 +261,7 @@ spec:
       targetRevision: main
       path: kubernetes/infra/tailscale-operator
       directory:
-        include: dnsconfig.yaml
+        include: '{dnsconfig.yaml,proxyclass.yaml}'
     - repoURL: https://github.com/craftzdev/homelab.git
       targetRevision: main
       ref: values
@@ -240,6 +273,13 @@ spec:
       # OAuth を失った状態で proxy CRD を誤って削除しない。
       prune: false
       selfHeal: true
+    # Egress proxy の sysctler init container は Tailscale が要求する
+    # namespaced system component。Worker namespace 自体は restricted のまま保つ。
+    managedNamespaceMetadata:
+      labels:
+        pod-security.kubernetes.io/enforce: privileged
+        pod-security.kubernetes.io/audit: restricted
+        pod-security.kubernetes.io/warn: restricted
     syncOptions:
       - CreateNamespace=true
       - ServerSideApply=true

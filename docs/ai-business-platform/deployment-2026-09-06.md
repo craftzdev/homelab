@@ -20,8 +20,10 @@ rebuild performed on the same day.
 | Storage | Longhorn `1.12.1`; Worker volume has three healthy replicas across all nodes |
 | K8s Worker | Running in namespace `ai-worker`; restricted non-root Pod, Codex CLI and API health verified |
 | Gateway dispatcher | Deployed; typed Worker endpoint mapping and Bearer authentication verified against an isolated Worker |
-| Tailnet cutover | Tailscale Operator credentials and final bidirectional end-to-end test pending |
-| Mac Studio Worker | Retained until the Tailnet end-to-end test succeeds; then removed |
+| Tailnet cutover | Tailscale Operator ingress/egress and bidirectional HTTPS verified |
+| Mac Studio Worker | Removed after Kubernetes cutover; launchd, account/group, home, plist, Serve, and Worker Grants absent |
+| Internal registry | TLS registry at `172.16.40.200:5000`, 20 GiB Longhorn 3-replica PVC |
+| Codex end-to-end | Gateway job `9b828a64-1f96-4261-af02-10f3c29c7160` succeeded with tests and signed review artifacts |
 
 The additional PBS snapshot containing the rebuilt Gateway and dispatcher is
 `pbs-gateway:backup/vm/1200/2026-09-05T19:33:25Z`.
@@ -105,16 +107,13 @@ The HA node preference is `sv-proxmox-01:3`, `sv-proxmox-02:2`, and
   PostgreSQL rows were checked. The temporary restore VM and its disks were
   then removed.
 
-## Open production gates
+## Historical open production gates (resolved or superseded)
 
-1. Proxmox Backup Server is reachable through the existing Tailscale node, but
-   no PBS storage or scheduled backup is registered in Proxmox. The temporary
-   local backup is not a replacement for PBS.
-2. Ceph remains `HEALTH_WARN`: BlueStore slow-operation indications are now
-   reported for `osd.0` and `osd.2`. Data placement is clean, but the device and
-   I/O path warning must be investigated before production load is increased.
-3. Codex Builder is active for registered projects with a dedicated account,
-   per-job clone, workspace-write sandbox, fixed test commands, time/output
-   limits, and review artifacts. Playwright and Data executors, durable callback
-   outbox/retry, automatic log secret redaction, and the Gateway scheduler remain
-   implementation work.
+1. PBS backup for VM 1200 was completed before Ceph decommissioning; recurring
+   ZFS replication now targets both remaining Proxmox nodes.
+2. Ceph was decommissioned and replaced by per-node `local-zfs`; Kubernetes PVs
+   use Longhorn three-replica storage.
+3. Codex Builder is active in the restricted Kubernetes Worker boundary with
+   fixed test commands, time/output limits, and review artifacts. Playwright and
+   Data executors, durable callback outbox/retry, and automatic log secret
+   redaction remain implementation work.

@@ -3,12 +3,6 @@
     "group:funnel": ["craftzdev@github"],
   },
 
-  "hosts": {
-    // Mac Studio remains a user-owned admin workstation. Use a host alias rather
-    // than a device tag so applying this policy does not remove its user identity.
-    "ai-worker-mac-01": "100.105.200.6",
-  },
-
   "tagOwners": {
     "tag:ai-gateway": ["autogroup:admin"],
     "tag:k8s-operator": ["autogroup:admin"],
@@ -28,12 +22,18 @@
       "dst": ["172.16.10.0/24", "172.16.40.0/24"],
       "ip": ["*"],
     },
+    // Tailnet users may open signed Worker review URLs over HTTPS. API routes
+    // still require the separate Worker bearer token.
+    {
+      "src": ["autogroup:member"],
+      "dst": ["tag:ai-worker-trusted"],
+      "ip": ["tcp:443"],
+    },
 
     // The tagged Gateway can only use HTTPS when talking to AI workers.
     {
       "src": ["tag:ai-gateway"],
       "dst": [
-        "ai-worker-mac-01",
         "tag:ai-worker-trusted",
         "tag:ai-worker-sandbox",
       ],
@@ -41,7 +41,6 @@
     },
     {
       "src": [
-        "ai-worker-mac-01",
         "tag:ai-worker-trusted",
         "tag:ai-worker-sandbox",
       ],
