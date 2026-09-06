@@ -37,7 +37,7 @@ export KUBECONFIG="${KUBECONFIG_PATH}"
 
 application_diagnostics() {
   local name=$1
-  kubectl -n argocd get application "${name}" -o json 2>/dev/null \
+  kubectl --request-timeout=15s -n argocd get application "${name}" -o json 2>/dev/null \
     | jq '{sync:.status.sync.status,health:.status.health.status,
       conditions:(.status.conditions // []),operation:.status.operationState.phase}' >&2 \
     || true
@@ -48,7 +48,8 @@ wait_for_application() {
   deadline=$((SECONDS + APPLICATION_TIMEOUT_SECONDS))
   info "Waiting for Argo CD Application ${name}"
   while (( SECONDS < deadline )); do
-    if status_json="$(kubectl -n argocd get application "${name}" -o json 2>/dev/null)"; then
+    if status_json="$(kubectl --request-timeout=15s -n argocd \
+        get application "${name}" -o json 2>/dev/null)"; then
       sync="$(jq -r '.status.sync.status // ""' <<<"${status_json}")"
       health="$(jq -r '.status.health.status // ""' <<<"${status_json}")"
       if [[ "${sync}" == Synced && "${health}" == Healthy ]]; then
@@ -63,13 +64,20 @@ wait_for_application() {
 }
 
 refresh_application() {
-  kubectl -n argocd annotate application "$1" \
-    argocd.argoproj.io/refresh=hard --overwrite >/dev/null
+  local name=$1
+  for _ in $(seq 1 12); do
+    if kubectl --request-timeout=15s -n argocd annotate application "${name}" \
+        argocd.argoproj.io/refresh=hard --overwrite >/dev/null 2>&1; then
+      return
+    fi
+    sleep 5
+  done
+  die "could not request an Argo CD refresh for ${name}"
 }
 
 # This CiliumNetworkPolicy belonged to the pre-Longhorn policy model. Argo CD
 # cannot prune it because it is no longer in the desired manifest set.
-kubectl -n longhorn-system delete ciliumnetworkpolicy default-deny \
+kubectl --request-timeout=15s -n longhorn-system delete ciliumnetworkpolicy default-deny \
   --ignore-not-found --wait=true >/dev/null 2>&1 || true
 
 for app in "${EXPECTED_APPLICATIONS[@]}"; do
@@ -90,7 +98,8 @@ for app in cert-manager trivy-operator network-policies; do
 done
 
 for retired_app in gateway cloudflared velero; do
-  if kubectl -n argocd get application "${retired_app}" >/dev/null 2>&1; then
+  if kubectl --request-timeout=15s -n argocd \
+      get application "${retired_app}" >/dev/null 2>&1; then
     die "retired Application still exists: ${retired_app}"
   fi
 done

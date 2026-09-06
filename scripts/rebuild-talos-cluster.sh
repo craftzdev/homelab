@@ -308,6 +308,62 @@ restore_secret() {
     | kubectl --kubeconfig "${KUBECONFIG_PATH}" apply -f - >/dev/null
 }
 
+wait_for_control_plane_stability() {
+  local deadline stable_checks=0 members
+  deadline=$((SECONDS + 600))
+  export TALOSCONFIG="${REPO_ROOT}/_out/talosconfig"
+  info "Waiting for a stable three-voter etcd control plane"
+
+  while (( SECONDS < deadline )); do
+    members="$(talosctl --nodes 172.16.40.11 etcd members 2>/dev/null || true)"
+    if awk 'NR > 1 && $NF == "false" { voters++ } END { exit !(voters == 3) }' \
+        <<<"${members}" \
+      && [[ "$(kubectl --request-timeout=10s get --raw=/readyz 2>/dev/null || true)" == ok ]]; then
+      stable_checks=$((stable_checks + 1))
+      if (( stable_checks >= 6 )); then
+        ok "etcd has three voters and the API remained ready for 30 seconds"
+        return
+      fi
+    else
+      stable_checks=0
+    fi
+    sleep 5
+  done
+
+  printf '%s\n' "${members}" >&2
+  die "the three-voter control plane did not stabilize within ten minutes"
+}
+
+wait_for_all_pods() {
+  local deadline stable_checks=0 pods_json
+  deadline=$((SECONDS + 1200))
+  info "Waiting for every cluster Pod container to become ready"
+
+  while (( SECONDS < deadline )); do
+    if pods_json="$(kubectl --request-timeout=15s get pods -A -o json 2>/dev/null)" \
+      && jq -e '
+        all(.items[];
+          .metadata.deletionTimestamp != null or
+          .status.phase == "Succeeded" or
+          (.status.phase == "Running" and
+            (.status.containerStatuses // [] | length) > 0 and
+            all((.status.containerStatuses // [])[]; .ready == true)))
+      ' <<<"${pods_json}" >/dev/null; then
+      stable_checks=$((stable_checks + 1))
+      if (( stable_checks >= 3 )); then
+        ok "Every Pod container remained ready for 15 seconds"
+        return
+      fi
+    else
+      stable_checks=0
+    fi
+    sleep 5
+  done
+
+  kubectl --request-timeout=15s get pods -A >&2 || true
+  die "cluster Pods did not converge within twenty minutes"
+}
+
 restore_platform() {
   export KUBECONFIG="${KUBECONFIG_PATH}"
   info "Waiting for the new kube-apiserver VIP"
@@ -319,6 +375,7 @@ restore_platform() {
   done
   kubectl version -o json >/dev/null 2>&1 \
     || die "kube-apiserver did not become ready within five minutes"
+  wait_for_control_plane_stability
   info "Bootstrapping Cilium and the dedicated worker plane"
   "${SCRIPT_DIR}/bootstrap-cluster.sh"
 
@@ -463,22 +520,17 @@ verify_rebuild() {
       '.items[] | select(.spec.nodeID | test("^k8s-[123]$"))' >/dev/null; then
     die "a Longhorn replica is scheduled on the control plane"
   fi
+  wait_for_all_pods
+  # An early API interruption can leave a stale Progressing health value even
+  # after all workloads recover. Force one final dependency-aware comparison
+  # only after every Pod is ready, then enforce the fail-closed invariant.
+  "${SCRIPT_DIR}/reconcile-cluster-platform.sh"
   kubectl -n argocd get applications -o json | jq -e '
     all(.items[];
       .status.sync.status == "Synced" and .status.health.status == "Healthy")
   ' >/dev/null || {
     kubectl -n argocd get applications >&2
     die "an Argo CD Application is not Synced/Healthy"
-  }
-  kubectl get pods -A -o json | jq -e '
-    all(.items[];
-      .metadata.deletionTimestamp != null or
-      .status.phase == "Succeeded" or
-      (.status.phase == "Running" and
-        all((.status.containerStatuses // [])[]; .ready == true)))
-  ' >/dev/null || {
-    kubectl get pods -A >&2
-    die "a cluster Pod is not healthy"
   }
   curl -fsS --retry 12 --retry-all-errors --retry-delay 5 \
     "https://${TAILSCALE_WORKER_FQDN}/health" >/dev/null

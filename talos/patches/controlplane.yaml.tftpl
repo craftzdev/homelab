@@ -198,6 +198,14 @@ cluster:
     listenSubnets:
       - ${k8s_subnet}
 
+    # local-zfs 上の VM ディスクは、クラスタ全体を初期同期するときに
+    # 数秒の write latency が発生し得る。etcd の既定値（100ms / 1s）では
+    # 正常な leader を故障と誤認して再選挙が連鎖するため、全 member で
+    # 同一の余裕ある値を使う。election-timeout は heartbeat の 20 倍。
+    extraArgs:
+      heartbeat-interval: "500"
+      election-timeout: "10000"
+
   # -------------------------------------------------------------------------
   # ノード探索
   #
