@@ -14,6 +14,8 @@
 #   GITOPS_REVISION=...   Git revision used by Argo CD (default: current branch)
 #   AI_WORKER_REPO=...    ai-business-worker checkout
 #   BACKUP_DIR=...        existing recovery set when using --resume-after-backup
+#   REGISTRY_DATA_BACKUP=... override registry archive for recovery
+#   WORKER_DATA_BACKUP=...   override Worker archive for recovery
 #   TAILSCALE_WORKER_FQDN=... canonical Worker MagicDNS name
 #   GATEWAY_SMOKE=0      skip the external Gateway-to-Worker test (default: 1)
 #   CF_ACCESS_*_SERVICE  macOS Keychain service names for the smoke test
@@ -84,6 +86,8 @@ AGE_RECIPIENT="$(age-keygen -y "${AGE_KEY_FILE}")"
 
 timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
 BACKUP_DIR="${BACKUP_DIR:-${REPO_ROOT}/_out/rebuild-backups/${timestamp}}"
+REGISTRY_DATA_BACKUP="${REGISTRY_DATA_BACKUP:-${BACKUP_DIR}/registry-data.tar.age}"
+WORKER_DATA_BACKUP="${WORKER_DATA_BACKUP:-${BACKUP_DIR}/ai-worker-data.tar.age}"
 mkdir -p "${BACKUP_DIR}"
 chmod 700 "${BACKUP_DIR}"
 DESTROY_PLAN="${BACKUP_DIR}/destroy.tfplan"
@@ -158,19 +162,41 @@ encrypt_secret() {
   chmod 600 "${output}"
 }
 
+verify_encrypted_tar() {
+  local archive=$1
+  age -d -i "${AGE_KEY_FILE}" "${archive}" | tar -tf - >/dev/null
+}
+
+backup_directory() {
+  local namespace=$1 workload=$2 container=$3 source_dir=$4 output=$5
+  local attempt temporary
+  temporary="${output}.tmp"
+  for attempt in 1 2 3; do
+    rm -f "${temporary}"
+    if kubectl --kubeconfig "${KUBECONFIG_PATH}" -n "${namespace}" \
+        exec "${workload}" -c "${container}" -- \
+        tar -C "${source_dir}" --exclude=./lost+found -cf - . \
+        | age -r "${AGE_RECIPIENT}" -o "${temporary}" \
+      && verify_encrypted_tar "${temporary}"; then
+      mv "${temporary}" "${output}"
+      chmod 600 "${output}"
+      return
+    fi
+    info "Archive validation failed for ${namespace}/${workload}; retry ${attempt}/3"
+  done
+  rm -f "${temporary}"
+  die "could not create a valid archive for ${namespace}/${workload}"
+}
+
 backup_cluster_data() {
   [[ -s "${KUBECONFIG_PATH}" ]] || die "current kubeconfig not found"
   kubectl --kubeconfig "${KUBECONFIG_PATH}" get nodes >/dev/null
   info "Creating encrypted application-level backups"
 
-  kubectl --kubeconfig "${KUBECONFIG_PATH}" -n ai-worker \
-    exec deploy/ai-business-worker -c worker -- \
-      tar -C /data --exclude=./lost+found -cf - . \
-    | age -r "${AGE_RECIPIENT}" -o "${BACKUP_DIR}/ai-worker-data.tar.age"
-  kubectl --kubeconfig "${KUBECONFIG_PATH}" -n image-registry \
-    exec deploy/registry -- tar -C /var/lib/registry -cf - . \
-    | age -r "${AGE_RECIPIENT}" -o "${BACKUP_DIR}/registry-data.tar.age"
-  chmod 600 "${BACKUP_DIR}"/*.age
+  backup_directory ai-worker deploy/ai-business-worker worker /data \
+    "${BACKUP_DIR}/ai-worker-data.tar.age"
+  backup_directory image-registry deploy/registry registry /var/lib/registry \
+    "${BACKUP_DIR}/registry-data.tar.age"
 
   encrypt_secret ai-worker ai-business-worker-runtime \
     "${BACKUP_DIR}/ai-worker-runtime.secret.json.age"
@@ -217,6 +243,14 @@ verify_recovery_set() {
       || die "recovery set is incomplete: ${recovery_file}"
   done
   (cd "${BACKUP_DIR}" && shasum -a 256 -c SHA256SUMS)
+  [[ -s "${WORKER_DATA_BACKUP}" ]] \
+    || die "Worker data archive not found: ${WORKER_DATA_BACKUP}"
+  [[ -s "${REGISTRY_DATA_BACKUP}" ]] \
+    || die "registry data archive not found: ${REGISTRY_DATA_BACKUP}"
+  verify_encrypted_tar "${WORKER_DATA_BACKUP}" \
+    || die "Worker data archive is not a complete tar stream"
+  verify_encrypted_tar "${REGISTRY_DATA_BACKUP}" \
+    || die "registry data archive is not a complete tar stream"
   ok "Existing encrypted recovery set verified"
 }
 
@@ -313,7 +347,7 @@ restore_platform() {
 
   info "Restoring the internal registry"
   kubectl -n image-registry rollout status deployment/registry --timeout=15m
-  age -d -i "${AGE_KEY_FILE}" "${BACKUP_DIR}/registry-data.tar.age" \
+  age -d -i "${AGE_KEY_FILE}" "${REGISTRY_DATA_BACKUP}" \
     | kubectl -n image-registry exec -i deploy/registry -- tar -C /var/lib/registry -xf -
   kubectl -n image-registry rollout restart deployment/registry
   kubectl -n image-registry rollout status deployment/registry --timeout=10m
@@ -368,7 +402,7 @@ spec:
       emptyDir: {}
 EOF
   kubectl wait -n ai-worker --for=condition=Ready pod/rebuild-data-restore --timeout=10m
-  age -d -i "${AGE_KEY_FILE}" "${BACKUP_DIR}/ai-worker-data.tar.age" \
+  age -d -i "${AGE_KEY_FILE}" "${WORKER_DATA_BACKUP}" \
     | kubectl -n ai-worker exec -i rebuild-data-restore -- \
       sh -c 'mkdir -p /tmp/restore && tar -C /tmp/restore --exclude=./lost+found -xf - && cp -R /tmp/restore/. /data/'
   kubectl -n ai-worker exec rebuild-data-restore -- \
