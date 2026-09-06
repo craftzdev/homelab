@@ -141,6 +141,20 @@ controller:
 server:
   replicas: 2
 
+  # 初回GitOps収束時の大量API問い合わせを、full health liveness が
+  # プロセス障害と誤認しないよう repo-server と同じ方針にする。
+  readinessProbe:
+    timeoutSeconds: 5
+    failureThreshold: 6
+  livenessProbe:
+    httpPath: /healthz
+    timeoutSeconds: 5
+    failureThreshold: 6
+  startupProbe:
+    enabled: true
+    timeoutSeconds: 5
+    failureThreshold: 30
+
   # -------------------------------------------------------------------------
   # Ingress を作らない
   #

@@ -77,6 +77,8 @@ helm upgrade --install argocd argo/argo-cd \
   --values "${VALUES_FILE}" \
   --wait --timeout 10m
 
+info "repo-server の全レプリカが利用可能になるまで待機しています..."
+kubectl -n argocd rollout status deployment/argocd-repo-server --timeout=10m
 ok "ArgoCD を導入しました"
 
 # ---------------------------------------------------------------------------
@@ -90,9 +92,8 @@ if kubectl -n argocd exec deploy/argocd-repo-server -c repo-server -- \
      sh -c 'command -v ksops >/dev/null && test -f "$SOPS_AGE_KEY_FILE"' 2>/dev/null; then
   ok "ksops と age 秘密鍵を確認しました"
 else
-  warn "repo-server で ksops または age 秘密鍵を確認できませんでした"
-  warn "暗号化された Secret を含む Application が同期に失敗する可能性があります。"
-  warn "確認: kubectl -n argocd logs deploy/argocd-repo-server -c repo-server"
+  die "repo-server で ksops または age 秘密鍵を確認できませんでした。
+     確認: kubectl -n argocd logs deploy/argocd-repo-server -c repo-server"
 fi
 
 # ---------------------------------------------------------------------------

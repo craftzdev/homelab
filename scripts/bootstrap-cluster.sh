@@ -19,6 +19,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 KUBECONFIG_PATH="${KUBECONFIG:-${REPO_ROOT}/_out/kubeconfig}"
 CILIUM_VERSION="${CILIUM_VERSION:-1.20.1}"
 VALUES_FILE="${REPO_ROOT}/kubernetes/infra/cilium/values.yaml"
+GATEWAY_API_DIR="${REPO_ROOT}/kubernetes/infra/gateway-api"
 
 readonly C_RED=$'\033[0;31m' C_GREEN=$'\033[0;32m' C_BLUE=$'\033[0;34m' C_RESET=$'\033[0m'
 info() { printf '%s[INFO]%s  %s\n' "${C_BLUE}"  "${C_RESET}" "$*"; }
@@ -31,6 +32,8 @@ command -v kubectl >/dev/null || die "kubectl が見つかりません"
 [[ -f "${KUBECONFIG_PATH}" ]] || die "kubeconfig が見つかりません: ${KUBECONFIG_PATH}
      先に tofu/10-proxmox-talos で apply を実行してください。"
 [[ -f "${VALUES_FILE}" ]] || die "values ファイルが見つかりません: ${VALUES_FILE}"
+[[ -f "${GATEWAY_API_DIR}/kustomization.yaml" ]] \
+  || die "Gateway API kustomization が見つかりません: ${GATEWAY_API_DIR}"
 
 export KUBECONFIG="${KUBECONFIG_PATH}"
 
@@ -38,6 +41,25 @@ info "クラスタへの接続を確認しています..."
 kubectl version -o json >/dev/null 2>&1 \
   || die "kube-apiserver へ接続できません。VIP (172.16.40.10) への到達性を確認してください。"
 ok "接続を確認しました"
+
+# ---------------------------------------------------------------------------
+# Gateway API CRD
+#
+# Cilium operator は起動時に利用可能な API を検出する。Gateway API の CRD が
+# 無い状態で gatewayAPI.enabled=true の Cilium を起動すると、GatewayClass が
+# Pending のままになるため、CRD の登録完了を Cilium より先に保証する。
+# ---------------------------------------------------------------------------
+info "Gateway API CRD を導入しています..."
+kubectl apply -k "${GATEWAY_API_DIR}"
+
+mapfile -t gateway_api_crds < <(
+  kubectl get customresourcedefinitions -o name \
+    | grep '\.gateway\.networking\.k8s\.io$'
+)
+(( ${#gateway_api_crds[@]} > 0 )) \
+  || die "Gateway API CRD を検出できませんでした"
+kubectl wait --for=condition=Established --timeout=5m "${gateway_api_crds[@]}"
+ok "Gateway API CRD が利用可能です"
 
 # ---------------------------------------------------------------------------
 # Cilium の導入
@@ -54,6 +76,16 @@ if kubectl -n kube-system get daemonset cilium >/dev/null 2>&1; then
   info "既存のCiliumを検出しました。Helm bootstrapをスキップします..."
   kubectl -n kube-system rollout status daemonset/cilium --timeout=10m
   kubectl -n kube-system rollout status deployment/cilium-operator --timeout=10m
+
+  # 旧順序で構築されたクラスタは、CRD が後から追加されても operator が
+  # Gateway API discovery を再実行しない。未受理の場合だけ安全に再起動する。
+  if [[ "$(kubectl get gatewayclass cilium \
+      -o jsonpath='{.status.conditions[?(@.type=="Accepted")].status}' \
+      2>/dev/null || true)" != "True" ]]; then
+    info "GatewayClass が未受理のため Cilium operator を再起動しています..."
+    kubectl -n kube-system rollout restart deployment/cilium-operator
+    kubectl -n kube-system rollout status deployment/cilium-operator --timeout=10m
+  fi
   ok "既存のCiliumが利用可能です"
 else
   info "Cilium ${CILIUM_VERSION} を導入しています..."
@@ -68,6 +100,21 @@ else
 
   ok "Cilium を導入しました"
 fi
+
+info "Cilium GatewayClass の受理を待機しています..."
+gateway_class_accepted=false
+for _ in $(seq 1 60); do
+  if [[ "$(kubectl get gatewayclass cilium \
+      -o jsonpath='{.status.conditions[?(@.type=="Accepted")].status}' \
+      2>/dev/null || true)" == "True" ]]; then
+    gateway_class_accepted=true
+    break
+  fi
+  sleep 5
+done
+[[ "${gateway_class_accepted}" == true ]] \
+  || die "GatewayClass cilium が5分以内に Accepted=True になりませんでした"
+ok "Cilium GatewayClass が受理されました"
 
 # ---------------------------------------------------------------------------
 # LoadBalancer IP プールと L2 広告ポリシー

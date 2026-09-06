@@ -71,6 +71,25 @@ metadata:
     - resources-finalizer.argocd.argoproj.io
 spec:
   project: infrastructure
+  # Cilium chart が初回起動時に生成する CA/クライアント/サーバー証明書は
+  # 実行時データであり、Git の desired state ではない。data を比較・適用すると
+  # Argo CD の hard refresh ごとに証明書が再生成され、部分syncが永久に続く。
+  ignoreDifferences:
+    - group: ""
+      kind: Secret
+      name: cilium-ca
+      jsonPointers:
+        - /data
+    - group: ""
+      kind: Secret
+      name: hubble-relay-client-certs
+      jsonPointers:
+        - /data
+    - group: ""
+      kind: Secret
+      name: hubble-server-certs
+      jsonPointers:
+        - /data
   sources:
     - repoURL: https://helm.cilium.io/
       chart: cilium
@@ -97,6 +116,7 @@ spec:
       selfHeal: true
     syncOptions:
       - ServerSideApply=true
+      - RespectIgnoreDifferences=true
 
 ---
 # ---------------------------------------------------------------------------
