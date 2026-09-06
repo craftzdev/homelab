@@ -773,7 +773,7 @@ verify_gateway_worker_path() {
     return
   }
 
-  local client_id client_secret
+  local client_id client_secret attempt
   info "Running the authenticated Cloudflare/Gateway/Worker smoke test"
 
   client_id="$(security find-generic-password \
@@ -786,16 +786,24 @@ verify_gateway_worker_path() {
   # Pass the short-lived in-memory values over SSH stdin, not command-line
   # arguments or files. The Gateway smoke script loads its application tokens
   # locally and verifies the complete callback lifecycle.
-  printf '%s\n%s\n' "${client_id}" "${client_secret}" \
-    | ssh -o BatchMode=yes -o ConnectTimeout=10 craftz@172.16.40.30 '
-        IFS= read -r CF_ACCESS_CLIENT_ID
-        IFS= read -r CF_ACCESS_CLIENT_SECRET
-        export CF_ACCESS_CLIENT_ID CF_ACCESS_CLIENT_SECRET
-        sudo -n --preserve-env=CF_ACCESS_CLIENT_ID,CF_ACCESS_CLIENT_SECRET \
-          /opt/ai-business-gateway/scripts/smoke-test.sh
-      '
+  for attempt in $(seq 1 6); do
+    if printf '%s\n%s\n' "${client_id}" "${client_secret}" \
+        | ssh -o BatchMode=yes -o ConnectTimeout=10 craftz@172.16.40.30 '
+            IFS= read -r CF_ACCESS_CLIENT_ID
+            IFS= read -r CF_ACCESS_CLIENT_SECRET
+            export CF_ACCESS_CLIENT_ID CF_ACCESS_CLIENT_SECRET
+            sudo -n --preserve-env=CF_ACCESS_CLIENT_ID,CF_ACCESS_CLIENT_SECRET \
+              /opt/ai-business-gateway/scripts/smoke-test.sh
+          '; then
+      unset client_id client_secret
+      ok "Cloudflare Access, Gateway dispatch, Worker execution, and callback verified"
+      return
+    fi
+    info "Gateway smoke attempt ${attempt}/6 failed; retrying in 10 seconds"
+    sleep 10
+  done
   unset client_id client_secret
-  ok "Cloudflare Access, Gateway dispatch, Worker execution, and callback verified"
+  die "authenticated Cloudflare/Gateway/Worker smoke test failed after six attempts"
 }
 
 if [[ "${RESTORE_ONLY}" == 1 ]]; then
