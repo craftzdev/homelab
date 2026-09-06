@@ -382,7 +382,7 @@ delete_tailnet_device_id() {
 
 restore_tailnet_proxy_state() {
   local input=$1 parent_type=$2 parent_namespace=$3 parent_name=$4
-  local selector secrets_json count secret_name
+  local selector secrets_json count secret_name attempt
   local old_json old_device_id new_device_id identity_patch
   [[ -s "${input}" ]] || {
     info "Tailnet state backup is absent; a new identity and certificate will be issued"
@@ -390,10 +390,18 @@ restore_tailnet_proxy_state() {
   }
 
   selector="tailscale.com/managed=true,tailscale.com/parent-resource-type=${parent_type},tailscale.com/parent-resource-ns=${parent_namespace},tailscale.com/parent-resource=${parent_name}"
-  for _ in $(seq 1 120); do
-    secrets_json="$(kubectl -n tailscale get secrets -l "${selector}" -o json 2>/dev/null || true)"
-    count="$(jq '.items | length' <<<"${secrets_json:-{\"items\":[]}}" 2>/dev/null || echo 0)"
+  for attempt in $(seq 1 120); do
+    secrets_json="$(kubectl --kubeconfig "${KUBECONFIG_PATH}" --request-timeout=15s \
+      -n tailscale get secrets -l "${selector}" -o json 2>/dev/null || true)"
+    if [[ -n "${secrets_json}" ]]; then
+      count="$(jq -er '.items | length' <<<"${secrets_json}" 2>/dev/null || echo 0)"
+    else
+      count=0
+    fi
     [[ "${count}" == 1 ]] && break
+    if (( attempt % 12 == 0 )); then
+      info "Still waiting for the generated Tailnet state Secret for ${parent_type}/${parent_namespace}/${parent_name} (found ${count})"
+    fi
     sleep 5
   done
   [[ "${count:-0}" == 1 ]] \
