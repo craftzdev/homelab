@@ -96,7 +96,7 @@ else
     --version "${CILIUM_VERSION}" \
     --namespace kube-system \
     --values "${VALUES_FILE}" \
-    --wait --timeout 10m
+    --wait --timeout 20m
 
   ok "Cilium を導入しました"
 fi
