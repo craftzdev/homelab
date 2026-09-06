@@ -16,6 +16,7 @@
 #   BACKUP_DIR=...        existing recovery set when using --resume-after-backup
 #   TAILSCALE_WORKER_FQDN=... canonical Worker MagicDNS name
 #   GATEWAY_SMOKE=0      skip the external Gateway-to-Worker test (default: 1)
+#   CF_ACCESS_*_SERVICE  macOS Keychain service names for the smoke test
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -27,6 +28,8 @@ GITOPS_REVISION="${GITOPS_REVISION:-$(git -C "${REPO_ROOT}" branch --show-curren
 PBS_BACKUP="${PBS_BACKUP:-1}"
 GATEWAY_SMOKE="${GATEWAY_SMOKE:-1}"
 TAILSCALE_WORKER_FQDN="${TAILSCALE_WORKER_FQDN:-ai-worker-k8s.tailb6c7d.ts.net}"
+CF_ACCESS_CLIENT_ID_SERVICE="${CF_ACCESS_CLIENT_ID_SERVICE:-dev.craftz.ai-business-gateway.cloudflare-access-client-id}"
+CF_ACCESS_CLIENT_SECRET_SERVICE="${CF_ACCESS_CLIENT_SECRET_SERVICE:-dev.craftz.ai-business-gateway.cloudflare-access-client-secret}"
 EXPECTED_VMIDS=(1001 1002 1003 1101 1102 1103)
 EXPECTED_NAMES=(k8s-1 k8s-2 k8s-3 k8s-worker-1 k8s-worker-2 k8s-worker-3)
 PVE_HOSTS=(172.16.10.11 172.16.10.12 172.16.10.13)
@@ -433,18 +436,13 @@ verify_gateway_worker_path() {
     return
   }
 
-  local cloudflare_dir client_id client_secret
-  cloudflare_dir="${REPO_ROOT}/tofu/20-cloudflare"
+  local client_id client_secret
   info "Running the authenticated Cloudflare/Gateway/Worker smoke test"
 
-  # `tofu output` still needs provider schemas. The API token is not used to
-  # read local encrypted state, but the required input variable must be set.
-  TF_VAR_cloudflare_api_token=not-used-for-local-output \
-    tofu -chdir="${cloudflare_dir}" init -input=false >/dev/null
-  client_id="$(TF_VAR_cloudflare_api_token=not-used-for-local-output \
-    tofu -chdir="${cloudflare_dir}" output -raw service_token_client_id)"
-  client_secret="$(TF_VAR_cloudflare_api_token=not-used-for-local-output \
-    tofu -chdir="${cloudflare_dir}" output -raw service_token_client_secret)"
+  client_id="$(security find-generic-password \
+    -s "${CF_ACCESS_CLIENT_ID_SERVICE}" -a craftz -w)"
+  client_secret="$(security find-generic-password \
+    -s "${CF_ACCESS_CLIENT_SECRET_SERVICE}" -a craftz -w)"
   [[ -n "${client_id}" && -n "${client_secret}" ]] \
     || die "Cloudflare Access service token is empty"
 

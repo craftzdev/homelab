@@ -381,6 +381,9 @@ talosctl -n 172.16.40.11 etcd remove-member <member-id>
 
 Grafana管理者パスワードはmacOS Keychain service
 `dev.craftz.homelab.grafana-admin`に保存され、初回だけ自動生成されます。
+外部スモークテスト用Cloudflare Access Service TokenもKeychainの
+`dev.craftz.ai-business-gateway.cloudflare-access-client-id`と
+`dev.craftz.ai-business-gateway.cloudflare-access-client-secret`から読みます。
 外部バックアップ先が未設定のVeleroはベースラインに含めません。現在の復旧点は
 PBSスナップショットと、再構築時に作るage暗号化済みApplicationバックアップです。
 
