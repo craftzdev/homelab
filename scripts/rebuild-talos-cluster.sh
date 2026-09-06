@@ -345,6 +345,9 @@ wait_for_all_pods() {
         all(.items[];
           .metadata.deletionTimestamp != null or
           .status.phase == "Succeeded" or
+          (.status.phase == "Failed" and
+            .status.reason == "Terminated" and
+            (.status.message // "" | contains("imminent node shutdown"))) or
           (.status.phase == "Running" and
             (.status.containerStatuses // [] | length) > 0 and
             all((.status.containerStatuses // [])[]; .ready == true)))
@@ -406,8 +409,10 @@ restore_platform() {
   kubectl -n image-registry rollout status deployment/registry --timeout=15m
   age -d -i "${AGE_KEY_FILE}" "${REGISTRY_DATA_BACKUP}" \
     | kubectl -n image-registry exec -i deploy/registry -- tar -C /var/lib/registry -xf -
-  kubectl -n image-registry rollout restart deployment/registry
-  kubectl -n image-registry rollout status deployment/registry --timeout=10m
+  # Distribution reads repository metadata from the filesystem for each API
+  # request, so a restart is unnecessary. Restarting a one-replica RWO
+  # deployment can move the Pod to another worker and needlessly wait for a
+  # Longhorn detach/attach cycle during an otherwise idempotent restore.
 
   info "Restoring AI Worker secrets and persistent data"
   kubectl apply -f "${AI_WORKER_REPO}/deploy/kubernetes/namespace.yaml" >/dev/null
