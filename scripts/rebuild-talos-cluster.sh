@@ -410,14 +410,25 @@ EOF
   kubectl -n ai-worker delete pod rebuild-data-restore --wait=true >/dev/null
   kubectl apply -k "${AI_WORKER_REPO}/deploy/kubernetes"
   kubectl -n ai-worker rollout status deployment/ai-business-worker --timeout=15m
-  kubectl -n ai-worker exec deployment/ai-business-worker -c worker -- \
-    python -c "import socket; socket.getaddrinfo('ai-gateway-01.${TAILSCALE_WORKER_FQDN#*.}', 443)" \
-    >/dev/null
   kubectl -n tailscale wait --for=condition=Ready pod \
     -l tailscale.com/parent-resource=ai-business-worker --timeout=10m
   kubectl -n ai-worker wait \
     --for=jsonpath='{.status.loadBalancer.ingress[0].hostname}'="${TAILSCALE_WORKER_FQDN}" \
     ingress/ai-business-worker --timeout=10m
+
+  # DNSConfig records are populated asynchronously after both proxy Pods are
+  # ready. Avoid caching a transient NXDOMAIN as a restore failure.
+  local resolved=0
+  for _ in $(seq 1 24); do
+    if kubectl -n ai-worker exec deployment/ai-business-worker -c worker -- \
+        python -c "import socket; socket.getaddrinfo('ai-gateway-01.${TAILSCALE_WORKER_FQDN#*.}', 443)" \
+        >/dev/null 2>&1; then
+      resolved=1
+      break
+    fi
+    sleep 5
+  done
+  [[ "${resolved}" == 1 ]] || die "Worker could not resolve the Gateway Tailnet name"
 }
 
 verify_rebuild() {
