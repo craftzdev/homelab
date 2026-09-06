@@ -475,7 +475,7 @@ verify_rebuild() {
       .metadata.deletionTimestamp != null or
       .status.phase == "Succeeded" or
       (.status.phase == "Running" and
-        all(.status.containerStatuses // []; .ready == true)))
+        all((.status.containerStatuses // [])[]; .ready == true)))
   ' >/dev/null || {
     kubectl get pods -A >&2
     die "a cluster Pod is not healthy"
