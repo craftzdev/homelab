@@ -26,6 +26,7 @@ die()  { printf '%s[ERROR]%s %s\n' "${C_RED}"    "${C_RESET}" "$*" >&2; exit 1; 
 
 command -v helm    >/dev/null || die "helm が見つかりません"
 command -v kubectl >/dev/null || die "kubectl が見つかりません"
+command -v jq      >/dev/null || die "jq が見つかりません"
 
 [[ -f "${KUBECONFIG_PATH}" ]] || die "kubeconfig が見つかりません: ${KUBECONFIG_PATH}"
 [[ -f "${VALUES_FILE}" ]]     || die "values ファイルが見つかりません: ${VALUES_FILE}"
@@ -82,19 +83,29 @@ kubectl -n argocd rollout status deployment/argocd-repo-server --timeout=10m
 ok "ArgoCD を導入しました"
 
 # ---------------------------------------------------------------------------
-# KSOPS の動作確認
+# KSOPS の起動前検証
 #
-# ここで失敗すると、暗号化された Secret を含む Application が
-# 全て同期エラーになる。原因が分かりにくいため、先に検証する。
+# fresh Talos では kubelet serving certificate approver 自体をこの後Argo CDで
+# 導入するため、この時点の kubectl exec は kubelet TLS で失敗する。APIから
+# initContainerの正常終了、repo-server readiness、鍵Secretを先に検証する。
+# 実際のバイナリ/マウント検証はapprover収束後にreconcile側でfail closedする。
 # ---------------------------------------------------------------------------
-info "repo-server で ksops が使えるか確認しています..."
-if kubectl -n argocd exec deploy/argocd-repo-server -c repo-server -- \
-     sh -c 'command -v ksops >/dev/null && test -f "$SOPS_AGE_KEY_FILE"' 2>/dev/null; then
-  ok "ksops と age 秘密鍵を確認しました"
-else
-  die "repo-server で ksops または age 秘密鍵を確認できませんでした。
-     確認: kubectl -n argocd logs deploy/argocd-repo-server -c repo-server"
-fi
+info "repo-server のKSOPS初期化状態を確認しています..."
+kubectl -n argocd get secret sops-age -o json \
+  | jq -e '.data["keys.txt"] | strings | length > 0' >/dev/null \
+  || die "sops-age Secret の keys.txt が空です"
+
+kubectl -n argocd get pods \
+    -l app.kubernetes.io/name=argocd-repo-server -o json \
+  | jq -e '
+      (.items | length) > 0 and
+      all(.items[];
+        any(.status.initContainerStatuses[]?;
+          .name == "install-ksops" and .state.terminated.exitCode == 0) and
+        any(.status.containerStatuses[]?;
+          .name == "repo-server" and .ready == true))' >/dev/null \
+  || die "repo-server のKSOPS初期化またはreadinessを確認できませんでした"
+ok "KSOPS初期化とage秘密鍵Secretを確認しました"
 
 # ---------------------------------------------------------------------------
 # Project と root Application

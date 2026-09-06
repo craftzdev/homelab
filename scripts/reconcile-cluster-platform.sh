@@ -94,6 +94,21 @@ refresh_application() {
   die "could not request an Argo CD refresh for ${name}"
 }
 
+verify_ksops_runtime() {
+  info "Verifying KSOPS and the age key inside repo-server"
+  for _ in $(seq 1 60); do
+    if kubectl --request-timeout=15s -n argocd \
+        exec deploy/argocd-repo-server -c repo-server -- \
+        sh -c 'command -v ksops >/dev/null && test -s "$SOPS_AGE_KEY_FILE"' \
+        >/dev/null 2>&1; then
+      ok "KSOPS and the age key are available at runtime"
+      return
+    fi
+    sleep 5
+  done
+  die "KSOPS runtime verification failed after kubelet certificate approval"
+}
+
 # This CiliumNetworkPolicy belonged to the pre-Longhorn policy model. Argo CD
 # cannot prune it because it is no longer in the desired manifest set.
 kubectl --request-timeout=15s -n longhorn-system delete ciliumnetworkpolicy default-deny \
@@ -107,6 +122,10 @@ for app in gateway-api-crds cilium snapshot-controller longhorn \
   resume_application "${app}"
   wait_for_application "${app}"
 done
+
+# kubectl exec requires a trusted kubelet serving certificate. Verify the
+# repo-server runtime only after the certificate approver Application is healthy.
+verify_ksops_runtime
 
 for app in cert-manager trivy-operator network-policies; do
   resume_application "${app}"
