@@ -422,10 +422,6 @@ verify_rebuild() {
     kubectl get pods -A >&2
     die "a cluster Pod is not healthy"
   }
-  kubectl -n gateway get gateway external -o json | jq -e '
-    any(.status.conditions[];
-      .type == "Programmed" and .status == "True")
-  ' >/dev/null || die "Gateway external is not Programmed"
   curl -fsS --retry 12 --retry-all-errors --retry-delay 5 \
     "https://${TAILSCALE_WORKER_FQDN}/health" >/dev/null
   ok "Six-node cluster, GitOps platform, and Tailnet Worker health verified"

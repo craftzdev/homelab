@@ -376,7 +376,7 @@ talosctl -n 172.16.40.11 etcd remove-member <member-id>
 このコマンドは、暗号化したWorker/RegistryデータとSecretの退避、PBSへの6 VM
 スナップショット、VM破棄・OpenTofu/Talos再作成、Cilium/Argo CD/Longhornと
 全GitOps Applicationの復元、Tailnet identityの再作成を順番に行います。最後に
-全Applicationの`Synced/Healthy`、全Pod、Gateway API、Worker API、callbackを
+全Applicationの`Synced/Healthy`、全Pod、Business Gateway API、Worker API、callbackを
 検証し、どれか一つでも満たさなければ失敗します。
 
 Grafana管理者パスワードはmacOS Keychain service

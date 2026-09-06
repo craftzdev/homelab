@@ -11,11 +11,10 @@
 #     0  longhorn        : 分散ブロックストレージ（PV の供給元）
 #     1  tailscale       : Tailnet ingress / egress
 #     2  cert-manager    : 証明書管理（他が依存する）
-#     3  gateway         : HTTP ルーティング（Cilium Gateway API）
 #     5  monitoring      : 監視
 #     6  security        : Trivy / kubelet 証明書承認
 #
-# cloudflared は Business Gateway VM 1200 で稼働するためクラスタには置かない。
+# Gateway/cloudflared は Business Gateway VM 1200 で稼働するためクラスタには置かない。
 # Velero は外部オブジェクトストレージ設定後に別変更として有効化する。
 #
 # ---------------------------------------------------------------------------
@@ -359,44 +358,6 @@ spec:
       selfHeal: true
     syncOptions:
       - ServerSideApply=true
-
----
-# ---------------------------------------------------------------------------
-# Gateway（外部公開の入口）
-#
-# ⚠️ ingress-nginx から移行した。
-#    ingress-nginx は 2026 年 3 月で保守終了しており、今後
-#    セキュリティ修正が提供されない。外部公開経路の入口に
-#    修正されないコンポーネントを置くことは本構成の要件に反する。
-#    詳細は kubernetes/infra/gateway-api/kustomization.yaml を参照。
-#
-# Cilium が GatewayClass "cilium" を提供するため、
-# 新しいコントローラを追加する必要はない。
-# ---------------------------------------------------------------------------
-apiVersion: argoproj.io/v1alpha1
-kind: Application
-metadata:
-  name: gateway
-  namespace: argocd
-  annotations:
-    argocd.argoproj.io/sync-wave: "3"
-  finalizers:
-    - resources-finalizer.argocd.argoproj.io
-spec:
-  project: infrastructure
-  source:
-    repoURL: https://github.com/craftzdev/homelab.git
-    targetRevision: main
-    path: kubernetes/infra/gateway
-  destination:
-    server: https://kubernetes.default.svc
-    namespace: gateway
-  syncPolicy:
-    automated:
-      prune: true
-      selfHeal: true
-    syncOptions:
-      - CreateNamespace=false
 
 ---
 # ---------------------------------------------------------------------------

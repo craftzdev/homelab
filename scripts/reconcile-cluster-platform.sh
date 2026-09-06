@@ -20,7 +20,6 @@ readonly EXPECTED_APPLICATIONS=(
   monitoring
   cert-manager
   trivy-operator
-  gateway
 )
 
 info() { printf '[INFO] %s\n' "$*"; }
@@ -85,12 +84,12 @@ for app in gateway-api-crds cilium snapshot-controller longhorn \
   wait_for_application "${app}"
 done
 
-for app in cert-manager trivy-operator network-policies gateway; do
+for app in cert-manager trivy-operator network-policies; do
   refresh_application "${app}"
   wait_for_application "${app}"
 done
 
-for retired_app in cloudflared velero; do
+for retired_app in gateway cloudflared velero; do
   if kubectl -n argocd get application "${retired_app}" >/dev/null 2>&1; then
     die "retired Application still exists: ${retired_app}"
   fi

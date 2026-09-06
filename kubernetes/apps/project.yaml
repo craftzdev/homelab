@@ -50,8 +50,6 @@ spec:
     - server: https://kubernetes.default.svc
       namespace: longhorn-system
     - server: https://kubernetes.default.svc
-      namespace: gateway
-    - server: https://kubernetes.default.svc
       namespace: cert-manager
     - server: https://kubernetes.default.svc
       namespace: monitoring
