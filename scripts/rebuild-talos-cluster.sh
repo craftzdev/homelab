@@ -17,6 +17,7 @@
 #   REGISTRY_DATA_BACKUP=... override registry archive for recovery
 #   WORKER_DATA_BACKUP=...   override Worker archive for recovery
 #   TAILSCALE_WORKER_FQDN=... canonical Worker MagicDNS name
+#   TAILSCALE_ARGOCD_FQDN=... canonical Argo CD MagicDNS name
 #   GATEWAY_SMOKE=0      skip the external Gateway-to-Worker test (default: 1)
 #   CF_ACCESS_*_SERVICE  macOS Keychain service names for the smoke test
 set -euo pipefail
@@ -31,6 +32,7 @@ GITOPS_REVISION="${GITOPS_REVISION:-$(git -C "${REPO_ROOT}" branch --show-curren
 PBS_BACKUP="${PBS_BACKUP:-1}"
 GATEWAY_SMOKE="${GATEWAY_SMOKE:-1}"
 TAILSCALE_WORKER_FQDN="${TAILSCALE_WORKER_FQDN:-ai-worker-cluster.tailb6c7d.ts.net}"
+TAILSCALE_ARGOCD_FQDN="${TAILSCALE_ARGOCD_FQDN:-argocd.tailb6c7d.ts.net}"
 CF_ACCESS_CLIENT_ID_SERVICE="${CF_ACCESS_CLIENT_ID_SERVICE:-dev.craftz.ai-business-gateway.cloudflare-access-client-id}"
 CF_ACCESS_CLIENT_SECRET_SERVICE="${CF_ACCESS_CLIENT_SECRET_SERVICE:-dev.craftz.ai-business-gateway.cloudflare-access-client-secret}"
 EXPECTED_VMIDS=(1001 1002 1003 1101 1102 1103)
@@ -48,7 +50,7 @@ ok() { printf '[OK]   %s\n' "$*"; }
 die() { printf '[ERROR] %s\n' "$*" >&2; exit 1; }
 
 usage() {
-  sed -n '2,16p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'
+  sed -n '2,22p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'
 }
 
 while [[ $# -gt 0 ]]; do
@@ -249,6 +251,8 @@ backup_cluster_data() {
     "${BACKUP_DIR}/tailscale-worker-state.secret.json.age"
   backup_tailnet_proxy_state svc ai-worker ai-gateway-egress \
     "${BACKUP_DIR}/tailscale-gateway-egress-state.secret.json.age"
+  backup_tailnet_proxy_state ingress argocd argocd \
+    "${BACKUP_DIR}/tailscale-argocd-state.secret.json.age"
 
   kubectl --kubeconfig "${KUBECONFIG_PATH}" -n ai-worker get deploy ai-business-worker \
     -o jsonpath='{.spec.template.spec.containers[0].image}' \
@@ -298,30 +302,54 @@ verify_recovery_set() {
   for tailnet_state_file in \
     tailscale-operator-state.secret.json.age \
     tailscale-worker-state.secret.json.age \
-    tailscale-gateway-egress-state.secret.json.age; do
+    tailscale-gateway-egress-state.secret.json.age \
+    tailscale-argocd-state.secret.json.age; do
     [[ -s "${BACKUP_DIR}/${tailnet_state_file}" ]] && tailnet_state_count=$((tailnet_state_count + 1))
   done
-  [[ "${tailnet_state_count}" == 0 || "${tailnet_state_count}" == 3 ]] \
+  # Three files are accepted for recovery sets created before the Argo CD
+  # Tailnet ingress existed. Current recovery sets contain all four states.
+  [[ "${tailnet_state_count}" == 0 || "${tailnet_state_count}" == 3 || "${tailnet_state_count}" == 4 ]] \
     || die "Tailnet state backup is incomplete"
+  if [[ "${tailnet_state_count}" == 3 ]]; then
+    for tailnet_state_file in \
+      tailscale-operator-state.secret.json.age \
+      tailscale-worker-state.secret.json.age \
+      tailscale-gateway-egress-state.secret.json.age; do
+      [[ -s "${BACKUP_DIR}/${tailnet_state_file}" ]] \
+        || die "legacy Tailnet state backup is incomplete: ${tailnet_state_file}"
+    done
+  fi
   ok "Existing encrypted recovery set verified"
 }
 
 remove_stale_tailnet_cluster_devices() {
   local oauth_json client_id client_secret token_json access_token devices_json
   local device_ids device_count device_id delete_code tag selector maximum
+  local -a cleanup_tags
 
-  if [[ -s "${BACKUP_DIR}/tailscale-worker-state.secret.json.age" ]]; then
+  if [[ -s "${BACKUP_DIR}/tailscale-worker-state.secret.json.age" \
+      && -s "${BACKUP_DIR}/tailscale-argocd-state.secret.json.age" ]]; then
     info "Preserving Tailnet identities and TLS certificate cache for recreation"
     return
   fi
 
-  info "Removing previous Tailnet identities before recreation (legacy recovery set)"
+  if [[ -s "${BACKUP_DIR}/tailscale-worker-state.secret.json.age" ]]; then
+    # Legacy recovery sets preserve the Worker and Operator but predate the
+    # Argo CD proxy. Remove only a later stale Argo CD device so the canonical
+    # hostname can be reclaimed without affecting the preserved identities.
+    cleanup_tags=(tag:argocd)
+    info "Preserving legacy Tailnet states and removing any stale Argo CD identity"
+  else
+    cleanup_tags=(tag:ai-worker-trusted tag:k8s-operator tag:argocd)
+    info "Removing previous Tailnet identities before recreation (legacy recovery set)"
+  fi
+
   oauth_json="$(age -d -i "${AGE_KEY_FILE}" \
     "${BACKUP_DIR}/tailscale-oauth.secret.json.age")"
   client_id="$(jq -er '.data.client_id | @base64d' <<<"${oauth_json}")"
   client_secret="$(jq -er '.data.client_secret | @base64d' <<<"${oauth_json}")"
 
-  for tag in tag:ai-worker-trusted tag:k8s-operator; do
+  for tag in "${cleanup_tags[@]}"; do
     token_json="$(curl -fsS -u "${client_id}:${client_secret}" \
       --data-urlencode 'grant_type=client_credentials' \
       --data-urlencode 'scope=devices:core' \
@@ -333,11 +361,15 @@ remove_stale_tailnet_cluster_devices() {
     if [[ "${tag}" == tag:ai-worker-trusted ]]; then
       selector='(.name == $worker_fqdn or .hostname == "ai-worker-ai-gateway-egress")'
       maximum=2
+    elif [[ "${tag}" == tag:argocd ]]; then
+      selector='(.name == $argocd_fqdn or .hostname == "argocd")'
+      maximum=1
     else
       selector='(.hostname == "tailscale-operator")'
       maximum=1
     fi
     device_ids="$(jq -r --arg worker_fqdn "${TAILSCALE_WORKER_FQDN}" \
+      --arg argocd_fqdn "${TAILSCALE_ARGOCD_FQDN}" \
       --arg tag "${tag}" "[.devices[]
         | select(${selector})
         | select((.tags // []) | index(\$tag))
@@ -381,7 +413,7 @@ delete_tailnet_device_id() {
 }
 
 restore_tailnet_proxy_state() {
-  local input=$1 parent_type=$2 parent_namespace=$3 parent_name=$4
+  local input=$1 parent_type=$2 parent_namespace=$3 parent_name=$4 device_tag=$5
   local selector secrets_json count secret_name attempt
   local old_json old_device_id new_device_id identity_patch
   [[ -s "${input}" ]] || {
@@ -429,7 +461,7 @@ restore_tailnet_proxy_state() {
     || die "Tailnet state backup contains no restorable identity data"
 
   if [[ -n "${new_device_id}" && "${new_device_id}" != "${old_device_id}" ]]; then
-    delete_tailnet_device_id "${new_device_id}" tag:ai-worker-trusted
+    delete_tailnet_device_id "${new_device_id}" "${device_tag}"
   fi
   kubectl -n tailscale patch secret "${secret_name}" --type=merge \
     -p "${identity_patch}" >/dev/null
@@ -605,6 +637,18 @@ restore_platform() {
   kubectl -n tailscale rollout status deployment/operator --timeout=10m
   kubectl wait --for=jsonpath='{.status.conditions[?(@.type=="ProxyClassReady")].status}'=True \
     proxyclass/restricted-userspace proxyclass/kernel-egress --timeout=5m
+  if [[ -s "${BACKUP_DIR}/tailscale-argocd-state.secret.json.age" ]]; then
+    # GitOps creates the generated state Secret first. Replace its temporary
+    # identity with the encrypted pre-rebuild state, then restart the proxy to
+    # retain the canonical MagicDNS name and cached TLS material.
+    restore_tailnet_proxy_state \
+      "${BACKUP_DIR}/tailscale-argocd-state.secret.json.age" \
+      ingress argocd argocd tag:argocd
+    restart_tailnet_proxy ingress argocd argocd
+  fi
+  kubectl -n argocd wait \
+    --for=jsonpath='{.status.loadBalancer.ingress[0].hostname}'="${TAILSCALE_ARGOCD_FQDN}" \
+    ingress/argocd --timeout=10m
   "${SCRIPT_DIR}/configure-tailscale-dns.sh"
   kubectl -n longhorn-system rollout status daemonset/longhorn-manager --timeout=15m
   "${SCRIPT_DIR}/reconcile-longhorn-worker-plane.sh"
@@ -697,10 +741,10 @@ EOF
   if [[ -s "${BACKUP_DIR}/tailscale-worker-state.secret.json.age" ]]; then
     restore_tailnet_proxy_state \
       "${BACKUP_DIR}/tailscale-worker-state.secret.json.age" \
-      ingress ai-worker ai-business-worker
+      ingress ai-worker ai-business-worker tag:ai-worker-trusted
     restore_tailnet_proxy_state \
       "${BACKUP_DIR}/tailscale-gateway-egress-state.secret.json.age" \
-      svc ai-worker ai-gateway-egress
+      svc ai-worker ai-gateway-egress tag:ai-worker-trusted
     untaint_tailnet_proxy_workers
     restart_tailnet_proxy ingress ai-worker ai-business-worker
     restart_tailnet_proxy svc ai-worker ai-gateway-egress
@@ -764,7 +808,9 @@ verify_rebuild() {
   }
   curl -fsS --retry 12 --retry-all-errors --retry-delay 5 \
     "https://${TAILSCALE_WORKER_FQDN}/health" >/dev/null
-  ok "Six-node cluster, GitOps platform, and Tailnet Worker health verified"
+  curl -fsS --retry 12 --retry-all-errors --retry-delay 5 \
+    "https://${TAILSCALE_ARGOCD_FQDN}/" >/dev/null
+  ok "Six-node cluster, GitOps platform, Tailnet Worker, and Argo CD verified"
 }
 
 verify_gateway_worker_path() {

@@ -241,6 +241,8 @@ https://argocd.tailb6c7d.ts.net
 Cloudflare公開、LAN LoadBalancerは使用しません。Tailnet policyは
 `autogroup:admin`から`tag:argocd`のTCP/443だけを許可します。障害時の
 fallbackとしてのみ、上記の`kubectl port-forward`を使用してください。
+クラスタ全再構築ではProxy identityとTLS stateもage暗号化して退避・復元し、
+同じMagicDNS名を維持します。
 
 ### 3.5 Grafana の管理者パスワード
 
