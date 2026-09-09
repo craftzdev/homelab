@@ -17,8 +17,8 @@ values. The GitHub App needs repository `Administration: read and write` and
 `Metadata: read-only`; install it only on `craftzdev/homelab`.
 
 The current installation uses GitHub App `craftz-homelab-arc-runner` (App ID
-`4890688`, installation ID `160444144`). Its private key is also stored in the
-admin Mac login Keychain under service
+`4890688`, installation ID `160444144`). Its private key is also stored as
+base64 in the admin Mac login Keychain under service
 `dev.craftz.homelab.arc-github-app-private-key`; the downloaded PEM must not be
 kept in `Downloads`. Cluster rebuild recovery additionally preserves the live
 Secret as an age-encrypted recovery artifact.
