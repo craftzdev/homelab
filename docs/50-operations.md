@@ -172,7 +172,7 @@ BACKUP_DIR="$PWD/_out/rebuild-backups/<timestamp>" \
 初回の外部レジストリ取得ではCilium、Longhorn、監視スタックの展開に時間が
 かかります。成功メッセージが出るまでは、途中で起動済みのPodやVMだけを見て
 完了と判断しないでください。2026-09-07の実機試験では、6 VMの破棄・再作成、
-全12 Argo CD Application、Tailnet ID/TLS継続、Gatewayジョブ成功、
+全Argo CD Application、Tailnet ID/TLS継続、Gatewayジョブ成功、
 `tofu plan`差分0まで確認しています。
 
 ### 3.1 VM 作成と Talos の bootstrap
@@ -314,6 +314,29 @@ kubectl -n arc-systems get deploy,pods
 kubectl -n arc-runners get autoscalingrunnersets,ephemeralrunnersets,pods
 ```
 
+### 3.9 AI Business WorkerのGitOps管理
+
+Workerのdesired stateはprivateリポジトリ
+`craftzdev/ai-business-worker`の`main:deploy/kubernetes`に置き、Argo CD
+Application `ai-business-worker`が自動同期・prune・self-healします。専用
+AppProject `ai-business`はこのリポジトリ、`ai-worker` namespace、必要な6種類の
+リソースだけを許可します。Runtime/Codex SecretはGitOpsの管理対象に含めません。
+
+Argo CDの読取資格情報はリポジトリ限定・書込不可のGitHub Deploy Keyです。
+秘密鍵のbase64値をmacOS Keychain service
+`dev.craftz.homelab.argocd-ai-worker-deploy-key`、account
+`craftzdev/ai-business-worker`へ保存すると、次の冪等コマンドがrepository Secretを
+生成します。秘密鍵自体をGitへコミットしないでください。
+
+```bash
+./scripts/bootstrap-cluster-secrets.sh
+kubectl -n argocd get application ai-business-worker
+```
+
+NamespaceとLonghorn PVCはArgo CD管理下にありますが、誤ったGit変更やApplication
+削除で永続データを消さないよう`Prune=false`で保護しています。クラスタ全再構築の
+復旧セットにはArgo CD repository Secretもage暗号化して含めます。
+
 ## 4. 日常の運用
 
 ### 4.1 よく使うコマンド
@@ -346,7 +369,8 @@ kubectl -n arc-runners get autoscalingrunnersets,ephemeralrunnersets,pods
 | --- | --- | --- |
 | ノードのスペック・台数 | `tofu/10-proxmox-talos/terraform.tfvars` | `tofu apply` |
 | Talos の設定 | `talos/patches/*.yaml.tftpl` | `tofu apply` |
-| Kubernetes のアプリ | `kubernetes/infra/**` | git push（ArgoCD が同期） |
+| Kubernetes の基盤 | `kubernetes/infra/**` | homelabへgit push（ArgoCDが同期） |
+| AI Business Worker | `../ai-business-worker/deploy/kubernetes/**` | Workerリポジトリへgit push（ArgoCDが同期） |
 | 外部公開するサービス | `tofu/20-cloudflare/terraform.tfvars` | `tofu apply` → git push |
 
 ### 4.3 アップグレード

@@ -6,6 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 KUBECONFIG_PATH="${KUBECONFIG:-${REPO_ROOT}/_out/kubeconfig}"
 APPLICATION_TIMEOUT_SECONDS="${APPLICATION_TIMEOUT_SECONDS:-1800}"
+DEFER_AI_WORKER="${DEFER_AI_WORKER:-0}"
 
 info() { printf '[INFO] %s\n' "$*"; }
 ok() { printf '[OK]   %s\n' "$*"; }
@@ -17,6 +18,8 @@ done
 [[ -s "${KUBECONFIG_PATH}" ]] || die "kubeconfig not found: ${KUBECONFIG_PATH}"
 [[ "${APPLICATION_TIMEOUT_SECONDS}" =~ ^[0-9]+$ ]] \
   || die "APPLICATION_TIMEOUT_SECONDS must be an integer"
+[[ "${DEFER_AI_WORKER}" == 0 || "${DEFER_AI_WORKER}" == 1 ]] \
+  || die "DEFER_AI_WORKER must be 0 or 1"
 
 export KUBECONFIG="${KUBECONFIG_PATH}"
 
@@ -174,6 +177,17 @@ for app in arc-controller arc-runners; do
   resume_application "${app}"
   wait_for_application "${app}"
 done
+
+# Application workloads are reconciled only after their storage, networking,
+# private repository credential, and runtime dependencies are available. A
+# disaster restore defers this gate until its out-of-band Secrets and PVC data
+# have been restored.
+if [[ "${DEFER_AI_WORKER}" == 0 ]]; then
+  resume_application ai-business-worker
+  wait_for_application ai-business-worker
+else
+  info "AI Business Worker reconciliation deferred for data restore"
+fi
 
 for retired_app in gateway cloudflared velero; do
   if kubectl --request-timeout=15s -n argocd \
