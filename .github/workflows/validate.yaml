@@ -101,7 +101,7 @@ jobs:
       - name: Detect committed secrets
         run: >-
           ${RUNNER_TEMP}/ci-bin/gitleaks git --redact --no-banner
-          --log-opts=${{ steps.changes.outputs.scan_range }}
+          --log-opts="${{ steps.changes.outputs.scan_range }} --first-parent"
 
       - name: Verify SOPS files are encrypted
         run: |
