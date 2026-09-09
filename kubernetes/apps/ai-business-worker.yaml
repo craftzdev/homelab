@@ -61,8 +61,7 @@ spec:
   # Tailscale rewrites this placeholder to the generated proxy Service. It is
   # controller-owned runtime state, not drift in the Worker repository.
   ignoreDifferences:
-    - group: ""
-      kind: Service
+    - kind: Service
       name: ai-gateway-egress
       jsonPointers:
         - /spec/externalName
