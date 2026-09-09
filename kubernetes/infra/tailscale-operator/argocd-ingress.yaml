@@ -1,0 +1,21 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: argocd
+  namespace: argocd
+  annotations:
+    # Keep the Argo CD management plane separate from Worker identities. The
+    # Operator is a tag owner for this tag and Tailnet Grants restrict access
+    # to administrators over HTTPS only.
+    tailscale.com/tags: tag:argocd
+    tailscale.com/proxy-class: restricted-userspace
+spec:
+  ingressClassName: tailscale
+  defaultBackend:
+    service:
+      name: argocd-server
+      port:
+        name: http
+  tls:
+    - hosts:
+        - argocd

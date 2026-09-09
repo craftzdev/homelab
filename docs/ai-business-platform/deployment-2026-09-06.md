@@ -49,6 +49,19 @@ The public MCP path uses the same Cloudflare Access JWT verification and
 Gateway Bearer token as the REST job API. No credential was written to the Git
 working tree, Bot instructions, or command output.
 
+## Argo CD Tailnet ingress update (2026-09-10 JST)
+
+Argo CD is permanently available to Tailnet administrators at
+`https://argocd.tailb6c7d.ts.net`. A standalone Tailscale Operator ingress
+terminates HTTPS and forwards only to the in-cluster `argocd-server` HTTP
+listener. The proxy device has only `tag:argocd`; the active Tailnet policy
+permits `autogroup:admin` to reach that tag on TCP/443 and does not enable
+Funnel.
+
+The ingress returned HTTP `200` with the Argo CD application page. Its TLS
+certificate CN matched `argocd.tailb6c7d.ts.net`, the dedicated Cilium policy
+reported `VALID=True`, and the restricted userspace proxy Pod was Ready.
+
 ## Final one-command rebuild validation (2026-09-07 JST)
 
 The production rebuild command completed successfully from commit `531adae`:

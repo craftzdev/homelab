@@ -8,6 +8,7 @@
     "tag:k8s-operator": ["autogroup:admin"],
     "tag:ai-worker-trusted": ["autogroup:admin", "tag:k8s-operator"],
     "tag:ai-worker-sandbox": ["autogroup:admin"],
+    "tag:argocd": ["autogroup:admin", "tag:k8s-operator"],
   },
 
   "grants": [
@@ -27,6 +28,14 @@
     {
       "src": ["autogroup:member"],
       "dst": ["tag:ai-worker-trusted"],
+      "ip": ["tcp:443"],
+    },
+
+    // Argo CD is a privileged management surface. Only Tailnet admins may
+    // reach it, and only on the HTTPS listener managed by the Operator.
+    {
+      "src": ["autogroup:admin"],
+      "dst": ["tag:argocd"],
       "ip": ["tcp:443"],
     },
 
