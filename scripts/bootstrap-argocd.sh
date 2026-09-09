@@ -145,6 +145,12 @@ else
     "${REPO_ROOT}/kubernetes/apps/infrastructure.yaml" \
     | sed '/argocd.argoproj.io\/sync-wave:/a\
     argocd.argoproj.io/skip-reconcile: "true"' >"${rendered_apps}"
+  # The Worker lives in its own repository and therefore remains on that
+  # repository's main revision while the homelab platform branch is tested.
+  # Pause it too so reconcile-cluster-platform.sh can preserve dependency order.
+  sed '/argocd.argoproj.io\/sync-wave:/a\
+    argocd.argoproj.io/skip-reconcile: "true"' \
+    "${REPO_ROOT}/kubernetes/apps/ai-business-worker.yaml" >>"${rendered_apps}"
 
   info "feature revision ${GITOPS_REVISION} の Application を適用しています..."
   kubectl apply -f "${rendered_apps}"

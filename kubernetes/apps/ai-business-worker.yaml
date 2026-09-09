@@ -1,0 +1,77 @@
+# AI Business Worker is intentionally isolated from infrastructure components.
+# Its private source repository is read through a repository-scoped, read-only
+# GitHub Deploy Key stored out of band as an Argo CD repository Secret.
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: ai-business
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  description: AI Business Worker application boundary
+  sourceRepos:
+    - git@github.com:craftzdev/ai-business-worker.git
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: ai-worker
+  clusterResourceWhitelist:
+    - group: ""
+      kind: Namespace
+  namespaceResourceWhitelist:
+    - group: ""
+      kind: ConfigMap
+    - group: ""
+      kind: PersistentVolumeClaim
+    - group: ""
+      kind: Service
+    - group: apps
+      kind: Deployment
+    - group: networking.k8s.io
+      kind: Ingress
+    - group: cilium.io
+      kind: CiliumNetworkPolicy
+  roles:
+    - name: readonly
+      description: Read-only access to the AI Business application
+      policies:
+        - p, proj:ai-business:readonly, applications, get, ai-business/*, allow
+
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: ai-business-worker
+  namespace: argocd
+  annotations:
+    # Longhorn and the Tailscale Operator must already be converged.
+    argocd.argoproj.io/sync-wave: "9"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: ai-business
+  source:
+    repoURL: git@github.com:craftzdev/ai-business-worker.git
+    targetRevision: main
+    path: deploy/kubernetes
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: ai-worker
+  # Tailscale rewrites this placeholder to the generated proxy Service. It is
+  # controller-owned runtime state, not drift in the Worker repository.
+  ignoreDifferences:
+    - group: ""
+      kind: Service
+      name: ai-gateway-egress
+      jsonPointers:
+        - /spec/externalName
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false
+      - PruneLast=true
+      - RespectIgnoreDifferences=true
+      - ServerSideApply=true

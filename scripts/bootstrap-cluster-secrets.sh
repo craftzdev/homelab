@@ -7,6 +7,9 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 KUBECONFIG_PATH="${KUBECONFIG:-${REPO_ROOT}/_out/kubeconfig}"
 GRAFANA_KEYCHAIN_SERVICE="${GRAFANA_KEYCHAIN_SERVICE:-dev.craftz.homelab.grafana-admin}"
 GRAFANA_KEYCHAIN_ACCOUNT="${GRAFANA_KEYCHAIN_ACCOUNT:-admin}"
+WORKER_REPO_KEYCHAIN_SERVICE="${WORKER_REPO_KEYCHAIN_SERVICE:-dev.craftz.homelab.argocd-ai-worker-deploy-key}"
+WORKER_REPO_KEYCHAIN_ACCOUNT="${WORKER_REPO_KEYCHAIN_ACCOUNT:-craftzdev/ai-business-worker}"
+WORKER_REPO_URL="${WORKER_REPO_URL:-git@github.com:craftzdev/ai-business-worker.git}"
 
 info() { printf '[INFO] %s\n' "$*"; }
 ok() { printf '[OK]   %s\n' "$*"; }
@@ -34,7 +37,7 @@ fi
 [[ -n "${grafana_password}" ]] || die "Grafana password is empty"
 
 for namespace in monitoring cert-manager security image-registry tailscale \
-  arc-systems arc-runners; do
+  arc-systems arc-runners argocd; do
   kubectl create namespace "${namespace}" --dry-run=client -o yaml \
     | kubectl apply -f - >/dev/null
 done
@@ -54,4 +57,36 @@ stringData:
 EOF
 
 unset grafana_password
+
+# The private Worker repository uses a repository-scoped, read-only GitHub
+# Deploy Key. The Keychain value is base64 so multiline OpenSSH key material
+# survives an exact round trip through the `security` CLI.
+if worker_repo_key_b64="$(security find-generic-password \
+    -s "${WORKER_REPO_KEYCHAIN_SERVICE}" \
+    -a "${WORKER_REPO_KEYCHAIN_ACCOUNT}" -w 2>/dev/null)"; then
+  worker_repo_key="$(printf '%s' "${worker_repo_key_b64}" | openssl base64 -d -A)"
+  [[ "${worker_repo_key}" == '-----BEGIN OPENSSH PRIVATE KEY-----'* ]] \
+    || die "Worker repository Deploy Key in Keychain is invalid"
+  indented_worker_repo_key="$(printf '%s\n' "${worker_repo_key}" | sed 's/^/    /')"
+  kubectl apply -f - >/dev/null <<EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ai-business-worker-repository
+  namespace: argocd
+  labels:
+    argocd.argoproj.io/secret-type: repository
+type: Opaque
+stringData:
+  type: git
+  url: ${WORKER_REPO_URL}
+  sshPrivateKey: |
+${indented_worker_repo_key}
+EOF
+  unset worker_repo_key_b64 worker_repo_key indented_worker_repo_key
+  ok "Argo CD Worker repository credential is present"
+else
+  info "Worker repository Deploy Key is absent from Keychain; recovery restore must provide it"
+fi
+
 ok "Cluster bootstrap secrets are present"

@@ -246,6 +246,8 @@ backup_cluster_data() {
     "${BACKUP_DIR}/tailscale-oauth.secret.json.age"
   encrypt_secret arc-runners arc-github-app \
     "${BACKUP_DIR}/arc-github-app.secret.json.age"
+  encrypt_secret argocd ai-business-worker-repository \
+    "${BACKUP_DIR}/ai-worker-repository.secret.json.age"
   encrypt_secret tailscale operator \
     "${BACKUP_DIR}/tailscale-operator-state.secret.json.age"
   backup_tailnet_proxy_state ingress ai-worker ai-business-worker \
@@ -632,13 +634,18 @@ restore_platform() {
   restore_secret "${BACKUP_DIR}/registry-tls.secret.json.age"
   restore_secret "${BACKUP_DIR}/tailscale-oauth.secret.json.age"
   restore_secret "${BACKUP_DIR}/arc-github-app.secret.json.age"
+  if [[ -s "${BACKUP_DIR}/ai-worker-repository.secret.json.age" ]]; then
+    restore_secret "${BACKUP_DIR}/ai-worker-repository.secret.json.age"
+  fi
   if [[ -s "${BACKUP_DIR}/tailscale-operator-state.secret.json.age" ]]; then
     restore_secret "${BACKUP_DIR}/tailscale-operator-state.secret.json.age"
   fi
 
   info "Bootstrapping Argo CD at revision ${GITOPS_REVISION}"
   GITOPS_REVISION="${GITOPS_REVISION}" "${SCRIPT_DIR}/bootstrap-argocd.sh"
-  "${SCRIPT_DIR}/reconcile-cluster-platform.sh"
+  # Worker data and runtime Secrets are restored below. Reconcile all
+  # dependencies now and enforce Worker GitOps convergence after that restore.
+  DEFER_AI_WORKER=1 "${SCRIPT_DIR}/reconcile-cluster-platform.sh"
   kubectl -n tailscale rollout status deployment/operator --timeout=10m
   kubectl wait --for=jsonpath='{.status.conditions[?(@.type=="ProxyClassReady")].status}'=True \
     proxyclass/restricted-userspace proxyclass/kernel-egress --timeout=5m
@@ -761,6 +768,10 @@ EOF
   kubectl -n ai-worker wait \
     --for=jsonpath='{.status.loadBalancer.ingress[0].hostname}'="${TAILSCALE_WORKER_FQDN}" \
     ingress/ai-business-worker --timeout=10m
+
+  # The bootstrap apply above only stages the PVC/data recovery. Argo CD is the
+  # sole steady-state manager and must adopt every Worker resource without drift.
+  "${SCRIPT_DIR}/reconcile-cluster-platform.sh"
 
   # DNSConfig records are populated asynchronously after both proxy Pods are
   # ready. Avoid caching a transient NXDOMAIN as a restore failure.
