@@ -50,7 +50,7 @@ ok() { printf '[OK]   %s\n' "$*"; }
 die() { printf '[ERROR] %s\n' "$*" >&2; exit 1; }
 
 usage() {
-  sed -n '2,16p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'
+  sed -n '2,22p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'
 }
 
 while [[ $# -gt 0 ]]; do
