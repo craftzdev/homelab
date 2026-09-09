@@ -231,6 +231,17 @@ argocd account update-password
 kubectl -n argocd delete secret argocd-initial-admin-secret
 ```
 
+通常の管理アクセスは、Tailscaleへ接続したTailnet管理者端末から次を開きます。
+
+```text
+https://argocd.tailb6c7d.ts.net
+```
+
+この入口はTailscale Kubernetes OperatorのHTTPS Ingressであり、Funnel、
+Cloudflare公開、LAN LoadBalancerは使用しません。Tailnet policyは
+`autogroup:admin`から`tag:argocd`のTCP/443だけを許可します。障害時の
+fallbackとしてのみ、上記の`kubectl port-forward`を使用してください。
+
 ### 3.5 Grafana の管理者パスワード
 
 **この手順を飛ばすと Grafana は起動しません。** これは意図的な設計です

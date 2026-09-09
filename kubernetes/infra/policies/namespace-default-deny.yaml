@@ -129,6 +129,30 @@ spec:
             io.kubernetes.pod.namespace: monitoring
 
 ---
+# The standalone Tailscale Ingress proxy runs in the tailscale namespace.
+# Permit it to reach only the Argo CD server's cleartext in-cluster listener;
+# Tailnet HTTPS is terminated by the proxy before this hop.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: argocd-tailnet-ingress
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: argocd-server
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: tailscale
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+
+---
 # ---------------------------------------------------------------------------
 # cert-manager
 # ---------------------------------------------------------------------------
