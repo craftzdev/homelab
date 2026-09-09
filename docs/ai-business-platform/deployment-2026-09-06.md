@@ -26,6 +26,29 @@ rebuild performed on the same day.
 | Codex end-to-end | Gateway job `9b828a64-1f96-4261-af02-10f3c29c7160` succeeded with tests and signed review artifacts |
 | Post-migration smoke test | Gateway job `054f75e6-50d2-4bc1-a837-687574f72c21` reached `SUCCEEDED` through Cloudflare Access, Gateway, Tailnet HTTPS, and the Kubernetes Worker |
 
+## Grok Bot MCP update (2026-09-10 JST)
+
+The Gateway public process now serves a stateless Streamable HTTP MCP endpoint
+at `https://gateway.craftz.dev/mcp`. It exposes only `submit_job`, `get_job`,
+`wait_for_job`, and `get_review_url`; the submit schema excludes production,
+deployment, publishing, and every action without a live Worker executor.
+
+Deployment and verification results:
+
+| Verification | Result |
+|---|---|
+| Gateway VM | MCP build deployed to VM `1200`; public and callback containers healthy |
+| Rollback copy | `/opt/ai-business-gateway-backups/pre-mcp-a151a71` |
+| Missing Cloudflare Access token | HTTP `403` |
+| Valid Access token without Gateway Bearer token | HTTP `401` |
+| MCP initialization and discovery | Four expected tools discovered |
+| MCP end-to-end execution | Job `c278e40c-b1c1-4bae-9fcf-bacedf35b8d5` reached `SUCCEEDED` through the Kubernetes Worker |
+| Existing REST regression test | Job `729b1e09-0d29-439d-b6d5-6a86eac443fc` reached `SUCCEEDED` |
+
+The public MCP path uses the same Cloudflare Access JWT verification and
+Gateway Bearer token as the REST job API. No credential was written to the Git
+working tree, Bot instructions, or command output.
+
 ## Final one-command rebuild validation (2026-09-07 JST)
 
 The production rebuild command completed successfully from commit `531adae`:

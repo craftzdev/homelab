@@ -330,6 +330,31 @@ Gateway と Kubernetes Worker から、次の管理面への新規接続を拒�
 - Worker APIはTailscale Operator Ingress以外では公開しない。LAN IPの直接利用はfallbackにも採用しない。
 - 外部 listener は Cloudflare が付与する Access JWT の署名、issuer、audience、有効期限を Gateway でも検証する。
 
+### 7.5 Grok Bot MCP
+
+Grok Botには既存REST APIを直接教えるのではなく、Gatewayが提供する
+Streamable HTTP MCP endpointを接続する。
+
+```text
+Grok Bot
+  ↓ Streamable HTTP MCP
+https://gateway.craftz.dev/mcp
+  ↓ Cloudflare Access Service Token + Gateway Bearer Token
+Business Gateway / PostgreSQL Job Store
+  ↓ Tailscale HTTPS
+Kubernetes Worker
+```
+
+MCPはREST API、PostgreSQL、dispatch、callbackを置き換えるものではなく、Bot用の
+型付きAdapterである。初期公開ツールは`submit_job`、`get_job`、
+`wait_for_job`、`get_review_url`の4つとする。`submit_job`はWorker実装済みの
+6 Actionと`research` / `preview`環境だけを受け付ける。`production`、deploy、
+publishなど不可逆なActionはMCPスキーマ自体に含めない。
+
+Cloudflare AccessがService Tokenを検証した後、Gatewayは注入されたAccess JWTを
+再検証し、さらに独立したGateway Bearer Tokenを検証する。秘密情報はBotのprompt、
+共有skill、URL、Gitリポジトリへ保存しない。
+
 ## 8. Business Gateway 論理構成
 
 ```mermaid
