@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import os
+import time
 import urllib.error
 import urllib.request
 import uuid
@@ -15,10 +16,14 @@ from typing import Any, Literal
 import jwt
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, status
 from jwt import PyJWKClient
+from mcp.server.mcpserver import MCPServer
+from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import BaseModel, Field
 from psycopg.errors import UniqueViolation
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
 
 API_SURFACE = os.environ.get("API_SURFACE", "public")
@@ -41,6 +46,34 @@ pool = ConnectionPool(
     max_size=5,
     open=False,
     kwargs={"row_factory": dict_row},
+)
+
+mcp = MCPServer(
+    name="ai-business-gateway",
+    title="AI Business Gateway",
+    version="0.1.0",
+    instructions=(
+        "Submit bounded jobs to the AI Business Worker and inspect their results. "
+        "Production, deployment, publishing, and other irreversible actions are not "
+        "available through this MCP server."
+    ),
+)
+mcp_http_app = mcp.streamable_http_app(
+    streamable_http_path="/mcp",
+    json_response=True,
+    stateless_http=True,
+    max_request_body_size=262_144,
+    transport_security=TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=[
+            "gateway.craftz.dev",
+            "gateway.craftz.dev:443",
+            "127.0.0.1:*",
+            "localhost:*",
+            "testserver",
+        ],
+        allowed_origins=["https://gateway.craftz.dev"],
+    ),
 )
 
 
@@ -91,8 +124,11 @@ async def lifespan(_: FastAPI):
     with pool.connection() as connection:
         connection.execute(SCHEMA_SQL)
         connection.commit()
-    yield
-    pool.close()
+    try:
+        async with mcp_http_app.router.lifespan_context(mcp_http_app):
+            yield
+    finally:
+        pool.close()
 
 
 app = FastAPI(
@@ -103,6 +139,24 @@ app = FastAPI(
     openapi_url=None,
     lifespan=lifespan,
 )
+
+
+@app.middleware("http")
+async def authenticate_mcp(request: Request, call_next):
+    """Apply the same two-layer authentication to every MCP request."""
+    if request.url.path == "/mcp" or request.url.path.startswith("/mcp/"):
+        try:
+            require_surface("public")
+            _verify_access_jwt(request.headers.get("Cf-Access-Jwt-Assertion"))
+            _verify_bearer(request.headers.get("Authorization"), GATEWAY_API_TOKEN)
+        except HTTPException as error:
+            headers = {"WWW-Authenticate": "Bearer"} if error.status_code == 401 else None
+            return JSONResponse(
+                status_code=error.status_code,
+                content={"detail": error.detail},
+                headers=headers,
+            )
+    return await call_next(request)
 
 
 def require_surface(expected: str) -> None:
@@ -188,6 +242,17 @@ class JobCreate(BaseModel):
     environment: Literal["research", "preview", "production"]
     parameters: dict[str, Any] = Field(default_factory=dict)
     limits: dict[str, int] = Field(default_factory=dict)
+
+
+MCPAction = Literal[
+    "browser.research",
+    "analytics.read",
+    "stripe.read",
+    "code.build",
+    "code.fix",
+    "test.run",
+]
+MCPEnvironment = Literal["research", "preview"]
 
 
 class WorkerEvent(BaseModel):
@@ -295,35 +360,19 @@ def _public_job(row: dict[str, Any]) -> dict[str, Any]:
         "state": row["state"],
         "worker_job_id": row["worker_job_id"],
         "result": row["result"],
-        "created_at": row["created_at"],
-        "updated_at": row["updated_at"],
+        "created_at": row["created_at"].isoformat(),
+        "updated_at": row["updated_at"].isoformat(),
     }
 
 
-@app.get("/health")
-def health() -> dict[str, str]:
-    return {"status": "ok", "surface": API_SURFACE}
-
-
-@app.get("/ready")
-def ready() -> dict[str, str]:
-    with pool.connection() as connection:
-        connection.execute("SELECT 1").fetchone()
-    return {"status": "ready", "surface": API_SURFACE}
-
-
-@app.post("/v1/jobs", status_code=status.HTTP_202_ACCEPTED)
-def create_job(
-    request: JobCreate,
-    background: BackgroundTasks,
-    _: None = Depends(require_gateway_token),
-    idempotency_key: str = Header(min_length=8, max_length=200),
-) -> dict[str, Any]:
+def _persist_job(
+    request: JobCreate, idempotency_key: str
+) -> tuple[dict[str, Any], bool]:
+    """Persist a job once and return the existing row on an idempotent replay."""
     now = utcnow()
     job_id = uuid.uuid7() if hasattr(uuid, "uuid7") else uuid.uuid4()
     payload = request.model_dump(mode="json")
     payload_hash = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
-    created = False
 
     with pool.connection() as connection:
         try:
@@ -347,20 +396,54 @@ def create_job(
                 ),
             ).fetchone()
             connection.commit()
-            created = True
+            return row, True
         except UniqueViolation:
             connection.rollback()
             row = connection.execute(
                 "SELECT * FROM jobs WHERE idempotency_key = %s", (idempotency_key,)
             ).fetchone()
             if row["input"]["sha256"] != payload_hash:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail="idempotency key already used with a different request",
+                raise ValueError(
+                    "idempotency key already used with a different request"
                 )
+            return row, False
+
+
+def _load_job(job_id: uuid.UUID) -> dict[str, Any] | None:
+    with pool.connection() as connection:
+        return connection.execute(
+            "SELECT * FROM jobs WHERE id = %s", (job_id,)
+        ).fetchone()
+
+
+@app.get("/health")
+def health() -> dict[str, str]:
+    return {"status": "ok", "surface": API_SURFACE}
+
+
+@app.get("/ready")
+def ready() -> dict[str, str]:
+    with pool.connection() as connection:
+        connection.execute("SELECT 1").fetchone()
+    return {"status": "ready", "surface": API_SURFACE}
+
+
+@app.post("/v1/jobs", status_code=status.HTTP_202_ACCEPTED)
+def create_job(
+    request: JobCreate,
+    background: BackgroundTasks,
+    _: None = Depends(require_gateway_token),
+    idempotency_key: str = Header(min_length=8, max_length=200),
+) -> dict[str, Any]:
+    try:
+        row, created = _persist_job(request, idempotency_key)
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(error)
+        ) from error
 
     if created:
-        background.add_task(dispatch_job, job_id, request)
+        background.add_task(dispatch_job, row["id"], request)
     return _public_job(row)
 
 
@@ -368,8 +451,7 @@ def create_job(
 def get_job(
     job_id: uuid.UUID, _: None = Depends(require_gateway_token)
 ) -> dict[str, Any]:
-    with pool.connection() as connection:
-        row = connection.execute("SELECT * FROM jobs WHERE id = %s", (job_id,)).fetchone()
+    row = _load_job(job_id)
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="job not found")
     return _public_job(row)
@@ -466,3 +548,117 @@ def receive_worker_event(
             )
 
     return {"accepted": True, "event_id": event.event_id, "duplicate": False}
+
+
+def _parse_job_id(job_id: str) -> uuid.UUID:
+    try:
+        return uuid.UUID(job_id)
+    except ValueError as error:
+        raise ValueError("job_id must be a valid UUID") from error
+
+
+@mcp.tool(
+    name="submit_job",
+    description=(
+        "Submit one bounded research, analysis, build, fix, or test job. "
+        "Only research and preview environments are accepted. Reuse the same "
+        "idempotency_key when retrying the same request."
+    ),
+    structured_output=True,
+)
+def mcp_submit_job(
+    action: MCPAction,
+    project_id: str,
+    environment: MCPEnvironment,
+    parameters: dict[str, Any] | None = None,
+    limits: dict[str, int] | None = None,
+    idempotency_key: str | None = None,
+) -> dict[str, Any]:
+    key = idempotency_key or f"grok-{uuid.uuid4()}"
+    if not 8 <= len(key) <= 200:
+        raise ValueError("idempotency_key must contain between 8 and 200 characters")
+
+    request = JobCreate(
+        action=action,
+        project_id=project_id,
+        environment=environment,
+        parameters=parameters or {},
+        limits=limits or {},
+    )
+    row, created = _persist_job(request, key)
+    if created:
+        dispatch_job(row["id"], request)
+        row = _load_job(row["id"]) or row
+    response = _public_job(row)
+    response["idempotency_key"] = key
+    response["idempotent_replay"] = not created
+    return response
+
+
+@mcp.tool(
+    name="get_job",
+    description="Get the current state and result of one Gateway job.",
+    structured_output=True,
+)
+def mcp_get_job(job_id: str) -> dict[str, Any]:
+    row = _load_job(_parse_job_id(job_id))
+    if row is None:
+        raise ValueError("job not found")
+    return _public_job(row)
+
+
+@mcp.tool(
+    name="wait_for_job",
+    description=(
+        "Wait briefly for a Gateway job to reach a terminal state, then return "
+        "its current state and result. The maximum timeout is 120 seconds."
+    ),
+    structured_output=True,
+)
+def mcp_wait_for_job(
+    job_id: str, timeout_seconds: int = 60, poll_interval_seconds: int = 2
+) -> dict[str, Any]:
+    if not 1 <= timeout_seconds <= 120:
+        raise ValueError("timeout_seconds must be between 1 and 120")
+    if not 1 <= poll_interval_seconds <= 10:
+        raise ValueError("poll_interval_seconds must be between 1 and 10")
+
+    parsed_job_id = _parse_job_id(job_id)
+    deadline = time.monotonic() + timeout_seconds
+    terminal_states = {"SUCCEEDED", "FAILED_FINAL", "CANCELLED", "NEEDS_REVIEW"}
+
+    while True:
+        row = _load_job(parsed_job_id)
+        if row is None:
+            raise ValueError("job not found")
+        response = _public_job(row)
+        if response["state"] in terminal_states or time.monotonic() >= deadline:
+            return response
+        time.sleep(min(poll_interval_seconds, max(0, deadline - time.monotonic())))
+
+
+@mcp.tool(
+    name="get_review_url",
+    description=(
+        "Return the signed Tailnet-only review URL from a completed job when one "
+        "is available. The URL is intended for the human operator."
+    ),
+    structured_output=True,
+)
+def mcp_get_review_url(job_id: str) -> dict[str, Any]:
+    row = _load_job(_parse_job_id(job_id))
+    if row is None:
+        raise ValueError("job not found")
+    result = row.get("result") or {}
+    review = result.get("review") if isinstance(result, dict) else None
+    return {
+        "job_id": str(row["id"]),
+        "state": row["state"],
+        "available": isinstance(review, dict) and bool(review.get("url")),
+        "review": review if isinstance(review, dict) else None,
+    }
+
+
+# Keep the MCP mount last so the explicit REST and health routes above retain
+# precedence. The mounted SDK app serves Streamable HTTP at /mcp.
+app.mount("/", mcp_http_app)
