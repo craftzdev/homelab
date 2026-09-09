@@ -1,0 +1,47 @@
+# ===========================================================================
+# Gateway API CRD
+#
+# ---------------------------------------------------------------------------
+# なぜ必要なのか
+# ---------------------------------------------------------------------------
+# Gateway API（GatewayClass / Gateway / HTTPRoute 等）は Kubernetes の
+# コア API ではなく CRD であり、Kubernetes 本体にも Cilium の chart にも
+# 含まれていない。別途インストールする必要がある。
+#
+# ⚠️ Cilium より **先に** 適用する必要がある。CRD が無い状態で
+#    `gatewayAPI.enabled: true` の Cilium を起動すると、operator が
+#    Gateway API のリソースを watch できずエラーを繰り返す。
+#
+# ---------------------------------------------------------------------------
+# なぜ ingress-nginx をやめたのか
+# ---------------------------------------------------------------------------
+# ingress-nginx は **2026 年 3 月で保守終了**した。公式の告知:
+#
+#   "Best-effort maintenance will continue until March 2026. Afterward,
+#    there will be no further releases, no bugfixes, and no updates to
+#    resolve any security vulnerabilities that may be discovered."
+#
+# 外部公開経路の入口（Tunnel 越しの全 HTTP リクエストを処理する場所）に
+# 「今後セキュリティ修正が出ないコンポーネント」を置くことは、
+# 本構成の最優先要件である「セキュアに構築する」に真っ向から反する。
+#
+# 代替として Cilium の Gateway API を選んだ。既に Cilium を使っており、
+# L7 プロキシ（Envoy）も同梱されているため、**新しいコンポーネントが
+# 増えない**ことが決め手だった。
+#
+# ---------------------------------------------------------------------------
+# ⚠️ 外部 URL を参照していることについて
+# ---------------------------------------------------------------------------
+# Gateway API の CRD は Helm chart として配布されていない（upstream が
+# YAML マニフェストで提供している）。kubelet-cert-approver と同じ理由で、
+# タグを固定した上で remote resource として参照する。
+#
+# standard チャネルを使う（experimental ではない）。Cilium 1.20 は
+# Gateway API v1.6.1 で全 Core conformance テストに合格している。
+# ===========================================================================
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  # renovate: datasource=github-releases depName=kubernetes-sigs/gateway-api
+  - https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.6.1/standard-install.yaml

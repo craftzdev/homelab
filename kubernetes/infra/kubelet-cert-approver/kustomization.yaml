@@ -1,0 +1,75 @@
+# ===========================================================================
+# kubelet-serving-cert-approver
+#
+# ---------------------------------------------------------------------------
+# なぜ必要なのか
+# ---------------------------------------------------------------------------
+# Talos の machine config で kubelet に
+#   rotate-server-certificates: "true"
+#   serverTLSBootstrap: true
+# を設定しているため、kubelet は自身の serving 証明書を CSR として申請する。
+# しかし **Kubernetes には kubelet serving 証明書を自動承認する仕組みが
+# 標準では存在しない**（意図的にそうなっている）。
+#
+# 承認されないと CSR が Pending のまま残り、kubelet の serving 証明書が
+# 自己署名のままになる。すると metrics-server や Prometheus が kubelet へ
+# 接続する際に証明書の検証に失敗する。
+#
+# 多くの構成はこれを `--kubelet-insecure-tls` で回避するが、それは
+# 「証明書の検証をやめる」ことであり中間者攻撃への耐性を失う。
+# このコンポーネントを入れることで、検証を有効にしたまま運用できる。
+#
+# ---------------------------------------------------------------------------
+# ⚠️ 外部 URL を resources に指定していることについて
+# ---------------------------------------------------------------------------
+# 本リポジトリは原則として「外部 URL から直接マニフェストを取得しない」
+# 方針を取っている（供給元の改竄がそのままクラスタへ反映されるため）。
+#
+# しかし kubelet-serving-cert-approver は **Helm chart を提供しておらず、
+# kustomize マニフェストのみで配布されている**。Helm chart のリポジトリは
+# 存在しない（`helm repo add https://alex1989hu.github.io/...` は 404）。
+#
+# そのため、以下の条件でリスクを限定した上で remote resource を使う。
+#
+#   1. **タグを固定する**（`main` や `latest` を参照しない）
+#      → タグは理論上は移動可能だが、ブランチを参照するより遥かに安定
+#   2. **更新は Renovate 経由で PR として受ける**
+#      → 差分をレビューしてからマージできる
+#   3. 取得元が単一のファイルであり、内容を目視確認できる規模である
+#
+# より厳格にしたい場合は、このマニフェストをリポジトリ内へ
+# ベンダリング（コピー）すること。更新の手間と引き換えに、
+# 外部への依存を完全に断てる。
+# ---------------------------------------------------------------------------
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  # renovate: datasource=github-releases depName=alex1989hu/kubelet-serving-cert-approver
+  - https://raw.githubusercontent.com/alex1989hu/kubelet-serving-cert-approver/v0.12.0/deploy/ha-install.yaml
+  - poddisruptionbudget.yaml
+
+# ---------------------------------------------------------------------------
+# 上流のマニフェストは control-plane への toleration を持たない。
+#
+# control-plane ノードの kubelet も CSR を出すため、承認する側が
+# control-plane 上でも動ける必要は無い（承認は API 経由で行われるため）。
+# したがって toleration の追加は不要である。
+#
+# ここでは HA 構成（replicas: 2）が同一ノードに固まらないよう、
+# topologySpreadConstraints だけを追加する。
+# ---------------------------------------------------------------------------
+patches:
+  - target:
+      kind: Deployment
+      name: kubelet-serving-cert-approver
+    patch: |-
+      - op: add
+        path: /spec/template/spec/topologySpreadConstraints
+        value:
+          - maxSkew: 1
+            topologyKey: kubernetes.io/hostname
+            whenUnsatisfiable: DoNotSchedule
+            labelSelector:
+              matchLabels:
+                app.kubernetes.io/name: kubelet-serving-cert-approver

@@ -1,7 +1,69 @@
+# ---------------------------------------------------------------------------
+# 機密情報 — 絶対にコミットしない
+# ---------------------------------------------------------------------------
+# Talos / Kubernetes のクレデンシャル
+talosconfig
+*.talosconfig
+kubeconfig
+*.kubeconfig
+secrets.yaml
+talos-secrets.yaml
+
+# age 秘密鍵
+*.agekey
+age.key
+key.txt
+
+# 復号済みの平文シークレット（*.sops.yaml のみコミット可）
+*.dec.yaml
+*.dec.json
+*.plain.yaml
+
+# Ceph キーリング
+*.keyring
+ceph.client.*.key
+
+# Cloudflare
+cloudflared-credentials.json
+.cloudflare-token
+
+# ---------------------------------------------------------------------------
+# OpenTofu / Terraform
+# ---------------------------------------------------------------------------
+.terraform/
+.terraform.lock.hcl.bak
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+tfplan
+*.tfplan
+destroy-plan-guard.json
+
+# ---------------------------------------------------------------------------
+# 生成物 / 一時ファイル
+# ---------------------------------------------------------------------------
+_out/
+_generated/
+*.log
+tmp/
+.DS_Store
 .vscode/
+.idea/
 
-external/
+# Node (workers/)
+node_modules/
+.wrangler/
+dist/
 
-# Local credentials
-.env
-**/.env
+# OpenTofu の provider lock file は環境依存のハッシュを含むが、
+# 再現性のためコミットする（除外しない）
+!.terraform.lock.hcl

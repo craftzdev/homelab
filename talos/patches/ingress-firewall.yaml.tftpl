@@ -1,0 +1,168 @@
+# ===========================================================================
+# Talos ingressFirewall — ノードへのインバウンド通信を既定で遮断する
+#
+# これは multi-document 形式の machine config パッチである。
+# v1alpha1 Config への strategic merge ではなく、独立したドキュメントとして
+# NetworkDefaultActionConfig / NetworkRuleConfig を追加する。
+#
+# ---------------------------------------------------------------------------
+# 設計方針
+# ---------------------------------------------------------------------------
+# ノードが接続されるネットワークを 3 つに分けて考える。
+#
+#   (1) VLAN40 (${k8s_subnet})  — Kubernetes ノード同士。ここは全ポート許可。
+#       このセグメントには Kubernetes ノードしか存在しない。ここを細かく
+#       絞ると、Cilium・etcd・kubelet・KubePrism など多数のコンポーネントの
+#       ポートを漏れなく列挙する必要があり、1 つでも漏らすとクラスタが
+#       起動しなくなる。「同じ信頼境界の中は開ける」方が、
+#       穴だらけの許可リストを維持するより安全で確実である。
+#
+#   (2) 管理経路 (${management_cidrs_desc}) — Talos API と kube-apiserver のみ。
+#       運用端末（Tailscale 経由）と Proxmox 管理セグメントから
+#       クラスタを操作するために必要な最小限のポートだけを開ける。
+#
+#   (3) それ以外 — 既定で block。
+#       Longhorn のレプリカ同期は VLAN40 内で完結するため影響を受けない。
+#
+# ---------------------------------------------------------------------------
+# ⚠️ 復旧手段について
+# ---------------------------------------------------------------------------
+# ファイアウォールの設定を誤ってノードに到達できなくなった場合、Talos には
+# SSH が無いため通常の手段では復旧できない。ただし本構成は nocloud
+# プラットフォームを使っており、machine config は Proxmox の cloud-init
+# ドライブ（snippets 上の user-data）から読まれる。したがって
+#
+#   1) このファイルを修正する
+#   2) tofu apply で snippets を更新する
+#   3) 対象 VM を Proxmox から再起動する
+#
+# で確実に復旧できる。手順は docs/50-operations.md を参照。
+# ===========================================================================
+---
+apiVersion: v1alpha1
+kind: NetworkDefaultActionConfig
+# 明示的に許可されていないインバウンドは全て遮断する。
+# egress は制限しない（コンテナレジストリ・NTP・バックアップ先への通信が必要なため）。
+ingress: block
+
+---
+# ---------------------------------------------------------------------------
+# (1) Kubernetes ノード間 — VLAN40 内は全ポート許可
+#
+# etcd(2379-2380) / kubelet(10250) / KubePrism(7445) / Cilium(4240,4244,4245) /
+# trustd(50001) / VXLAN(8472) など、ノード間で必要なポートは多岐にわたる。
+# 同一信頼境界内であるため個別列挙はせず、まとめて許可する。
+# ---------------------------------------------------------------------------
+apiVersion: v1alpha1
+kind: NetworkRuleConfig
+name: node-to-node-tcp
+portSelector:
+  ports:
+    - 1-65535
+  protocol: tcp
+ingress:
+  - subnet: ${k8s_subnet}
+
+---
+apiVersion: v1alpha1
+kind: NetworkRuleConfig
+name: node-to-node-udp
+portSelector:
+  ports:
+    - 1-65535
+  protocol: udp
+ingress:
+  - subnet: ${k8s_subnet}
+
+---
+# ---------------------------------------------------------------------------
+# Pod ネットワークからノードへの通信
+#
+# Cilium は native routing で動作するため、Pod のトラフィックが
+# ホストのネットワークスタックを通過する。hostNetwork の Pod や
+# health check がノード宛に通信するため、これを遮断すると
+# CNI が正常に動作しない。
+#
+# ⚠️ Service CIDR (${service_cidr}) は **送信元として指定しない**。
+#    Service の ClusterIP は宛先アドレスであり、パケットの送信元に
+#    現れることはない（DNAT 後の送信元は Pod IP のまま）。
+#    送信元 CIDR として書いても意味が無く、
+#    「許可されているつもり」の無効なルールが増えるだけになる。
+# ---------------------------------------------------------------------------
+apiVersion: v1alpha1
+kind: NetworkRuleConfig
+name: pod-network-tcp
+portSelector:
+  ports:
+    - 1-65535
+  protocol: tcp
+ingress:
+  - subnet: ${pod_cidr}
+
+---
+apiVersion: v1alpha1
+kind: NetworkRuleConfig
+name: pod-network-udp
+portSelector:
+  ports:
+    - 1-65535
+  protocol: udp
+ingress:
+  - subnet: ${pod_cidr}
+
+---
+# ---------------------------------------------------------------------------
+# (2) 管理経路 — Talos API のみ
+#
+# ポート 50000 は apid（Talos の管理 API）。到達できても mTLS の
+# クライアント証明書（talosconfig）が無ければ何もできないが、
+# 攻撃面を減らすため送信元を限定する。
+# ---------------------------------------------------------------------------
+apiVersion: v1alpha1
+kind: NetworkRuleConfig
+name: talos-api
+portSelector:
+  ports:
+    - 50000
+  protocol: tcp
+ingress:
+${management_ingress}
+
+---
+# ---------------------------------------------------------------------------
+# (2) 管理経路 — kube-apiserver のみ
+#
+# ⚠️ ここを 0.0.0.0/0 に広げることは、Kubernetes API をネットワーク全体へ
+#    公開することと同義である。インターネットへの公開は絶対に行わない
+#    （docs/20-security-design.md §4 の「採用しなかった対策」を参照）。
+# ---------------------------------------------------------------------------
+apiVersion: v1alpha1
+kind: NetworkRuleConfig
+name: kube-apiserver
+portSelector:
+  ports:
+    - 6443
+  protocol: tcp
+ingress:
+${management_ingress}
+
+---
+# ---------------------------------------------------------------------------
+# ICMP — 疎通確認のために管理経路からのみ許可する
+#
+# `talosctl docs config` で出力した NetworkRuleConfig の仕様を確認し、
+# protocol に icmp / icmpv6 が使えることを確認済み。
+#
+# ping が通ることは運用の切り分けで価値がある（「ノードが生きているか」を
+# talosctl の証明書無しで確認できる）。ICMP 自体の情報漏洩リスクは小さく、
+# 送信元を管理セグメントに限定しているため許可する。
+# ---------------------------------------------------------------------------
+apiVersion: v1alpha1
+kind: NetworkRuleConfig
+name: icmp
+portSelector:
+  ports:
+    - 1-65535
+  protocol: icmp
+ingress:
+${management_ingress}

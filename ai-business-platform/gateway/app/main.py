@@ -4,6 +4,8 @@ import hashlib
 import hmac
 import json
 import os
+import urllib.error
+import urllib.request
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -11,7 +13,7 @@ from functools import lru_cache
 from typing import Any, Literal
 
 import jwt
-from fastapi import Depends, FastAPI, Header, HTTPException, status
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, status
 from jwt import PyJWKClient
 from pydantic import BaseModel, Field
 from psycopg.errors import UniqueViolation
@@ -23,6 +25,8 @@ API_SURFACE = os.environ.get("API_SURFACE", "public")
 DATABASE_URL = os.environ["DATABASE_URL"]
 GATEWAY_API_TOKEN = os.environ["GATEWAY_API_TOKEN"]
 WORKER_CALLBACK_TOKEN = os.environ["WORKER_CALLBACK_TOKEN"]
+WORKER_BASE_URL = os.environ.get("WORKER_BASE_URL", "").rstrip("/")
+WORKER_API_TOKEN = os.environ.get("WORKER_API_TOKEN", "")
 CLOUDFLARE_ACCESS_REQUIRED = os.environ.get(
     "CLOUDFLARE_ACCESS_REQUIRED", "false"
 ).lower() in {"1", "true", "yes"}
@@ -197,8 +201,89 @@ class WorkerEvent(BaseModel):
     data: dict[str, Any] = Field(default_factory=dict)
 
 
+WORKER_ENDPOINTS = {
+    "browser.research": "browser",
+    "analytics.read": "data",
+    "stripe.read": "data",
+    "code.build": "build",
+    "code.fix": "build",
+    "test.run": "test",
+}
+
+
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def dispatch_job(job_id: uuid.UUID, request: JobCreate) -> None:
+    """Dispatch a persisted Gateway job to one typed Worker endpoint."""
+    endpoint = WORKER_ENDPOINTS.get(request.action)
+    if endpoint is None:
+        with pool.connection() as connection:
+            connection.execute(
+                "UPDATE jobs SET state = 'FAILED_FINAL', result = %s, updated_at = %s "
+                "WHERE id = %s AND state = 'QUEUED'",
+                (
+                    json.dumps({"error": "action has no enabled worker executor"}),
+                    utcnow(),
+                    job_id,
+                ),
+            )
+            connection.commit()
+        return
+
+    if not WORKER_BASE_URL or not WORKER_API_TOKEN:
+        error = "worker dispatch is not configured"
+    else:
+        dispatch_id = f"gateway:{job_id}:1"
+        body = json.dumps(
+            {
+                "gateway_job_id": str(job_id),
+                "dispatch_id": dispatch_id,
+                "action": request.action,
+                "project_id": request.project_id,
+                "parameters": request.parameters,
+                "limits": request.limits,
+            }
+        ).encode()
+        worker_request = urllib.request.Request(
+            f"{WORKER_BASE_URL}/v1/jobs/{endpoint}",
+            data=body,
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {WORKER_API_TOKEN}",
+                "Content-Type": "application/json",
+            },
+        )
+        try:
+            with urllib.request.urlopen(worker_request, timeout=20) as response:
+                if response.status != status.HTTP_202_ACCEPTED:
+                    raise RuntimeError(f"worker returned HTTP {response.status}")
+                worker_response = json.load(response)
+            worker_job_id = worker_response["worker_job_id"]
+            with pool.connection() as connection:
+                connection.execute(
+                    """
+                    UPDATE jobs
+                       SET state = CASE WHEN state = 'QUEUED' THEN 'DISPATCHED' ELSE state END,
+                           worker_job_id = %s,
+                           updated_at = %s
+                     WHERE id = %s
+                    """,
+                    (worker_job_id, utcnow(), job_id),
+                )
+                connection.commit()
+            return
+        except (urllib.error.URLError, TimeoutError, RuntimeError, KeyError, ValueError):
+            error = "worker dispatch failed"
+
+    with pool.connection() as connection:
+        connection.execute(
+            "UPDATE jobs SET state = 'FAILED_FINAL', result = %s, updated_at = %s "
+            "WHERE id = %s AND state = 'QUEUED'",
+            (json.dumps({"error": error}), utcnow(), job_id),
+        )
+        connection.commit()
 
 
 def _public_job(row: dict[str, Any]) -> dict[str, Any]:
@@ -230,6 +315,7 @@ def ready() -> dict[str, str]:
 @app.post("/v1/jobs", status_code=status.HTTP_202_ACCEPTED)
 def create_job(
     request: JobCreate,
+    background: BackgroundTasks,
     _: None = Depends(require_gateway_token),
     idempotency_key: str = Header(min_length=8, max_length=200),
 ) -> dict[str, Any]:
@@ -237,6 +323,7 @@ def create_job(
     job_id = uuid.uuid7() if hasattr(uuid, "uuid7") else uuid.uuid4()
     payload = request.model_dump(mode="json")
     payload_hash = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+    created = False
 
     with pool.connection() as connection:
         try:
@@ -260,6 +347,7 @@ def create_job(
                 ),
             ).fetchone()
             connection.commit()
+            created = True
         except UniqueViolation:
             connection.rollback()
             row = connection.execute(
@@ -271,6 +359,8 @@ def create_job(
                     detail="idempotency key already used with a different request",
                 )
 
+    if created:
+        background.add_task(dispatch_job, job_id, request)
     return _public_job(row)
 
 

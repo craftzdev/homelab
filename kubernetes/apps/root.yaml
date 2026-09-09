@@ -1,0 +1,50 @@
+# ===========================================================================
+# app-of-apps のルート
+#
+# この Application ひとつを apply すれば、kubernetes/apps/ 配下の
+# 全ての Application が ArgoCD に登録され、以降は Git が唯一の
+# 情報源になる。
+#
+# 適用:
+#   kubectl apply -f kubernetes/apps/root.yaml
+#   （scripts/bootstrap-argocd.sh が自動で行う）
+# ===========================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: root
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  # ⚠️ `default` プロジェクトは使わない。
+  #    ArgoCD の default プロジェクトは任意のリポジトリ・任意の namespace・
+  #    全リソース種別を許可する。app-of-apps の root は最も強い権限を持つ
+  #    ため、ここが無制限だと子 Application 側の制限を迂回できてしまう。
+  #    bootstrap プロジェクトは「Application / AppProject を argocd
+  #    namespace に作る」ことだけを許可する（project.yaml 参照）。
+  project: bootstrap
+
+  source:
+    repoURL: https://github.com/craftzdev/homelab.git
+    targetRevision: main
+    path: kubernetes/apps
+    directory:
+      recurse: false
+      # root.yaml 自身を再帰的に読み込まないよう除外する
+      # （自己参照によるループを防ぐ）
+      exclude: "root.yaml"
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+
+  syncPolicy:
+    automated:
+      # Git から消えたリソースをクラスタからも削除する
+      prune: true
+      # 手動変更を Git の状態へ戻す（構成ドリフトの自動修復）
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false
+      - ApplyOutOfSyncOnly=true

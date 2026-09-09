@@ -1,0 +1,85 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: security
+  labels:
+    # Trivy Operator も cert-approver も非特権で動作する
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+
+    app.kubernetes.io/name: security
+    app.kubernetes.io/part-of: security
+
+---
+# ===========================================================================
+# セキュリティコンポーネントの通信制限
+# ===========================================================================
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: security
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: security-baseline
+  namespace: security
+spec:
+  endpointSelector: {}
+
+  egress:
+    # --- DNS ---
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+
+    # --- kube-apiserver ---
+    # cert-approver は CSR を、Trivy は Pod/イメージ情報を watch する
+    - toEntities:
+        - kube-apiserver
+
+    # -----------------------------------------------------------------------
+    # --- 脆弱性データベースの取得（Trivy）---
+    #
+    # Trivy は起動時と定期的に脆弱性 DB をダウンロードする。
+    # HTTPS のみに限定し、宅内ネットワークへは出られないようにする。
+    # （宅内への遮断はクラスタワイドの egressDeny でも二重に効いている）
+    # -----------------------------------------------------------------------
+    - toCIDRSet:
+        - cidr: 0.0.0.0/0
+          except:
+            - 172.16.0.0/12
+            - 10.0.0.0/8
+            - 192.168.0.0/16
+            - 100.64.0.0/10
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+
+  ingress:
+    # メトリクス取得
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: monitoring
+    # health probe
+    - fromEntities:
+        - host
+        - remote-node
+    # webhook（apiserver から呼ばれる）
+    - fromEntities:
+        - kube-apiserver

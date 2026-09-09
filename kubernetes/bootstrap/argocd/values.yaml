@@ -1,0 +1,311 @@
+# ===========================================================================
+# ArgoCD — GitOps コントローラ
+#
+# ⚠️ ArgoCD は「クラスタに何でもデプロイできる」権限を持つ。
+#    実質的にクラスタの管理権限そのものであり、UI をインターネットへ
+#    公開することは絶対に避ける（docs/20-security-design.md §4）。
+#    アクセスは port-forward または宅内 LAN のみとする。
+#
+# 秘密管理は SOPS + age（KSOPS）。判断の経緯は
+# docs/adr/0006-argocd-sops.md を参照。
+# ===========================================================================
+
+global:
+  # ノードが 1 台落ちても GitOps が止まらないようにする
+  priorityClassName: system-cluster-critical
+
+# ---------------------------------------------------------------------------
+# CRD は Helm に管理させる
+# ---------------------------------------------------------------------------
+crds:
+  install: true
+  keep: true
+
+# ===========================================================================
+# repo-server — KSOPS による SOPS 復号を組み込む
+#
+# ArgoCD は Git 上のマニフェストをレンダリングする際、
+# kustomize の exec プラグインとして ksops を呼び出す。
+# ksops が age 秘密鍵で *.sops.yaml を復号し、Secret を生成する。
+# ===========================================================================
+repoServer:
+  replicas: 2
+
+  # 初回再構築時は全 Application のリポジトリ取得・レンダリングが集中する。
+  # 1 秒のデフォルト probe は正常な高負荷処理をハングと誤判定するため、
+  # 起動猶予と現実的な応答時間を与えて不要な再起動ループを防ぐ。
+  readinessProbe:
+    timeoutSeconds: 5
+    failureThreshold: 6
+  livenessProbe:
+    # full=true は処理中の repository RPC まで確認するため、初回同期の
+    # 長い manifest generation をプロセス障害と誤認する。プロセス自身の
+    # health endpoint を liveness に使い、処理可否は readiness に任せる。
+    httpPath: /healthz
+    timeoutSeconds: 5
+    failureThreshold: 6
+  startupProbe:
+    enabled: true
+    timeoutSeconds: 5
+    failureThreshold: 30
+
+  # -------------------------------------------------------------------------
+  # ksops と kustomize のバイナリを initContainer で持ち込む
+  #
+  # 公式イメージに ksops は含まれないため、カスタムイメージを作るか
+  # initContainer でコピーするかの二択になる。initContainer 方式なら
+  # イメージのビルドとレジストリ運用が不要で、バージョンも
+  # このファイルで一元管理できる。
+  # -------------------------------------------------------------------------
+  initContainers:
+    - name: install-ksops
+      image: viaductoss/ksops:v4.5.1
+      # ---------------------------------------------------------------------
+      # ksops 公式が提供する install サブコマンドを使う。
+      #
+      # 単にバイナリを cp するのではなく install を使う理由:
+      #   ksops は kustomize の exec プラグイン API に依存しており、
+      #   動作確認された組み合わせの kustomize を同梱している。
+      #   `--with-kustomize` はその kustomize も一緒に配置するため、
+      #   バージョンの不整合による「プラグインが読み込まれない」事故を防げる。
+      # ---------------------------------------------------------------------
+      command: ["/usr/local/bin/ksops", "install", "--with-kustomize", "/custom-tools"]
+      volumeMounts:
+        - name: custom-tools
+          mountPath: /custom-tools
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        runAsNonRoot: true
+        # The upstream image declares USER "nonroot" by name. Kubernetes
+        # cannot prove a non-numeric user is non-root and rejects the Pod under
+        # restricted policy, so pin the image's actual passwd UID/GID.
+        runAsUser: 65532
+        runAsGroup: 65532
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault
+
+  volumes:
+    - name: custom-tools
+      emptyDir: {}
+    # age 秘密鍵。scripts/bootstrap-argocd.sh が Secret として作成する。
+    # ⚠️ この鍵を持つ者は、リポジトリ内の全ての暗号化済み秘密を復号できる。
+    - name: sops-age
+      secret:
+        secretName: sops-age
+        defaultMode: 0400
+
+  volumeMounts:
+    - name: custom-tools
+      mountPath: /usr/local/bin/ksops
+      subPath: ksops
+    - name: custom-tools
+      mountPath: /usr/local/bin/kustomize
+      subPath: kustomize
+    - name: sops-age
+      mountPath: /home/argocd/.config/sops/age
+      readOnly: true
+
+  env:
+    - name: SOPS_AGE_KEY_FILE
+      value: /home/argocd/.config/sops/age/keys.txt
+    # XDG_CONFIG_HOME を明示しないと sops が鍵を見つけられないことがある
+    - name: XDG_CONFIG_HOME
+      value: /home/argocd/.config
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+
+# ===========================================================================
+# controller
+# ===========================================================================
+controller:
+  replicas: 1 # 小規模クラスタでは 1 で十分（sharding は不要）
+
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      memory: 2Gi
+
+# ===========================================================================
+# server（Web UI / API）
+# ===========================================================================
+server:
+  replicas: 2
+
+  # 初回GitOps収束時の大量API問い合わせを、full health liveness が
+  # プロセス障害と誤認しないよう repo-server と同じ方針にする。
+  readinessProbe:
+    timeoutSeconds: 5
+    failureThreshold: 6
+  livenessProbe:
+    httpPath: /healthz
+    timeoutSeconds: 5
+    failureThreshold: 6
+  startupProbe:
+    enabled: true
+    timeoutSeconds: 5
+    failureThreshold: 30
+
+  # -------------------------------------------------------------------------
+  # Ingress を作らない
+  #
+  # ArgoCD へのアクセスは以下のいずれかで行う:
+  #   kubectl -n argocd port-forward svc/argocd-server 8080:443
+  #
+  # Ingress を作ると、cloudflared の ingress ルールに誤って追加された
+  # 場合に外部公開されてしまう。そもそも作らないことで事故を防ぐ。
+  # -------------------------------------------------------------------------
+  ingress:
+    enabled: false
+
+  service:
+    type: ClusterIP
+
+  # ---------------------------------------------------------------------------
+  # ⚠️ --insecure（HTTP で動作）にしている判断について
+  #
+  # codex のレビューで「ArgoCD API がクラスタ内で平文かつ無制限に到達可能」と
+  # 指摘された。正確には次の状況である。
+  #
+  #   - server は HTTP で待ち受ける（TLS 終端しない）
+  #   - ノード間の通信は Cilium の WireGuard で暗号化される
+  #   - **同一ノード内の Pod 間通信は WireGuard でも暗号化されない**
+  #
+  # つまり「同じノードに載った侵害済み Pod からは平文で見える」。
+  #
+  # これを踏まえた上で --insecure を維持する理由:
+  #   1. ArgoCD の namespace に default-deny を敷き、
+  #      到達できる送信元を限定した（kubernetes/infra/policies/）
+  #   2. Ingress を作らず、アクセスは port-forward のみ
+  #      （apiserver 経由なので TLS で保護される）
+  #   3. TLS を有効にすると port-forward 時に自己署名証明書の
+  #      エラーを毎回回避することになり、かえって
+  #      「証明書警告を無視する習慣」を作る
+  #
+  # ⚠️ ただしこれは「小規模で、UI を外部公開しない」前提の判断である。
+  #    ArgoCD を宅内 LAN へ公開する、あるいは複数人で使うようになったら
+  #    TLS を有効にし直すこと。
+  # ---------------------------------------------------------------------------
+  extraArgs:
+    - --insecure
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+
+# ===========================================================================
+# 設定
+# ===========================================================================
+configs:
+  cm:
+    # -----------------------------------------------------------------------
+    # kustomize の exec プラグインを有効化する（KSOPS に必要）
+    #
+    # ⚠️ --enable-exec は「kustomize が任意の外部コマンドを実行できる」
+    #    ことを意味する。リポジトリに悪意あるジェネレータが混入すると
+    #    repo-server 上で任意コード実行が可能になる。
+    #    このリポジトリへの書き込み権限を厳格に管理すること
+    #    （ブランチ保護、PR レビュー必須）。
+    # -----------------------------------------------------------------------
+    kustomize.buildOptions: "--enable-alpha-plugins --enable-exec"
+
+    # アプリケーションの自動同期でリソースが消える事故を防ぐ
+    application.resourceTrackingMethod: annotation
+
+    # タイムアウト（大きな Helm chart のレンダリング用）
+    timeout.reconciliation: 180s
+
+    # -----------------------------------------------------------------------
+    # 除外するリソース
+    #
+    # ArgoCD が管理すべきでないもの。特に Cilium の Endpoint や
+    # Identity は大量に生成され、ArgoCD の負荷になる。
+    # -----------------------------------------------------------------------
+    resource.exclusions: |
+      - apiGroups:
+          - cilium.io
+        kinds:
+          - CiliumIdentity
+          - CiliumEndpoint
+          - CiliumEndpointSlice
+          - CiliumNode
+        clusters:
+          - "*"
+
+  params:
+    server.insecure: true
+
+  # -------------------------------------------------------------------------
+  # RBAC
+  #
+  # 既定のロールを readonly にする。ArgoCD にログインしただけでは
+  # 何も変更できない状態から始める。
+  # -------------------------------------------------------------------------
+  rbac:
+    policy.default: role:readonly
+    policy.csv: |
+      # 管理者ロール
+      p, role:homelab-admin, applications, *, */*, allow
+      p, role:homelab-admin, clusters, *, *, allow
+      p, role:homelab-admin, repositories, *, *, allow
+      p, role:homelab-admin, projects, *, *, allow
+      p, role:homelab-admin, logs, get, */*, allow
+      p, role:homelab-admin, exec, create, */*, deny
+
+      # admin アカウントに管理者ロールを付与
+      g, admin, role:homelab-admin
+    scopes: "[groups]"
+
+  # -------------------------------------------------------------------------
+  # ⚠️ 初期 admin パスワードについて
+  #
+  # ArgoCD は初回起動時に argocd-initial-admin-secret を作成する。
+  # これは必ず変更し、Secret を削除すること:
+  #
+  #   argocd login localhost:8080 --username admin \
+  #     --password "$(kubectl -n argocd get secret argocd-initial-admin-secret \
+  #                    -o jsonpath='{.data.password}' | base64 -d)"
+  #   argocd account update-password
+  #   kubectl -n argocd delete secret argocd-initial-admin-secret
+  #
+  # 手順は docs/50-operations.md に記載。
+  # -------------------------------------------------------------------------
+
+# ===========================================================================
+# 不要なコンポーネントを無効化する（攻撃面の削減）
+# ===========================================================================
+
+# 通知は使わない
+notifications:
+  enabled: false
+
+# ApplicationSet は使う（将来的なアプリの動的生成に備える）
+applicationSet:
+  enabled: true
+  replicas: 1
+
+# Dex（外部 IdP 連携）は使わない。
+# ローカル admin アカウントのみで運用する。
+dex:
+  enabled: false
+
+redis:
+  enabled: true
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi

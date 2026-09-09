@@ -1,0 +1,111 @@
+# ===========================================================================
+# Longhorn の通信制限
+#
+# ---------------------------------------------------------------------------
+# ⚠️ このポリシーで守れる範囲を正確に理解すること
+# ---------------------------------------------------------------------------
+# Longhorn のコンポーネントの一部（instance-manager 等）は
+# hostNetwork で動くため、CiliumNetworkPolicy が適用されない。
+# また、実際のデータ転送は iSCSI を介してカーネルが行うため、
+# Pod のネットワーク名前空間を通らない。
+#
+# したがってこのポリシーが守るのは主に manager / UI / CSI サイドカーであり、
+# データパスそのものではない。データパスを守っているのは
+#
+#   1. Longhorn の通信が VLAN40（Kubernetes 専用セグメント）に閉じていること
+#   2. Talos の ingressFirewall が VLAN40 以外からの inbound を遮断すること
+#   3. Cilium の WireGuard によるノード間暗号化
+#
+# である。Ceph 時代の ceph-csi と同じ構造的な制約である。
+# ===========================================================================
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: longhorn-system
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: longhorn-rules
+  namespace: longhorn-system
+spec:
+  endpointSelector: {}
+
+  egress:
+    # --- DNS ---
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+
+    # --- kube-apiserver ---
+    # Longhorn は CRD でボリュームの状態を管理するため必須
+    - toEntities:
+        - kube-apiserver
+
+    # --- Longhorn コンポーネント同士 ---
+    # manager / instance-manager / engine 間のレプリカ同期
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: longhorn-system
+
+    # --- ノード（hostNetwork の instance-manager 等）---
+    # レプリカの読み書きはノード間で行われる
+    - toEntities:
+        - host
+        - remote-node
+
+    # -----------------------------------------------------------------------
+    # --- バックアップ先のオブジェクトストレージ ---
+    #
+    # 外部 S3（Cloudflare R2 等）へバックアップを転送する。
+    # 宅内ネットワークへは出さない（クラスタワイドの egressDeny でも
+    # 二重に塞いでいるが、ここでも明示する）。
+    # -----------------------------------------------------------------------
+    - toCIDRSet:
+        - cidr: 0.0.0.0/0
+          except:
+            - 172.16.0.0/12
+            - 10.0.0.0/8
+            - 192.168.0.0/16
+            - 100.64.0.0/10
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+
+  ingress:
+    # --- Longhorn コンポーネント同士 ---
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: longhorn-system
+
+    # --- ノードから（kubelet の probe、hostNetwork コンポーネント）---
+    - fromEntities:
+        - host
+        - remote-node
+
+    # --- Prometheus によるメトリクス取得 ---
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: monitoring
+
+    # --- CSI ドライバを使う全 namespace の Pod ---
+    #
+    # ボリュームをマウントする Pod は Longhorn の CSI ソケット経由で
+    # 通信する（ネットワークを介さない）が、UI への参照や
+    # webhook 経由の通信が発生する場合がある。
+    - fromEntities:
+        - kube-apiserver

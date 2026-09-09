@@ -1,0 +1,95 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":dependencyDashboard",
+    ":semanticCommits"
+  ],
+  "timezone": "Asia/Tokyo",
+  "schedule": ["after 9am and before 6pm on saturday"],
+
+  "_comment_why": [
+    "バージョンを固定する（latest を使わない）方針を取っているため、",
+    "更新を人手で追い続けるのは現実的でない。Renovate が PR を出し、",
+    "レビューしてマージする形にすることで、",
+    "  - 何がいつ更新されたかが Git 履歴に残る",
+    "  - 破壊的変更を事前に確認できる",
+    "  - セキュリティ更新を見落としにくくなる",
+    "という状態を保つ。"
+  ],
+
+  "packageRules": [
+    {
+      "description": "セキュリティ修正は即座に PR を出す（スケジュール外でも）",
+      "matchDatasources": ["docker", "helm", "github-releases"],
+      "vulnerabilityAlerts": {
+        "enabled": true
+      }
+    },
+    {
+      "description": "パッチ更新はまとめて 1 つの PR にする（レビュー負荷の削減）",
+      "matchUpdateTypes": ["patch"],
+      "groupName": "patch updates"
+    },
+    {
+      "description": "Talos と Kubernetes はバージョンの組み合わせに制約があるため個別に扱う",
+      "matchPackageNames": [
+        "siderolabs/talos",
+        "/kubernetes/"
+      ],
+      "groupName": null,
+      "labels": ["needs-compatibility-check"],
+      "prBodyNotes": [
+        ":warning: Talos と Kubernetes のサポート組み合わせを必ず確認すること",
+        "https://www.talos.dev/latest/introduction/support-matrix/"
+      ]
+    },
+    {
+      "description": "CNI と CSI は影響が大きいため自動マージしない",
+      "matchPackageNames": [
+        "cilium",
+        "/ceph-csi/"
+      ],
+      "automerge": false,
+      "labels": ["critical-infrastructure"],
+      "prBodyNotes": [
+        ":warning: CNI/CSI の更新はクラスタ全体に影響する。",
+        "メンテナンス時間帯に、1 コンポーネントずつ適用すること。"
+      ]
+    },
+    {
+      "description": "cloudflared は外部公開経路の要。更新の遅延はセキュリティリスク",
+      "matchPackageNames": ["/cloudflared/"],
+      "labels": ["external-access"],
+      "schedule": ["at any time"]
+    }
+  ],
+
+  "customManagers": [
+    {
+      "description": "OpenTofu 変数の既定値に書かれた Talos バージョンを追跡する",
+      "customType": "regex",
+      "managerFilePatterns": ["/^tofu/.+\\.tf$/"],
+      "matchStrings": [
+        "#\\s*renovate:\\s*datasource=(?<datasource>.*?)\\s+depName=(?<depName>.*?)\\s*\\n\\s*default\\s*=\\s*\"(?<currentValue>.*?)\""
+      ]
+    },
+    {
+      "description": "ArgoCD Application の Helm chart バージョンを追跡する",
+      "customType": "regex",
+      "managerFilePatterns": ["/^kubernetes/apps/.+\\.yaml$/"],
+      "matchStrings": [
+        "repoURL:\\s*(?<registryUrl>https://[^\\s]+)\\s*\\n\\s*chart:\\s*(?<depName>[^\\s]+)\\s*\\n\\s*targetRevision:\\s*(?<currentValue>[^\\s]+)"
+      ],
+      "datasourceTemplate": "helm"
+    }
+  ],
+
+  "helm-values": {
+    "managerFilePatterns": ["/^kubernetes/infra/.+/values.*\\.yaml$/"]
+  },
+
+  "kubernetes": {
+    "managerFilePatterns": ["/^kubernetes/.+\\.yaml$/"]
+  }
+}

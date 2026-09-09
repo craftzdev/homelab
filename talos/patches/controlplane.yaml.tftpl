@@ -1,0 +1,414 @@
+# ===========================================================================
+# Talos machine config パッチ — control-plane
+#
+# 生成元: tofu/10-proxmox-talos/machine-config.tf
+# 適用は必ず `tofu apply` 経由で行うこと（手で talosctl apply-config しない）。
+#
+# 設計意図は docs/20-security-design.md を参照。
+# ===========================================================================
+machine:
+  # -------------------------------------------------------------------------
+  # インストール
+  # -------------------------------------------------------------------------
+  install:
+    # VM のディスクは scsi0 の 1 本のみ。virtio-scsi-single で /dev/sda になる。
+    disk: /dev/sda
+
+    # Image Factory で生成した installer を明示的に指定する。
+    # これを省略すると vanilla Talos がインストールされ、
+    # qemu-guest-agent 等の system extension が消える。
+    image: ${installer_image}
+
+    # 既存データを消さない（再インストール時の事故防止）
+    wipe: false
+
+  # -------------------------------------------------------------------------
+  # ネットワーク
+  #
+  # NIC は MAC アドレスで選択する。Proxmox の PCI スロット順やカーネルの
+  # インタフェース命名に依存しないため、これが最も確実な方法である。
+  # MAC は tofu/10-proxmox-talos/variables.tf で固定的に払い出している。
+  # -------------------------------------------------------------------------
+  network:
+    # ⚠️ hostname はここ（v1alpha1）には書かない。
+    #    Talos v1.13 では HostnameConfig ドキュメントが常に生成されるため、
+    #    v1alpha1 側に hostname があると
+    #      "static hostname is already set in v1alpha1 config"
+    #    で validate が失敗する（talosctl v1.13 で実測確認済み）。
+    #    ホスト名の扱いはこのファイル末尾の HostnameConfig を参照。
+    nameservers: ${nameservers}
+
+    interfaces:
+      # --- eth0 相当: VLAN40（Kubernetes 全般）---
+      - deviceSelector:
+          hardwareAddr: "${mac_k8s}"
+        addresses:
+          - ${ip}/24
+        routes:
+          - network: 0.0.0.0/0
+            gateway: ${gateway}
+        mtu: 1500
+        dhcp: false
+
+        # kube-apiserver の VIP。
+        # Talos が control-plane 間で自動的にフェイルオーバーさせるため、
+        # keepalived / haproxy を別途動かす必要がない。
+        vip:
+          ip: ${vip}
+
+  # -------------------------------------------------------------------------
+  # 時刻同期
+  # 証明書の検証と etcd のリース管理は時刻に強く依存する。必ず同期させる。
+  # -------------------------------------------------------------------------
+  time:
+    disabled: false
+    servers: ${ntp_servers}
+
+  # -------------------------------------------------------------------------
+  # Talos の機能フラグ
+  # -------------------------------------------------------------------------
+  features:
+    # Talos API の RBAC。talosconfig のロールに応じて操作を制限する。
+    rbac: true
+
+    # ⚠️ stableHostname は設定しない。
+    #    Talos v1.13 ではホスト名の扱いが HostnameConfig ドキュメント
+    #    （このファイル末尾）へ移行しており、併用すると競合する。
+
+    # クライアント証明書の ExtKeyUsage を検証する。
+    # 無効にすると証明書の用途を偽装される余地が生まれる。
+    apidCheckExtKeyUsage: true
+
+    # KubePrism: 各ノード上の localhost:7445 に kube-apiserver への
+    # ロードバランサを提供する。Cilium が kube-proxy を置き換える構成では
+    # CNI 起動前に apiserver へ到達する経路が必要になるため必須。
+    # VIP を単一障害点にしない効果もある。
+    kubePrism:
+      enabled: true
+      port: 7445
+
+    # ノード上の DNS キャッシュを有効化し、CoreDNS の上流をここへ向ける。
+    hostDNS:
+      enabled: true
+      forwardKubeDNSToHost: true
+
+  # -------------------------------------------------------------------------
+  # ディスク暗号化（LUKS2）
+  #
+  # STATE     : machine config とノードのシークレットが置かれる
+  # EPHEMERAL : コンテナイメージ、emptyDir、コンテナのログ
+  #
+  # 鍵は nodeID 方式（ノードの UUID から導出）を使う。
+  #
+  # ⚠️ 限界の明示: この方式は「ディスクを抜き取って別マシンで読む」攻撃には
+  #    有効だが、「VM ごとコピーされる」ケースは防げない（UUID も一緒に
+  #    コピーされるため）。より強い保証が必要なら TPM 方式へ移行すること。
+  #    詳細は docs/20-security-design.md §3 L5 を参照。
+  # -------------------------------------------------------------------------
+  systemDiskEncryption:
+    state:
+      provider: luks2
+      keys:
+        - nodeID: {}
+          slot: 0
+    ephemeral:
+      provider: luks2
+      keys:
+        - nodeID: {}
+          slot: 0
+
+  # -------------------------------------------------------------------------
+  # kubelet
+  # -------------------------------------------------------------------------
+  kubelet:
+    # ノードの InternalIP を VLAN40 側に固定する。
+    # デュアル NIC 構成では、これを指定しないと kubelet が VLAN20 側の
+    # アドレスを選ぶ可能性があり、Pod 間通信やメトリクス取得が壊れる。
+    nodeIP:
+      validSubnets:
+        - ${k8s_subnet}
+
+    extraArgs:
+      # kubelet の serving 証明書を CSR 経由で発行・自動更新する。
+      # これにより metrics-server が --kubelet-insecure-tls を使わずに済む。
+      # CSR を承認するため kubelet-serving-cert-approver を別途デプロイする
+      # （kubernetes/infra/kubelet-cert-approver/）。
+      rotate-server-certificates: "true"
+
+    extraConfig:
+      serverTLSBootstrap: true
+
+    # -----------------------------------------------------------------------
+    # Longhorn のデータパスを kubelet から見えるようにする
+    #
+    # Longhorn の manager / instance-manager は kubelet の mount namespace
+    # を通してレプリカを読み書きする。rshared にしないと、Longhorn が
+    # 作ったマウントが kubelet 側へ伝播せず、Pod がボリュームを
+    # 見つけられない（原因が非常に分かりにくい失敗をする）。
+    # -----------------------------------------------------------------------
+    extraMounts:
+      - destination: /var/mnt/longhorn
+        type: bind
+        source: /var/mnt/longhorn
+        options:
+          - bind
+          - rshared
+          - rw
+
+  # -------------------------------------------------------------------------
+  # sysctl
+  # Talos は既定で kptr_restrict / dmesg_restrict 等のハードニングを行うため、
+  # ここでは既定を上書きせず、追加で有用なものだけを設定する。
+  # -------------------------------------------------------------------------
+  sysctls:
+    # 不正な送信元アドレスのパケットをログに残す（侵入検知の材料）
+    net.ipv4.conf.all.log_martians: "1"
+    # Cilium / 監視系がファイル監視を多用するため
+    fs.inotify.max_user_watches: "524288"
+    fs.inotify.max_user_instances: "8192"
+
+# ===========================================================================
+# クラスタ設定
+# ===========================================================================
+cluster:
+  network:
+    # CNI は Cilium を後から Helm で入れるため none にする。
+    # Talos 同梱の flannel は使わない。
+    cni:
+      name: none
+    podSubnets:
+      - ${pod_cidr}
+    serviceSubnets:
+      - ${service_cidr}
+
+  # kube-proxy を無効化する。Cilium の kubeProxyReplacement が置き換える。
+  proxy:
+    disabled: true
+
+  # -------------------------------------------------------------------------
+  # etcd
+  #
+  # etcd が意図しないインタフェースでピア通信をアドバタイズしないよう、
+  # VLAN40 に明示的に限定する。現在は NIC が 1 枚だけだが、将来
+  # インタフェースが増えたときに黙って挙動が変わることを防ぐ。
+  # -------------------------------------------------------------------------
+  etcd:
+    advertisedSubnets:
+      - ${k8s_subnet}
+    listenSubnets:
+      - ${k8s_subnet}
+
+    # local-zfs 上の VM ディスクは、クラスタ全体を初期同期するときに
+    # 数秒の write latency が発生し得る。etcd の既定値（100ms / 1s）では
+    # 正常な leader を故障と誤認して再選挙が連鎖するため、全 member で
+    # 同一の余裕ある値を使う。election-timeout は heartbeat の 20 倍。
+    extraArgs:
+      heartbeat-interval: "500"
+      election-timeout: "10000"
+
+  # -------------------------------------------------------------------------
+  # ノード探索
+  #
+  # Talos は既定で discovery.talos.dev（Sidero 運営の外部サービス）へ
+  # ノード情報を登録する。ホームラボの構成情報を外部に出す必要はないため
+  # 無効化し、Kubernetes API ベースの探索のみを使う。
+  # -------------------------------------------------------------------------
+  discovery:
+    enabled: true
+    registries:
+      kubernetes:
+        disabled: false
+      service:
+        disabled: true
+
+  # AI実行workloadとcontrol-planeを分離する。3台の専用workerが停止しても、
+  # API serverとetcd quorumがworkloadの資源競合に巻き込まれないようにする。
+  allowSchedulingOnControlPlanes: false
+
+  # -------------------------------------------------------------------------
+  # kube-apiserver
+  # -------------------------------------------------------------------------
+  apiServer:
+    certSANs: ${cert_sans}
+
+    extraArgs:
+      # プロファイリングエンドポイントを無効化（CIS 1.2.18）
+      profiling: "false"
+      # ServiceAccount トークン検証時に、対応する SA の存在も確認する
+      service-account-lookup: "true"
+      # 監査ログのローテーション設定
+      audit-log-maxage: "30"
+      audit-log-maxbackup: "10"
+      audit-log-maxsize: "100"
+
+    # -----------------------------------------------------------------------
+    # 監査ポリシー
+    #
+    # 「全部 RequestResponse で記録」はディスクを食い潰すため採用しない。
+    # 侵害調査に本当に必要なもの（Secret への操作、RBAC の変更、
+    # Pod の exec/attach）を厚く記録し、ノイズは落とす。
+    #
+    # 注意: ルールは上から順に評価され、最初に一致したものが適用される。
+    # -----------------------------------------------------------------------
+    auditPolicy:
+      apiVersion: audit.k8s.io/v1
+      kind: Policy
+      omitStages:
+        - RequestReceived
+      rules:
+        # --- ノイズの除去 ---
+        - level: None
+          users:
+            - system:apiserver
+          verbs: ["get", "list", "watch"]
+        - level: None
+          userGroups: ["system:nodes"]
+          verbs: ["get", "list", "watch"]
+        - level: None
+          nonResourceURLs:
+            - /healthz*
+            - /readyz*
+            - /livez*
+            - /version
+            - /metrics
+
+        # --- 重点的に記録する対象 ---
+        # Secret / ServiceAccount への操作は侵害の中核。中身は記録しない
+        # （記録すると監査ログ自体が機密の塊になる）が、誰が何をしたかは残す。
+        - level: Metadata
+          resources:
+            - group: ""
+              resources: ["secrets", "serviceaccounts", "serviceaccounts/token"]
+
+        # 権限の変更は完全に記録する
+        - level: RequestResponse
+          resources:
+            - group: "rbac.authorization.k8s.io"
+              resources: ["roles", "rolebindings", "clusterroles", "clusterrolebindings"]
+
+        # Pod への侵入的な操作
+        - level: RequestResponse
+          resources:
+            - group: ""
+              resources: ["pods/exec", "pods/attach", "pods/portforward"]
+
+        # --- 書き込み系は Metadata で記録 ---
+        - level: Metadata
+          verbs: ["create", "update", "patch", "delete", "deletecollection"]
+
+        # --- 上記以外（読み取り）は記録しない ---
+        - level: None
+
+    # -----------------------------------------------------------------------
+    # Pod Security Admission
+    #
+    # クラスタ全体の既定を restricted にする。特権が必要な namespace は
+    # exemptions に列挙するのではなく namespace ラベルで個別に緩和する。
+    # ラベルなら「どの namespace がなぜ緩和されているか」がマニフェスト上に
+    # 明示され、レビューと監査が容易になる。exemptions に入れると PSA の
+    # 検査自体が丸ごとスキップされるため、kube-system 以外には使わない。
+    # -----------------------------------------------------------------------
+    admissionControl:
+      - name: PodSecurity
+        configuration:
+          apiVersion: pod-security.admission.config.k8s.io/v1
+          kind: PodSecurityConfiguration
+          defaults:
+            enforce: restricted
+            enforce-version: latest
+            audit: restricted
+            audit-version: latest
+            warn: restricted
+            warn-version: latest
+          # Talos の生成済み設定には kube-system の例外が既に入っている。
+          # ここで再指定すると配列へ追記され、API Server が重複値として拒否する。
+
+  controllerManager:
+    extraArgs:
+      profiling: "false"
+      terminated-pod-gc-threshold: "100"
+
+  scheduler:
+    extraArgs:
+      profiling: "false"
+
+---
+# ===========================================================================
+# ホスト名（Talos v1.13 以降の指定方法）
+#
+# Talos v1.13 で hostname の設定が v1alpha1 の machine.network.hostname から
+# 独立した HostnameConfig ドキュメントへ移行した。
+# `talosctl gen config` は既定で `auto: stable`（マシン ID から安定した
+# ホスト名を生成）を出力するため、静的な名前を使いたい場合はここで上書きする。
+#
+# `hostname` と `auto` は排他である（両方指定すると競合する）。
+# ===========================================================================
+apiVersion: v1alpha1
+kind: HostnameConfig
+# ---------------------------------------------------------------------------
+# ホスト名（Talos v1.13 以降の指定方法）
+#
+# Talos v1.13 でホスト名の設定が v1alpha1 の machine.network.hostname から
+# 独立した HostnameConfig ドキュメントへ移行した。
+#
+# ⚠️ `auto` と `hostname` の関係に注意:
+#    `talosctl gen config`（および terraform-provider-talos）は既定で
+#    `auto: stable` を出力する。ここで `hostname` だけを足すと
+#      "HostnameConfig: 'auto' and 'hostname' cannot be set at the same time"
+#    で validate に失敗する。`auto: off`（自動生成を止める）と併記して
+#    初めて静的なホスト名を指定できる。
+#
+#    strategic merge patch では既存の `auto` を削除できないため
+#    （`auto: null` も `$patch: replace` も効かないことを talosctl v1.13 で
+#    実測確認済み）、値を `off` に上書きする形を取る。
+#
+# 検証コマンド:
+#   talosctl -n <node> get hostnamestatus
+# ---------------------------------------------------------------------------
+auto: off
+hostname: ${hostname}
+
+---
+# ===========================================================================
+# Longhorn 用のデータボリューム
+#
+# ---------------------------------------------------------------------------
+# なぜ専用ディスクを切り出すのか
+# ---------------------------------------------------------------------------
+# Longhorn の既定のデータパスは /var/lib/longhorn だが、Talos の /var は
+# EPHEMERAL パーティション上にあり、再インストールや `talosctl reset` で
+# 初期化される。そこにレプリカを置くと、ノードを 1 台作り直すたびに
+# Longhorn が全レプリカを再同期することになる。
+#
+# VM に 2 本目のディスク（scsi1, serial=longhorn）を付け、
+# UserVolumeConfig で /var/mnt/longhorn として独立させることで、
+# OS のライフサイクルとデータのライフサイクルを分離する。
+#
+# ⚠️ diskSelector は VM 側で固定した serial 番号で判定している。
+#    tofu/10-proxmox-talos/vms.tf の scsi1 の `serial = "longhorn"` を
+#    変更すると、ここが一致しなくなりボリュームが作られない。
+# ===========================================================================
+apiVersion: v1alpha1
+kind: UserVolumeConfig
+name: longhorn
+provisioning:
+  diskSelector:
+    # ---------------------------------------------------------------------
+    # システムディスク以外を選ぶ。
+    #
+    # VM のディスクは 2 本だけ（scsi0 = OS、scsi1 = Longhorn）なので、
+    # 「システムディスクでない方」で一意に決まる。
+    #
+    # serial や by-id のパスで判定する方法もあるが、Proxmox が
+    # ゲストへどう見せるかに依存するため、Talos 自身が知っている
+    # system_disk を基準にする方が確実で壊れにくい。
+    # ---------------------------------------------------------------------
+    match: '!system_disk'
+  # 最小サイズ。これを下回るディスクしか無い場合はエラーになる
+  # （意図しないディスクを掴む事故を防ぐガード）。
+  minSize: 50GB
+  # ディスクの残り全体まで広げる（実サイズは Proxmox 側の
+  # longhorn_disk_gib で決まる）
+  grow: true
+filesystem:
+  type: xfs

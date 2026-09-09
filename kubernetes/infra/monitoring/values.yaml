@@ -1,0 +1,240 @@
+# ===========================================================================
+# kube-prometheus-stack — Prometheus / Alertmanager / Grafana
+#
+# ⚠️ Grafana と Prometheus の UI は管理平面である。
+#    インターネットへ公開しない（docs/20-security-design.md §4）。
+#    宅内からは LoadBalancer IP または port-forward でアクセスする。
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Prometheus
+# ---------------------------------------------------------------------------
+prometheus:
+  prometheusSpec:
+    replicas: 1
+
+    # 保持期間。Longhorn の容量を圧迫しないよう抑えめにする。
+    retention: 15d
+    retentionSize: 20GB
+
+    # -----------------------------------------------------------------------
+    # ServiceMonitor / PodMonitor の探索範囲
+    #
+    # false にすると「release ラベルが一致するものだけ」を拾う。
+    # 各コンポーネントの ServiceMonitor に
+    # `release: kube-prometheus-stack` を付けている前提。
+    # true（全部拾う）にすると意図しないターゲットが混入しうる。
+    # -----------------------------------------------------------------------
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+    probeSelectorNilUsesHelmValues: false
+
+    # -----------------------------------------------------------------------
+    # ストレージ
+    #
+    # longhorn-retain を使う理由: Prometheus のデータは
+    # 「障害時に何が起きたか」を後から追うための唯一の記録である。
+    # PVC を誤削除したときに即座に消えては困る。
+    # -----------------------------------------------------------------------
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: longhorn-retain
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 30Gi
+
+    resources:
+      requests:
+        cpu: 200m
+        memory: 1Gi
+      limits:
+        memory: 3Gi
+
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 1000
+      fsGroup: 2000
+      seccompProfile:
+        type: RuntimeDefault
+
+  ingress:
+    enabled: false
+
+  service:
+    type: ClusterIP
+
+# ---------------------------------------------------------------------------
+# Alertmanager
+# ---------------------------------------------------------------------------
+alertmanager:
+  alertmanagerSpec:
+    replicas: 1
+
+    storage:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: longhorn-retain
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 2Gi
+
+    resources:
+      requests:
+        cpu: 10m
+        memory: 64Mi
+      limits:
+        memory: 256Mi
+
+  ingress:
+    enabled: false
+
+  # -------------------------------------------------------------------------
+  # 通知先
+  #
+  # ⚠️ 既定では通知先が設定されていない（アラートは UI でしか見えない）。
+  #    実運用では必ず通知先を設定すること。Webhook の URL は機密なので
+  #    SOPS で暗号化した Secret から渡す:
+  #      alertmanagerSpec.alertmanagerConfigSelector で
+  #      AlertmanagerConfig CR を参照させる
+  # -------------------------------------------------------------------------
+  config:
+    global:
+      resolve_timeout: 5m
+    route:
+      group_by: ["namespace", "alertname"]
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 12h
+      receiver: "null"
+      routes:
+        # Watchdog は「監視自体が生きているか」を示すアラート。
+        # 常に発火しているため通知しない。
+        - matchers:
+            - alertname = "Watchdog"
+          receiver: "null"
+    receivers:
+      - name: "null"
+
+# ---------------------------------------------------------------------------
+# Grafana
+# ---------------------------------------------------------------------------
+grafana:
+  enabled: true
+
+  # -------------------------------------------------------------------------
+  # 管理者パスワード
+  #
+  # values に平文で書かない。また `adminPassword` を未指定にすると
+  # chart の既定値（admin / prom-operator）で起動してしまい、
+  # 「気づかないうちに既知のパスワードで動いている」状態になる。
+  #
+  # そこで existingSecret を必須にする。Secret が無ければ Grafana は
+  # 起動しないため、設定漏れが**明確な失敗**として現れる。
+  # これは「静かに安全でない状態になる」より遥かに良い。
+  #
+  # Secret は再構築スクリプトが macOS Keychain の値から投入する。
+  # Git に平文または暗号文の Secret を置かず、初回は安全な乱数を生成する。
+  # -------------------------------------------------------------------------
+  admin:
+    existingSecret: grafana-admin
+    userKey: admin-user
+    passwordKey: admin-password
+
+  persistence:
+    enabled: true
+    storageClassName: longhorn-retain
+    size: 5Gi
+
+  # -------------------------------------------------------------------------
+  # 宅内からアクセスできるように LoadBalancer で公開する。
+  #
+  # ⚠️ この IP はインターネットには公開されない
+  #    （ルータでポートフォワードしない限り到達不可）。
+  #
+  # `homelab.io/lan-exposed: "true"` ラベルが必須である。
+  # Cilium の IP プールはこのラベルを持つ Service だけを対象にしており、
+  # 「うっかり type: LoadBalancer にしたら宅内公開されていた」という
+  # 事故を防いでいる（kubernetes/infra/cilium/lb-ipam.yaml 参照）。
+  # -------------------------------------------------------------------------
+  service:
+    type: LoadBalancer
+    loadBalancerIP: "172.16.40.201"
+    labels:
+      homelab.io/lan-exposed: "true"
+
+  ingress:
+    enabled: false
+
+  grafana.ini:
+    server:
+      root_url: "http://172.16.40.201/"
+    security:
+      # クリックジャッキング対策
+      cookie_secure: false
+      cookie_samesite: strict
+      # バージョン情報の露出を抑える
+      hide_version: true
+    analytics:
+      reporting_enabled: false
+      check_for_updates: false
+    users:
+      # サインアップを無効化（管理者が作ったユーザーのみ）
+      allow_sign_up: false
+      allow_org_create: false
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+
+  sidecar:
+    dashboards:
+      enabled: true
+      searchNamespace: ALL
+    datasources:
+      enabled: true
+
+# ---------------------------------------------------------------------------
+# node-exporter
+#
+# Talos ではホストの一部パスにアクセスできないため、
+# 該当コレクタを無効化する。
+# ---------------------------------------------------------------------------
+prometheus-node-exporter:
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      memory: 128Mi
+
+# ---------------------------------------------------------------------------
+# Talos が管理するコンポーネントの監視
+#
+# ⚠️ Talos では etcd / kube-scheduler / kube-controller-manager が
+#    static pod としてホストネットワーク上で動き、既定では
+#    localhost にしかバインドしない。kube-prometheus-stack の
+#    既定設定ではメトリクスを取得できずアラートが出続けるため、
+#    ここで無効化している。
+#
+#    取得したい場合は Talos の machine config で
+#    各コンポーネントの --bind-address を変更する必要があるが、
+#    管理コンポーネントを外部にバインドすることになるため、
+#    セキュリティとのトレードオフを検討すること。
+# ---------------------------------------------------------------------------
+kubeEtcd:
+  enabled: false
+kubeControllerManager:
+  enabled: false
+kubeScheduler:
+  enabled: false
+
+# kube-proxy は Cilium が置き換えているため存在しない
+kubeProxy:
+  enabled: false

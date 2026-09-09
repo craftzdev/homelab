@@ -1,0 +1,80 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: velero
+  labels:
+    # node-agent が kubelet の pod ディレクトリをマウントするため
+    # restricted では動作できない。
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: baseline
+    pod-security.kubernetes.io/warn: baseline
+
+    app.kubernetes.io/name: velero
+    app.kubernetes.io/part-of: backup
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: velero
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: velero-rules
+  namespace: velero
+spec:
+  endpointSelector: {}
+
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+
+    - toEntities:
+        - kube-apiserver
+
+    # -----------------------------------------------------------------------
+    # バックアップ先のオブジェクトストレージ（外部 S3 / R2）
+    #
+    # ⚠️ velero は policies/clusterwide-egress-deny.yaml の除外対象に
+    #    入っている（宅内の PBS 等をバックアップ先にする構成に備えて）。
+    #    そのため、この namespace 内のポリシーで宛先を絞ることが
+    #    実質的な防御線になる。
+    #
+    #    宅内をバックアップ先にしない場合は、下の except リストを
+    #    そのままにしておくこと（宅内への到達を防げる）。
+    # -----------------------------------------------------------------------
+    - toCIDRSet:
+        - cidr: 0.0.0.0/0
+          except:
+            - 172.16.0.0/12
+            - 10.0.0.0/8
+            - 192.168.0.0/16
+            - 100.64.0.0/10
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: monitoring
+    - fromEntities:
+        - host
+        - remote-node

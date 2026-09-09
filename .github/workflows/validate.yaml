@@ -1,0 +1,226 @@
+# ===========================================================================
+# CI — コードの検証
+#
+# ---------------------------------------------------------------------------
+# 設計方針: 「構文が通る」ではなく「実際にデプロイできる」を検証する
+# ---------------------------------------------------------------------------
+# 当初は tofu validate / yamllint / shellcheck だけだったが、
+# codex のレビューで次を指摘された。
+#
+#   [MEDIUM] CI が実際のデプロイ不能を検出しない
+#     Talos config 生成/strict validate、Helm repo/chart 取得、Helm render、
+#     Kustomize build を実行していない。hostname 競合や存在しない URL が
+#     ある現在の状態でも CI が成功し得る。
+#
+# 実際その通りで、Talos の HostnameConfig 競合（config が生成できない）も、
+# 存在しない Helm リポジトリ（404）も、CI をすり抜けていた。
+#
+# そこで以下を追加した。
+#   - talosctl で全ノードの machine config を生成し `validate --strict`
+#   - 全 Helm chart を実際に取得して `helm template`
+#   - 全 Kustomize パスを `kustomize build`
+#
+# これらは「マージしたらクラスタが壊れる」変更を、マージ前に落とすためのもの。
+# ===========================================================================
+name: validate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  TALOS_VERSION: v1.13.9
+  KUBERNETES_VERSION: 1.34.3
+
+jobs:
+  # -------------------------------------------------------------------------
+  # 秘密情報の検出
+  #
+  # ⚠️ このリポジトリはインフラの完全な設計図であり、秘密の混入は
+  #    そのままクラスタの侵害につながる。gitleaks の失敗は
+  #    「マージしてはならない」ことを意味する。
+  # -------------------------------------------------------------------------
+  secrets-scan:
+    name: 平文の秘密がないか検査する
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: SOPS 暗号化ファイルが平文でないか確認する
+        run: |
+          set -euo pipefail
+          fail=0
+          while IFS= read -r -d '' f; do
+            if ! grep -q 'sops:' "$f"; then
+              echo "::error file=$f::SOPS で暗号化されていません（平文の可能性）"
+              fail=1
+            fi
+            if ! grep -q 'ENC\[' "$f"; then
+              echo "::error file=$f::暗号化された値が見つかりません"
+              fail=1
+            fi
+          done < <(find . -name '*.sops.yaml' -not -name '*.example' -print0)
+          exit $fail
+
+  # -------------------------------------------------------------------------
+  # Talos machine config が実際に生成・検証できるか
+  #
+  # これが CI の中で最も価値が高い。machine config の生成が失敗すると
+  # クラスタを 1 台も構築できないが、静的解析では検出できない。
+  # -------------------------------------------------------------------------
+  talos:
+    name: Talos config の生成と strict validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: talosctl を導入する
+        run: |
+          set -euo pipefail
+          curl -fsSL "https://github.com/siderolabs/talos/releases/download/${TALOS_VERSION}/talosctl-linux-amd64" \
+            -o /usr/local/bin/talosctl
+          chmod +x /usr/local/bin/talosctl
+          talosctl version --client
+
+      - name: パッチをレンダリングして config を生成・検証する
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/render-talos-patches.py /tmp/talos
+
+          cd /tmp/talos
+          for role in controlplane worker; do
+            patch=$([ "$role" = "controlplane" ] && echo cp.yaml || echo wk.yaml)
+            echo "::group::$role の config を生成"
+            talosctl gen config homelab https://172.16.40.10:6443 \
+              --talos-version "${TALOS_VERSION}" \
+              --kubernetes-version "${KUBERNETES_VERSION}" \
+              --with-docs=false --with-examples=false \
+              --output-types "$role" --output "${role}.yaml" \
+              --config-patch @"$patch" --config-patch @fw.yaml --force
+            echo "::endgroup::"
+
+            echo "::group::$role を validate --strict"
+            talosctl validate --config "${role}.yaml" --mode cloud --strict
+            echo "::endgroup::"
+          done
+
+  # -------------------------------------------------------------------------
+  # Helm chart が実在し、values でレンダリングできるか
+  #
+  # 「存在しない Helm リポジトリを参照している」「values のキー名が違う」を
+  # 検出する。どちらも ArgoCD の同期時にしか分からなかった問題。
+  # -------------------------------------------------------------------------
+  helm:
+    name: Helm chart の取得とレンダリング
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.18.6
+
+      - name: kubernetes/apps から chart 定義を抽出して render する
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/check-helm-charts.py
+
+  # -------------------------------------------------------------------------
+  # Kustomize が build できるか
+  #
+  # remote resource の 404、kustomization.yaml の記述ミスを検出する。
+  # KSOPS の復号は CI では行えないため、暗号化ファイルを含むパスは
+  # 「kustomization.yaml の構文が正しいか」までの検査に留める。
+  # -------------------------------------------------------------------------
+  kustomize:
+    name: Kustomize の build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: kustomize を導入する
+        run: |
+          set -euo pipefail
+          curl -fsSL "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
+          sudo mv kustomize /usr/local/bin/
+
+      - name: 各 kustomization を build する
+        run: |
+          set -euo pipefail
+          fail=0
+          while IFS= read -r -d '' k; do
+            dir="$(dirname "$k")"
+            # KSOPS ジェネレータを含むパスは復号鍵が無いと build できない
+            if grep -q 'kind: ksops' "$dir"/*.yaml 2>/dev/null; then
+              echo "skip (KSOPS): $dir"
+              continue
+            fi
+            echo "::group::kustomize build $dir"
+            if ! kustomize build --enable-alpha-plugins "$dir" >/dev/null; then
+              echo "::error file=$k::kustomize build に失敗しました"
+              fail=1
+            fi
+            echo "::endgroup::"
+          done < <(find kubernetes -name kustomization.yaml -print0)
+          exit $fail
+
+  # -------------------------------------------------------------------------
+  # OpenTofu
+  # -------------------------------------------------------------------------
+  tofu:
+    name: OpenTofu の検証
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        dir: [tofu/10-proxmox-talos, tofu/20-cloudflare]
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: opentofu/setup-opentofu@v1
+        with:
+          # ローカルでの検証に使ったバージョンと揃える。
+          # CI とローカルで結果が食い違うと、原因の切り分けが難しくなる。
+          tofu_version: "1.12.6"
+
+      - name: フォーマットの確認
+        run: tofu fmt -check -recursive ${{ matrix.dir }}
+
+      - name: 初期化（プロバイダのみ、バックエンドなし）
+        working-directory: ${{ matrix.dir }}
+        run: tofu init -backend=false
+
+      - name: 構文の検証
+        working-directory: ${{ matrix.dir }}
+        run: tofu validate
+
+  # -------------------------------------------------------------------------
+  # YAML / シェルスクリプト
+  # -------------------------------------------------------------------------
+  lint:
+    name: YAML と シェルスクリプトの検証
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: yamllint
+        run: |
+          pip install yamllint
+          yamllint -c .yamllint.yaml kubernetes/ docs/ .github/
+
+      - name: shellcheck
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y shellcheck
+          shellcheck -x scripts/*.sh

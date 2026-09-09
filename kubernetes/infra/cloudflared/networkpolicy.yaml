@@ -1,0 +1,143 @@
+# ===========================================================================
+# cloudflared の通信制限
+#
+# cloudflared は「インターネットへ出られる数少ない Pod」である。
+# 侵害された場合の影響を限定するため、通信先を厳密に制限する。
+# ===========================================================================
+---
+# ---------------------------------------------------------------------------
+# 1) namespace 全体の default-deny
+#
+# 明示的に許可しない限り、この namespace の Pod は
+# 送受信ともに何もできない。
+# ---------------------------------------------------------------------------
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: cloudflared
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+
+---
+# ---------------------------------------------------------------------------
+# 2) cloudflared の egress
+# ---------------------------------------------------------------------------
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: cloudflared-egress
+  namespace: cloudflared
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: cloudflared
+
+  egress:
+    # --- DNS ---
+    # 名前解決だけは必要。DNS プロキシで問い合わせ先ドメインを
+    # 制限し、DNS トンネリングによるデータ持ち出しを抑止する。
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+          rules:
+            dns:
+              - matchPattern: "*.cloudflare.com"
+              - matchPattern: "*.argotunnel.com"
+              - matchPattern: "*.cftunnel.com"
+              - matchPattern: "*.svc.cluster.local"
+              - matchPattern: "*.cluster.local"
+
+    # --- Cloudflare エッジへの outbound ---
+    #
+    # ⚠️ ここが 0.0.0.0/0 になっているのは意図的だが、妥協でもある。
+    #
+    #   Cloudflare のエッジ IP は世界中に分散し、動的に変わるため、
+    #   CIDR で厳密に絞ると接続が不安定になる。Cloudflare は
+    #   IP レンジを公開しているが、更新のたびにポリシーを追随させる
+    #   運用コストが高い。
+    #
+    #   代わりに **ポートを 443 のみに制限** することで、
+    #   仮に cloudflared が侵害されても任意のポートへの
+    #   アウトバウンド接続はできないようにしている。
+    #
+    #   より厳密にしたい場合は Cloudflare の IP レンジ
+    #   （https://www.cloudflare.com/ips/）を CIDR として列挙し、
+    #   定期更新する CronJob を用意すること。
+    - toCIDRSet:
+        - cidr: 0.0.0.0/0
+          except:
+            # 宅内のプライベートセグメントへは出さない。
+            # cloudflared が Kubernetes 外の機器（Proxmox / PBS / ルータ）へ
+            # 到達できてしまうと、侵害時の横展開の踏み台になる。
+            - 172.16.0.0/12
+            - 10.0.0.0/8
+            - 192.168.0.0/16
+            - 100.64.0.0/10
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+            - port: "443"
+              protocol: UDP # QUIC
+
+    # --- Origin（Gateway）への転送 ---
+    #
+    # cloudflared が到達してよいのは Gateway だけである。
+    # 個別の Service へ直接転送させない。これにより、公開範囲の管理を
+    # Gateway / HTTPRoute 側に一元化できる。
+    #
+    # ⚠️ Cilium の Gateway API は独立した Pod ではなく **cilium-agent 内の
+    #    Envoy** として動作する。そのため toEndpoints では選択できず、
+    #    host / remote-node エンティティへの通信として許可する必要がある。
+    - toEntities:
+        - host
+        - remote-node
+      toPorts:
+        - ports:
+            - port: "80"
+              protocol: TCP
+
+---
+# ---------------------------------------------------------------------------
+# 3) cloudflared への ingress
+#
+# メトリクスの取得のみを許可する。
+# ---------------------------------------------------------------------------
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: cloudflared-ingress-metrics
+  namespace: cloudflared
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: cloudflared
+
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: monitoring
+            app.kubernetes.io/name: prometheus
+      toPorts:
+        - ports:
+            - port: "2000"
+              protocol: TCP
+
+    # kubelet からの health probe。
+    # Cilium は host からの通信を "remote-node"/"host" エンティティとして扱う。
+    - fromEntities:
+        - host
+        - remote-node
+      toPorts:
+        - ports:
+            - port: "2000"
+              protocol: TCP

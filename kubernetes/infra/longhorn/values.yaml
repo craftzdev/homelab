@@ -1,0 +1,157 @@
+# ===========================================================================
+# Longhorn — Kubernetes ネイティブの分散ブロックストレージ
+#
+# Ceph を廃止した後の PV を担う。判断の経緯は
+# docs/adr/0009-drop-ceph-adopt-longhorn.md を参照。
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# データパス
+#
+# ⚠️ 既定の /var/lib/longhorn は使わない。
+#
+#    Talos の /var は EPHEMERAL パーティション上にあり、再インストールや
+#    `talosctl reset` で初期化される。そこにレプリカを置くと、ノードを
+#    1 台作り直すたびに Longhorn が全レプリカを再同期することになる。
+#
+#    VM の 2 本目のディスクを Talos の UserVolumeConfig で
+#    /var/mnt/longhorn として切り出しており、そこを使う。
+#    OS のライフサイクルとデータのライフサイクルが分離される。
+# ---------------------------------------------------------------------------
+defaultSettings:
+  defaultDataPath: /var/mnt/longhorn
+
+  # 永続データは専用worker planeにだけ置く。Talos worker machine configが
+  # node.longhorn.io/create-default-disk=true を宣言する。
+  createDefaultDiskLabeledNodes: true
+
+  # instance-manager、CSI plugin等のsystem-managed componentもworker限定。
+  # Longhorn設定の書式は key:value の文字列（Kubernetes YAML mapではない）。
+  systemManagedComponentsNodeSelector: homelab.craftz.dev/workload-plane:true
+
+  # -------------------------------------------------------------------------
+  # レプリカ数
+  #
+  # 3 ノード構成なので 3。1 ノードが落ちてもデータは失われず、
+  # 残り 2 レプリカで読み書きを継続できる。
+  # -------------------------------------------------------------------------
+  defaultReplicaCount: 3
+
+  # レプリカを必ず別ノードへ配置する。
+  # false にすると同一ノードに複数レプリカが載りうるが、
+  # それでは「ノード障害に耐える」という目的を果たさない。
+  replicaSoftAntiAffinity: false
+  # 3 台は同一ホームラボで zone ラベルを持たない。同一 zone 内でも
+  # 別ノードへの配置を許可しないと、2・3 個目のレプリカを置けない。
+  replicaZoneSoftAntiAffinity: true
+
+  # -------------------------------------------------------------------------
+  # ⚠️ ノードのドレイン時にレプリカを退避させない
+  #
+  # true にすると、ノードを一時的に落とすたびに数百 GB の再同期が走る。
+  # Talos のアップグレードは日常的な操作なので、それでは運用にならない。
+  # ノードが戻ってくれば差分だけが同期される。
+  # -------------------------------------------------------------------------
+  nodeDownPodDeletionPolicy: delete-both-statefulset-and-deployment-pod
+  replicaReplenishmentWaitInterval: 1800
+
+  # ディスクの使用率がこれを超えるとスケジュールしない
+  storageOverProvisioningPercentage: 150
+  storageMinimalAvailablePercentage: 20
+
+  # 削除済みブロックを解放する（コンシューマ SSD では特に効く）
+  #   自動 trim は Longhorn 1.5+ の機能
+  autoCleanupSystemGeneratedSnapshot: true
+
+  # -------------------------------------------------------------------------
+  # バックアップ先
+  #
+  # ⚠️ 未設定のままでは Longhorn のスナップショットは
+  #    **同じディスク上にしか存在しない**。ノードやディスクが壊れれば
+  #    スナップショットも一緒に失われる。
+  #
+  #    外部のオブジェクトストレージ（Cloudflare R2 等）を設定すること。
+  #    手順は kubernetes/infra/longhorn/README.md を参照。
+  # -------------------------------------------------------------------------
+  # backupTarget: s3://homelab-longhorn@auto/
+  # backupTargetCredentialSecret: longhorn-backup-credential
+
+  # Talos ではノードの OS 更新を Talos 自身が管理するため、
+  # Longhorn 側の自動アップグレードは無効にする
+  upgradeChecker: false
+
+# The chart explicitly requires this hook to be disabled under Argo CD.
+# On a fresh GitOps install the pre-upgrade hook runs before the Longhorn
+# ServiceAccount exists and can never create its Pod.
+preUpgradeChecker:
+  jobEnabled: false
+  upgradeVersionCheck: false
+
+# ---------------------------------------------------------------------------
+# 既定の StorageClass
+# ---------------------------------------------------------------------------
+persistence:
+  defaultClass: true
+  defaultClassReplicaCount: 3
+  defaultFsType: ext4
+  # PVC 削除時にボリュームも削除する
+  reclaimPolicy: Delete
+
+# ---------------------------------------------------------------------------
+# UI
+#
+# ⚠️ Ingress を作らない。Longhorn UI はボリュームの削除や
+#    ノードの無効化ができる管理ツールであり、外部公開してはならない。
+#    参照は port-forward で行う:
+#      kubectl -n longhorn-system port-forward svc/longhorn-frontend 8080:80
+# ---------------------------------------------------------------------------
+ingress:
+  enabled: false
+
+service:
+  ui:
+    type: ClusterIP
+
+# ---------------------------------------------------------------------------
+# 可観測性
+# ---------------------------------------------------------------------------
+metrics:
+  serviceMonitor:
+    # Prometheus Operator の CRD は monitoring 導入後に有効化する。
+    # 初回 bootstrap では CRD がまだ無いため、先に有効化すると
+    # Longhorn の Helm install 自体が失敗する。
+    enabled: false
+    additionalLabels:
+      release: kube-prometheus-stack
+
+# ---------------------------------------------------------------------------
+# リソース
+#
+# 専用worker 3ノードだけで動かし、control-planeの資源を消費させない。
+# ---------------------------------------------------------------------------
+longhornManager:
+  priorityClass: system-node-critical
+  nodeSelector:
+    homelab.craftz.dev/workload-plane: "true"
+
+longhornDriver:
+  priorityClass: system-node-critical
+  nodeSelector:
+    homelab.craftz.dev/workload-plane: "true"
+
+longhornUI:
+  replicas: 1
+  nodeSelector:
+    homelab.craftz.dev/workload-plane: "true"
+
+# ---------------------------------------------------------------------------
+# CSI サイドカーのレプリカ数
+#
+# 3 ノード構成なので 2 で十分（3 にすると 1 ノード障害時に
+# Pending が残り続ける）。
+# ---------------------------------------------------------------------------
+csi:
+  attacherReplicaCount: 2
+  provisionerReplicaCount: 2
+  resizerReplicaCount: 2
+  snapshotterReplicaCount: 2

@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cloudflared
+  labels:
+    # -------------------------------------------------------------------------
+    # Pod Security Admission
+    #
+    # cloudflared は非特権で動作できるため restricted を強制する。
+    # クラスタ既定も restricted だが、namespace 側にも明示しておくことで
+    # 「この namespace の要求水準」がマニフェストから読み取れる。
+    # -------------------------------------------------------------------------
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+
+    app.kubernetes.io/name: cloudflared
+    app.kubernetes.io/part-of: external-access

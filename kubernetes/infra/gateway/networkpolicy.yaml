@@ -1,0 +1,52 @@
+# ===========================================================================
+# Gateway の通信制限
+#
+# ⚠️ Cilium の Gateway API は、独立した Pod ではなく **cilium-agent 内の
+#    Envoy** として動作する。そのため通常の CiliumNetworkPolicy で
+#    「Gateway の Pod」を選択することはできない。
+#
+# 代わりに、
+#   1. Gateway の Service を ClusterIP にする（L2 公開しない）
+#   2. Gateway が転送する先（バックエンド）を HTTPRoute で明示する
+#   3. バックエンド側の namespace で「誰から受けるか」を制限する
+#
+# という多層で守る。ここでは 3 の雛形を示す。
+#
+# ---------------------------------------------------------------------------
+# 公開アプリの namespace に置くべきポリシー（テンプレート）
+# ---------------------------------------------------------------------------
+# アプリを公開するときは、その namespace に以下のようなポリシーを置き、
+# 「Gateway 経由でしか入れない」状態にすること。
+#
+#   apiVersion: cilium.io/v2
+#   kind: CiliumNetworkPolicy
+#   metadata:
+#     name: allow-from-gateway
+#     namespace: <APP_NAMESPACE>
+#   spec:
+#     endpointSelector:
+#       matchLabels:
+#         app.kubernetes.io/name: <APP>
+#     ingress:
+#       # Cilium の Gateway（Envoy）は各ノードの cilium-agent 内で動くため、
+#       # 送信元は host / remote-node エンティティとして現れる
+#       - fromEntities:
+#           - host
+#           - remote-node
+#         toPorts:
+#           - ports:
+#               - port: "<APP_PORT>"
+#                 protocol: TCP
+# ===========================================================================
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: gateway
+spec:
+  # この namespace には Gateway / HTTPRoute リソースしか無く、Pod は動かない。
+  # それでも default-deny を置いておくことで、
+  # 「将来ここに Pod を置いたときに無防備にならない」ようにする。
+  podSelector: {}
+  policyTypes: [Ingress, Egress]

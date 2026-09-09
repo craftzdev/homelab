@@ -1,0 +1,230 @@
+# ===========================================================================
+# ArgoCD AppProject
+#
+# Project は「この Application 群が何をしてよいか」の境界を定義する。
+# default プロジェクトは何でも許可してしまうため使わない。
+# ===========================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: infrastructure
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  description: |
+    クラスタの基盤コンポーネント（CNI / CSI / Ingress / 監視 / バックアップ）。
+    アプリケーションのデプロイには別の Project を作ること。
+
+  # -------------------------------------------------------------------------
+  # 許可するソースリポジトリ
+  #
+  # ⚠️ "*" にしないこと。任意のリポジトリからマニフェストを取り込めると、
+  #    Application リソースを作れる者が任意のワークロードを
+  #    デプロイできてしまう。
+  # -------------------------------------------------------------------------
+  sourceRepos:
+    - https://github.com/craftzdev/homelab.git
+    # Helm chart のリポジトリ（明示的に列挙する）
+    - https://helm.cilium.io/
+    - https://charts.longhorn.io
+    - https://charts.jetstack.io
+    - https://prometheus-community.github.io/helm-charts
+    - https://aquasecurity.github.io/helm-charts/
+    - https://backube.github.io/helm-charts/
+    - https://piraeus.io/helm-charts/
+    - https://pkgs.tailscale.com/helmcharts
+
+  # -------------------------------------------------------------------------
+  # デプロイ先の namespace
+  #
+  # 基盤コンポーネントが使う namespace のみを列挙する。
+  # ここに無い namespace へはデプロイできない。
+  # -------------------------------------------------------------------------
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: kube-system
+    # Cilium が Gateway API 用 TLS Secret を隔離して保存する namespace
+    - server: https://kubernetes.default.svc
+      namespace: cilium-secrets
+    - server: https://kubernetes.default.svc
+      namespace: longhorn-system
+    - server: https://kubernetes.default.svc
+      namespace: cert-manager
+    - server: https://kubernetes.default.svc
+      namespace: monitoring
+    - server: https://kubernetes.default.svc
+      namespace: security
+    - server: https://kubernetes.default.svc
+      namespace: tailscale
+    - server: https://kubernetes.default.svc
+      namespace: image-registry
+    - server: https://kubernetes.default.svc
+      namespace: argocd
+    # kubelet-serving-cert-approver は上流マニフェストが専用 namespace を作る
+    - server: https://kubernetes.default.svc
+      namespace: kubelet-serving-cert-approver
+    # 同マニフェストが default namespace にも RoleBinding（events 用）を作る
+    - server: https://kubernetes.default.svc
+      namespace: default
+
+  # -------------------------------------------------------------------------
+  # クラスタスコープのリソース
+  #
+  # 基盤コンポーネントは CRD / ClusterRole / StorageClass 等を必要とする。
+  # ただし何でも許すのではなく、必要なものを列挙する。
+  #
+  # ⚠️ **メンテナンスの注意**
+  #    新しい Helm chart を追加すると、ここに無いクラスタスコープの
+  #    リソースを作ろうとして同期が失敗することがある。エラーメッセージは
+  #      "<kind> is not permitted in project infrastructure"
+  #    のようになる。その場合、chart が実際に作るものを確認してから追加する:
+  #      helm template <release> <repo>/<chart> --version <ver> -f <values> \
+  #        | yq 'select(.metadata.namespace == null) | .apiVersion + " " + .kind' \
+  #        | sort -u
+  #
+  #    「面倒だから "*" にする」ことはしない。Application を作れる者が
+  #    任意のクラスタリソースを作れる状態は、この Project を分けた意味を失わせる。
+  # -------------------------------------------------------------------------
+  clusterResourceWhitelist:
+    # --- Kubernetes コア ---
+    - group: ""
+      kind: Namespace
+    - group: apiextensions.k8s.io
+      kind: CustomResourceDefinition
+    - group: rbac.authorization.k8s.io
+      kind: ClusterRole
+    - group: rbac.authorization.k8s.io
+      kind: ClusterRoleBinding
+    - group: scheduling.k8s.io
+      kind: PriorityClass
+    - group: node.k8s.io
+      kind: RuntimeClass
+    - group: apiregistration.k8s.io
+      kind: APIService
+
+    # --- Admission（各 chart の webhook）---
+    - group: admissionregistration.k8s.io
+      kind: ValidatingWebhookConfiguration
+    - group: admissionregistration.k8s.io
+      kind: MutatingWebhookConfiguration
+    # Kubernetes 1.30+ の宣言的バリデーション。
+    # 新しい chart が使い始めることがあるため許可しておく。
+    - group: admissionregistration.k8s.io
+      kind: ValidatingAdmissionPolicy
+    - group: admissionregistration.k8s.io
+      kind: ValidatingAdmissionPolicyBinding
+
+    # --- ストレージ（Longhorn / snapshot-controller）---
+    - group: storage.k8s.io
+      kind: StorageClass
+    - group: storage.k8s.io
+      kind: CSIDriver
+    - group: snapshot.storage.k8s.io
+      kind: VolumeSnapshotClass
+
+    # --- ネットワーク（Gateway API / Cilium）---
+    #     CustomResourceDefinition は上の「Kubernetes コア」で許可済み
+    - group: gateway.networking.k8s.io
+      kind: GatewayClass
+    - group: cilium.io
+      kind: CiliumClusterwideNetworkPolicy
+    - group: cilium.io
+      kind: CiliumLoadBalancerIPPool
+    - group: cilium.io
+      kind: CiliumL2AnnouncementPolicy
+    - group: networking.k8s.io
+      kind: IngressClass
+    - group: tailscale.com
+      kind: DNSConfig
+    - group: tailscale.com
+      kind: ProxyClass
+    - group: tailscale.com
+      kind: ProxyGroup
+
+    # --- cert-manager ---
+    - group: cert-manager.io
+      kind: ClusterIssuer
+
+    # --- Trivy Operator（クラスタスコープのレポート CRD）---
+    - group: aquasecurity.github.io
+      kind: ClusterComplianceReport
+    - group: aquasecurity.github.io
+      kind: ClusterConfigAuditReport
+    - group: aquasecurity.github.io
+      kind: ClusterInfraAssessmentReport
+    - group: aquasecurity.github.io
+      kind: ClusterRbacAssessmentReport
+    - group: aquasecurity.github.io
+      kind: ClusterVulnerabilityReport
+    - group: aquasecurity.github.io
+      kind: ClusterSbomReport
+
+  # -------------------------------------------------------------------------
+  # 名前空間スコープで禁止するリソース
+  #
+  # ⚠️ 基盤コンポーネントが ResourceQuota / LimitRange を勝手に作ると、
+  #    他のワークロードに予期しない制約が掛かる。
+  # -------------------------------------------------------------------------
+  namespaceResourceBlacklist:
+    - group: ""
+      kind: ResourceQuota
+    - group: ""
+      kind: LimitRange
+
+  # 誰がこの Project の Application を操作できるか
+  roles:
+    - name: readonly
+      description: 参照のみ
+      policies:
+        - p, proj:infrastructure:readonly, applications, get, infrastructure/*, allow
+
+---
+# ===========================================================================
+# root Application 専用の AppProject
+#
+# ⚠️ なぜ root だけ別の Project が必要なのか
+#
+# 子 Application は infrastructure プロジェクトの制限（許可リポジトリ・
+# 許可 namespace・許可リソース種別）を受ける。しかし root 自身が
+# ArgoCD の `default` プロジェクトを使っていると、そこには
+# **何の制限も無い**（任意のリポジトリ・任意の namespace・全リソース種別）。
+#
+# つまり root Application の spec や参照先ディレクトリを変更できる経路が
+# あれば、infrastructure プロジェクトの制限を迂回して任意のリソースを
+# 展開できてしまう。app-of-apps 構成では root こそ最も強い権限を持つ。
+#
+# この Project は root がやるべきこと——「このリポジトリの
+# kubernetes/apps を読んで、argocd namespace に Application と
+# AppProject を作る」——だけに権限を絞る。
+# ===========================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: bootstrap
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  description: |
+    app-of-apps の root 専用。Application / AppProject の生成のみを許可する。
+
+  # このリポジトリ以外からは何も読み込ませない
+  sourceRepos:
+    - https://github.com/craftzdev/homelab.git
+
+  # argocd namespace 以外へは何もデプロイさせない
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: argocd
+
+  # クラスタスコープのリソースは一切作らせない
+  clusterResourceWhitelist: []
+
+  # 作ってよいのは Application と AppProject のみ。
+  # これにより root が Secret や Deployment を直接作ることはできない。
+  namespaceResourceWhitelist:
+    - group: argoproj.io
+      kind: Application
+    - group: argoproj.io
+      kind: AppProject

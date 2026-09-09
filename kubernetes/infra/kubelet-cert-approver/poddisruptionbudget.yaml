@@ -1,0 +1,20 @@
+# ===========================================================================
+# 上流のマニフェストには PodDisruptionBudget が含まれないため補う。
+#
+# これが無いと、Talos のアップグレードでノードをドレインした際に
+# 2 レプリカが同時に退去しうる。その間に kubelet の証明書更新が走ると
+# CSR が承認されず、metrics-server や Prometheus が kubelet に
+# 接続できなくなる（原因が分かりにくい障害になる）。
+# ===========================================================================
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: kubelet-serving-cert-approver
+  namespace: kubelet-serving-cert-approver
+  labels:
+    app.kubernetes.io/name: kubelet-serving-cert-approver
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kubelet-serving-cert-approver

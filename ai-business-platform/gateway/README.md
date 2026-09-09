@@ -1,6 +1,6 @@
 # Business Gateway
 
-Phase 1 の最小Gateway実装。PostgreSQLをSystem of Recordとし、Job登録、状態取得、Worker Event受付を提供する。
+Phase 1 の最小Gateway実装。PostgreSQLをSystem of Recordとし、Job登録、型付きWorker APIへのdispatch、状態取得、Worker Event受付を提供する。
 
 ## Listener
 

@@ -10,7 +10,7 @@ set -a
 set +a
 
 test_id="smoke-$(date -u +%Y%m%d%H%M%S)"
-payload='{"action":"test.run","project_id":"gateway-smoke","environment":"preview","parameters":{"suite":"deployment"},"limits":{"timeout_seconds":300}}'
+payload='{"action":"test.run","project_id":"worker-demo","environment":"research","parameters":{"operation":"self_test"},"limits":{"timeout_seconds":60}}'
 public_base=http://127.0.0.1:8080
 public_headers=()
 
@@ -65,9 +65,26 @@ mismatch_code=$(curl -sS -o /dev/null -w '%{http_code}' \
   --data '{"action":"code.build","project_id":"gateway-smoke","environment":"preview"}')
 test "$mismatch_code" = 409
 
+# A successful terminal state proves public authentication, Gateway dispatch,
+# Worker authentication, execution, and the Tailnet callback path together.
+state=QUEUED
+job_response=
+for _ in $(seq 1 60); do
+  job_response=$(curl -fsS "$public_base/v1/jobs/$job_one" \
+    "${public_headers[@]}" \
+    -H "Authorization: Bearer $GATEWAY_API_TOKEN")
+  state=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["state"])' "$job_response")
+  case "$state" in
+    SUCCEEDED|FAILED_FINAL|CANCELLED) break ;;
+  esac
+  sleep 2
+done
+test "$state" = SUCCEEDED
+
+worker_job_id=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["worker_job_id"])' "$job_response")
 occurred_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-event=$(printf '{"event_id":"%s-completed","gateway_job_id":"%s","dispatch_id":"%s-dispatch","worker_job_id":"%s-worker","event_type":"completed","sequence":1,"occurred_at":"%s","data":{"passed":true}}' \
-  "$test_id" "$job_one" "$test_id" "$test_id" "$occurred_at")
+event=$(printf '{"event_id":"%s-replay-check","gateway_job_id":"%s","dispatch_id":"gateway:%s:1","worker_job_id":"%s","event_type":"completed","sequence":4,"occurred_at":"%s","data":{"passed":true}}' \
+  "$test_id" "$job_one" "$job_one" "$worker_job_id" "$occurred_at")
 
 curl -fsS -o /dev/null -X POST http://127.0.0.1:8081/v1/worker-events \
   -H "Authorization: Bearer $WORKER_CALLBACK_TOKEN" \

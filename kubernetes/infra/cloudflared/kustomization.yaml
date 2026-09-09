@@ -1,0 +1,22 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: cloudflared
+
+resources:
+  - namespace.yaml
+  # tofu/20-cloudflare が生成する。手で編集しないこと。
+  - generated/ingress-configmap.yaml
+  - deployment.yaml
+  - service.yaml
+  - networkpolicy.yaml
+
+# ---------------------------------------------------------------------------
+# SOPS で暗号化された Secret を復号して生成する（KSOPS）。
+#
+# credentials.sops.yaml は scripts/sync-cloudflare-secrets.sh が
+# tofu の出力から生成し、age で暗号化したもの。
+# 平文の credentials.json はリポジトリに存在しない。
+# ---------------------------------------------------------------------------
+generators:
+  - secret-generator.yaml

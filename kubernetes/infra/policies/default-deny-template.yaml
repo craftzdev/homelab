@@ -1,0 +1,90 @@
+# ===========================================================================
+# default-deny テンプレート
+#
+# 新しい namespace を作るときは、このファイルをコピーして
+# <NAMESPACE> を置き換え、必要な通信だけを明示的に許可する。
+#
+# ---------------------------------------------------------------------------
+# なぜ Cilium の policyEnforcementMode を "always" にしないのか
+# ---------------------------------------------------------------------------
+# "always" にすればクラスタ全体が自動的に default-deny になるが、
+# ポリシーの書き漏れが即座にクラスタ全体の停止につながる。
+# また「この namespace は保護されているのか」がマニフェストから
+# 読み取れなくなる。
+#
+# namespace ごとに明示的な default-deny を置く方式なら、
+#   - 保護の有無が Git 上で一目で分かる
+#   - 段階的に適用範囲を広げられる
+#   - レビューで「default-deny が無い namespace」を指摘できる
+#
+# ---------------------------------------------------------------------------
+# 適用後に必ず行うこと
+# ---------------------------------------------------------------------------
+# default-deny を適用すると、それまで動いていた通信が落ちる。
+# Hubble で drop されているフローを確認しながら許可を足していく:
+#
+#   kubectl -n kube-system exec -it ds/cilium -- \
+#     hubble observe --namespace <NAMESPACE> --verdict DROPPED --follow
+#
+# ===========================================================================
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: <NAMESPACE>
+spec:
+  # 空の podSelector = namespace 内の全 Pod
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+
+---
+# ---------------------------------------------------------------------------
+# ほぼ全ての namespace で必要になる最小限の許可
+# ---------------------------------------------------------------------------
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: allow-baseline
+  namespace: <NAMESPACE>
+spec:
+  endpointSelector: {}
+
+  egress:
+    # --- DNS ---
+    # これが無いと名前解決ができず、ほぼ全てのアプリが動かない。
+    #
+    # rules.dns で問い合わせ可能なドメインを制限できる。
+    # DNS トンネリング（DNS クエリにデータを埋め込んで外部へ送る手法）
+    # の抑止になるため、可能な限り絞ること。
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+          rules:
+            dns:
+              - matchPattern: "*.cluster.local"
+              - matchPattern: "*.svc.cluster.local"
+              # 外部ドメインが必要な場合はここに具体的に列挙する。
+              # "*" は使わないこと。
+
+  ingress:
+    # --- 同一 namespace 内の Pod 同士 ---
+    # マイクロサービス間の通信を許可する。
+    # namespace をまたぐ通信は個別に許可すること。
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: <NAMESPACE>
+
+    # --- kubelet からの health probe ---
+    # これを忘れると liveness/readiness probe が失敗し、
+    # Pod が延々と再起動を繰り返す。原因が分かりにくい典型例。
+    - fromEntities:
+        - host
+        - remote-node

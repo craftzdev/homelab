@@ -1,114 +1,135 @@
-# Homelab VM デプロイとネットワーク更新手順
+# homelab — Proxmox VE 上に構築するセキュアな Kubernetes 基盤
 
-このリポジトリは、Proxmox 上に Kubernetes ノード用の VM を Cloud-Init で一括作成・設定するためのスクリプト群です。Ubuntu 24.04 LTS の Cloud Image をテンプレート化し、VM をクローンして起動します。ネットワーク設定（Cloud-Init スニペット）は後から更新・再適用できます。
+自宅の Proxmox VE クラスタ（3ノード）の上に、**Talos Linux による
+イミュータブルな Kubernetes クラスタ**を構築し、その一部サービスを
+**Cloudflare Zero Trust（Tunnel + Access）経由で Cloudflare Workers 上の SaaS から
+のみ安全に呼び出せる**ようにするための、Infrastructure as Code リポジトリです。
 
-## 前提条件
-- 実行場所は Proxmox ノード。`qm`、`wget`、`ssh`、`curl` が利用可能であること。
-- 共有スニペットストレージと VM ディスクストレージが存在していること（例）
-  - スニペット: `cephfs01` に `snippets` が有効化済み（例: `/mnt/pve/cephfs01/snippets`）
-  - VM ディスク: `cephrdb_k8s`
-- ネットワークブリッジが正しく設定されていること（例: `vmbr1`）。
-- ノード間 SSH が可能（スクリプト内で `ssh -n <targetip> qm ...` を使います）。
+インバウンドのポート開放は **ゼロ** です。自宅のグローバル IP は一切公開しません。
 
-## 主要スクリプトとパス
-- テンプレート作成・VMデプロイ: 
-  - `k8s-on-proxmox/cluster-boot-up/scripts/proxmox-host-terminal/deploy-vm.sh`
-- ノード初期セットアップ（VM内で cloud-init の `runcmd` から取得・実行）:
-  - `k8s-on-proxmox/cluster-boot-up/scripts/nodes/k8s-node-setup.sh`
-- ネットワークスニペット（例）:
-  - `k8s-on-proxmox/cluster-boot-up/snippets/k8s-wk-3-network.yaml`
+---
 
-## 実行手順
-### 1. テンプレート作成と VM クローン（初回）
-- 対象ブランチを指定して実行（例: `main`）
-```
-bash k8s-on-proxmox/cluster-boot-up/scripts/proxmox-host-terminal/deploy-vm.sh main
-```
-- スクリプトの主な処理
-  - Ubuntu Cloud Image をダウンロードしてテンプレート化（EFI を OS ディスク後に作成し、`vm-9050-disk-0` が OS/`scsi0` になるよう順序調整）。
-  - `VM_LIST` に従ってクローン、CPU・メモリ設定、Cloud-Init の `user`/`network` スニペットを割り当て、`qm cloudinit update` 実行後に起動。
+## 何を作るのか（1枚で）
 
-### 2. ネットワーク設定の更新（再適用）
-- ネットワークスニペットを編集後、VMに再適用します。
-- 例: `k8s-wk-3` のネットワークを更新（Proxmox ノードで実行）
 ```
-# 1) スニペットを更新（ブランチのRAWから取得する場合の例）
-TARGET_BRANCH=main
-SNIPPET_TARGET_VOLUME=cephfs01
-SNIPPET_TARGET_PATH=/mnt/pve/${SNIPPET_TARGET_VOLUME}/snippets
-VMNAME=k8s-wk-3
-VMID=1103
-curl -s "https://raw.githubusercontent.com/craftzdev/homelab/${TARGET_BRANCH}/k8s-on-proxmox/cluster-boot-up/snippets/${VMNAME}-network.yaml" \
-  > "${SNIPPET_TARGET_PATH}/${VMNAME}-network.yaml"
-
-# 2) VM にスニペットを再設定（user を併せて指定すると安全）
-qm set ${VMID} --cicustom "user=${SNIPPET_TARGET_VOLUME}:snippets/${VMNAME}-user.yaml,network=${SNIPPET_TARGET_VOLUME}:snippets/${VMNAME}-network.yaml"
-
-# 3) Cloud-Init ISO を更新し、再起動
-qm cloudinit update ${VMID}
-qm reboot ${VMID}
-```
-- Cloud-Init は「初回適用のみ」のため、反映されない場合はゲスト内で再適用します。
-```
-sudo cloud-init clean
-sudo reboot
-# 必要なら起動後に
-sudo netplan apply
-```
-
-## 検証と確認
-- Proxmox 側
-```
-# Cloud-Init のネットワーク内容を確認
-qm cloudinit dump 1103 network
-# VM設定の確認
-qm config 1103 | grep cicustom
-```
-- VM 内
-```
-cloud-init status --long
-sudo cat /etc/netplan/50-cloud-init.yaml
-ip a
-journalctl -u systemd-networkd --no-pager | tail -n 200
-```
-
-## トラブルシュート
-- ネットワークが反映されない / IF 名の揺らぎ
-  - 既存スニペットが `version: 1` で `name: ens18` 固定の場合、ゲスト側の命名（例: `enp6s18` など）とズレると失敗しやすいです。
-  - 推奨: `version: 2` に移行し、`match` + `set-name` を使って NIC を確実に特定してから静的 IP を設定してください。
-  - 例（netplan v2）
-```
-network:
-  version: 2
-  ethernets:
-    net0:
-      match:
-        macaddress: "<NICのMAC>"
-      set-name: "ens18"
-      dhcp4: false
-      addresses: [172.16.40.23/24]
-      gateway4: 172.16.40.1
-      nameservers:
-        addresses: [192.168.100.1]
-```
-- Cloud-Init のパッケージアップグレードで失敗（例: `package_update_upgrade_install`）
-  - 一時的な APT 失敗のケースがあるため、ネットワーク正常化後に以下を実行し、再度 `cloud-init clean` → 再起動を試してください。
-```
-sudo apt-get update
-sudo apt-get -o Dpkg::Options::="--force-confold" --assume-yes dist-upgrade
-```
-
-## よく使うコマンド
-```
-# Cloud-Init ISO の再生成
-qm cloudinit update <VMID>
-# VM 再起動
-qm reboot <VMID>
-# ネットワークスニペットの適用先確認
-qm cloudinit dump <VMID> network
-# Cloud-Init の状態
-cloud-init status --long
+                    ┌──────────────────────────────────────────┐
+   インターネット    │        Cloudflare Global Network         │
+                    │                                          │
+  ┌──────────┐      │  ┌────────────┐      ┌───────────────┐   │
+  │  SaaS    │─────▶│  │   Access   │─────▶│    Tunnel     │   │
+  │ (Workers)│ token│  │ (ServiceTk)│ JWT  │  (cloudflared)│   │
+  └──────────┘      │  └────────────┘      └───────┬───────┘   │
+                    └──────────────────────────────┼───────────┘
+                                                   │ outbound only (QUIC/443)
+  ═══════════════════════════════════════════════ │ ═══════════ 自宅 NW 境界
+                                                   ▼
+                              ┌─────────────────────────────────────┐
+                              │  Kubernetes (Talos Linux) VLAN40    │
+                              │  cloudflared × 2 → Ingress → App    │
+                              │  CNI: Cilium / PV: Longhorn ×3      │
+                              └───────────────┬─────────────────────┘
+                                              │
+                              ┌───────────────▼─────────────────────┐
+                              │  Proxmox VE 3ノード（local-ZFS）     │
+                              │  1物理ノード = 1 K8sノード           │
+                              └─────────────────────────────────────┘
 ```
 
 ---
-この手順で、テンプレート作成からネットワーク設定の更新・検証まで一貫して行えます。必要に応じて、全ノードのネットワークスニペットを `version: 2` に移行し、`match` + `set-name` で安定運用に切り替えてください。
+
+## ドキュメント
+
+**設計の「なぜ」を知りたい場合は必ず [`docs/`](docs/) を読んでください。**
+
+| ドキュメント | 内容 |
+| --- | --- |
+| [docs/00-overview.md](docs/00-overview.md) | 全体像・ゴール・スコープ・前提 |
+| [docs/10-network-design.md](docs/10-network-design.md) | VLAN / IP アドレス設計 |
+| [docs/20-security-design.md](docs/20-security-design.md) | 脅威モデルと多層防御の設計 |
+| [docs/30-storage-design.md](docs/30-storage-design.md) | ストレージ設計（Longhorn / local-ZFS） |
+| [docs/40-external-access.md](docs/40-external-access.md) | Cloudflare Tunnel + Access による外部公開 |
+| [docs/50-operations.md](docs/50-operations.md) | 構築手順・運用・アップグレード・DR |
+| [docs/90-decision-log.md](docs/90-decision-log.md) | 検討の経緯（何を比較して何故そう決めたか） |
+| [docs/adr/](docs/adr/) | 個別の意思決定記録（ADR） |
+
+---
+
+## リポジトリ構成
+
+```
+.
+├── docs/                      設計ドキュメントと ADR
+├── tofu/
+│   ├── 10-proxmox-talos/      Proxmox VM 作成 + Talos クラスタ構築
+│   ├── 20-cloudflare/         Cloudflare Tunnel / Access / Service Token
+├── talos/patches/             Talos machine config パッチ（ハードニング）
+├── kubernetes/
+│   ├── bootstrap/argocd/      ArgoCD 初期導入（1度だけ手で apply）
+│   ├── apps/                  app-of-apps（ArgoCD Application 定義）
+│   └── infra/                 各基盤コンポーネントのマニフェスト
+├── scripts/                   前提チェック・Ceph 廃止・bootstrap などの補助
+└── workers/example-origin-api/ Workers から Access 経由で叩く実装サンプル
+```
+
+---
+
+## クイックスタート
+
+前提ツールの導入と各手順の詳細は [docs/50-operations.md](docs/50-operations.md) を参照。
+**順序に意味があります**（CNI が無いとノードが Ready にならない、
+Ceph を廃止しないと SSD が解放されない、等）。
+
+```bash
+# 0. 前提チェック — ストレージ / ネットワーク / IP 重複 / VMID 衝突
+./scripts/preflight.sh
+
+# 1. 旧クラスタの VM を削除（dry-run で確認してから --yes）
+./scripts/destroy-legacy-vms.sh
+./scripts/destroy-legacy-vms.sh --yes
+
+# 1b. Ceph を廃止し、SATA SSD を local-zfs 化する
+#     ⚠️ Ceph の全データが失われる。先に dry-run で内容を確認すること
+./scripts/decommission-ceph.sh
+./scripts/decommission-ceph.sh --yes
+
+# 2. Proxmox 上に Talos VM を作成し、Kubernetes を bootstrap
+cd tofu/10-proxmox-talos
+cp terraform.tfvars.example terraform.tfvars   # 環境に合わせて編集
+tofu init && tofu plan && tofu apply
+cd ../..
+#    → この時点ではまだ CNI が無いので全ノードが NotReady
+
+# 3. Cilium を導入してノードを Ready にする
+./scripts/bootstrap-cluster.sh
+
+# 4. Grafana の管理者パスワードを SOPS で用意する
+#    （未設定だと Grafana は起動しない ＝ 既定パスワードで動く事故を防ぐ）
+#    手順: kubernetes/infra/monitoring/README.md
+
+# 5. ArgoCD を導入し、以降は GitOps で収束させる
+./scripts/bootstrap-argocd.sh
+
+# 6. Cloudflare 側のリソース（Tunnel / Access / Service Token）を作成
+cd tofu/20-cloudflare
+cp terraform.tfvars.example terraform.tfvars
+export TF_VAR_cloudflare_api_token='...'
+tofu init && tofu apply
+cd ../..
+
+# 7. Tunnel の認証情報を SOPS 暗号化して Git へ入れる
+./scripts/sync-cloudflare-secrets.sh
+```
+
+---
+
+## 設計の要点（3行）
+
+1. **OS を攻撃対象から外す** — Talos Linux には SSH もシェルもパッケージマネージャも無い。設定は全て署名付き gRPC API 経由の YAML であり、構成ドリフトが原理的に起きない。
+2. **内向きポートを 1 つも開けない** — 外部公開は Cloudflare Tunnel の outbound 接続のみで成立させ、認可は Access の Service Token（+ Origin 側での JWT 再検証）で行う。
+3. **状態は全て Git に置く** — VM も Kubernetes も Cloudflare も宣言的に定義し、機密情報は SOPS + age で暗号化してコミットする。手作業の余地を残さない。
+
+> **2026-08-30 に Ceph を廃止しました。** 実測で OSD のコンシューマ SSD が
+> Ceph の要求性能に届いていないことが判明し、維持には 10〜20 万円の換装が
+> 必要でした。一方で実際に載っていたデータは ISO 9GB のみ。
+> PV は Longhorn（K8s 内 3 レプリカ）へ移し、SATA SSD は単体 ZFS として
+> VM ディスクに使います。経緯は [ADR-0009](docs/adr/0009-drop-ceph-adopt-longhorn.md)。

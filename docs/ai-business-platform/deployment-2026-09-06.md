@@ -2,7 +2,93 @@
 
 実施日: 2026-09-06 (JST)
 
-## Deployed state
+## Secure rebuild update
+
+The original Gateway deployment below has been superseded by the Talos/local-ZFS
+rebuild performed on the same day.
+
+| Item | Current state |
+|---|---|
+| Ceph | Decommissioned on all three Proxmox nodes after PBS backup and CephFS archive verification |
+| Proxmox storage | `local-zfs` online on `sv-proxmox-01` through `sv-proxmox-03` |
+| Gateway VM | VM `1200` running from `local-zfs` on `sv-proxmox-01` |
+| Gateway durability | PBS backups at `172.16.10.51`; ZFS replication jobs `1200-0` and `1200-1` to nodes 2 and 3 every five minutes |
+| Gateway HA verification | Online migration to node 2 and back completed; both API surfaces remained healthy afterward |
+| Talos | `1.13.9`, three dedicated control-plane nodes plus three dedicated workers, all Ready |
+| Kubernetes | `1.34.3`, API VIP `172.16.40.10` |
+| CNI | Cilium `1.20.1`, kube-proxy replacement, WireGuard, L2 LoadBalancer, Hubble healthy |
+| Storage | Longhorn `1.12.1`; all five persistent volumes are healthy and replicas are restricted to the dedicated workers |
+| K8s Worker | Running on the dedicated worker plane in namespace `ai-worker`; restricted non-root Pod, Codex CLI and API health verified |
+| Gateway dispatcher | Deployed; typed Worker endpoint mapping and Bearer authentication verified against an isolated Worker |
+| Tailnet cutover | Tailscale Operator ingress/egress and bidirectional HTTPS verified |
+| Mac Studio Worker | Removed after Kubernetes cutover; launchd, account/group, home, plist, Serve, and Worker Grants absent |
+| Internal registry | TLS registry at `172.16.40.200:5000`, 20 GiB Longhorn 3-replica PVC |
+| Codex end-to-end | Gateway job `9b828a64-1f96-4261-af02-10f3c29c7160` succeeded with tests and signed review artifacts |
+| Post-migration smoke test | Gateway job `054f75e6-50d2-4bc1-a837-687574f72c21` reached `SUCCEEDED` through Cloudflare Access, Gateway, Tailnet HTTPS, and the Kubernetes Worker |
+
+## Final one-command rebuild validation (2026-09-07 JST)
+
+The production rebuild command completed successfully from commit `531adae`:
+
+```bash
+./scripts/rebuild-talos-cluster.sh \
+  --execute \
+  --confirm-destroy-six-k8s-vms
+```
+
+For the final repeat test, the already verified PBS snapshots and encrypted
+application recovery set were reused with `--resume-after-backup`. The recovery
+set was `_out/rebuild-backups/20260906T120841Z`. The command independently
+audited its destroy plan before applying it and restricted deletion to VMIDs
+`1001`, `1002`, `1003`, `1101`, `1102`, and `1103`. Gateway VM `1200` remained
+running throughout.
+
+| Verification | Result |
+|---|---|
+| Proxmox VM placement | One control plane and one worker running on each of `sv-proxmox-01` through `sv-proxmox-03` |
+| Talos / Kubernetes | Six nodes Ready; three control-plane and three worker nodes |
+| etcd | Three voting members, no learners |
+| API stability | All three direct kube-apiserver endpoints and all nodes Ready for 12 consecutive five-second samples |
+| GitOps | All 12 Argo CD Applications `Synced/Healthy` |
+| Storage | Five Longhorn volumes `attached/healthy`; replica nodes restricted to the three workers |
+| Infrastructure drift | `tofu plan -detailed-exitcode` returned `0` (`No changes`) |
+| Tailnet continuity | Worker ingress and Gateway egress device IDs matched the encrypted pre-rebuild state |
+| TLS continuity | Cached Tailnet certificate state restored before proxy startup; no ACME issuance or rate-limit event in the new proxy logs |
+| Worker health | `https://ai-worker-cluster.tailb6c7d.ts.net/health` returned healthy with Codex Builder enabled |
+| End-to-end | Gateway job `054f75e6-50d2-4bc1-a837-687574f72c21` reached `SUCCEEDED` |
+
+Cold-start image downloads from external registries were slow and temporarily
+increased local-ZFS I/O latency. The rebuild therefore uses dependency gates
+and bounded convergence windows for Cilium, Longhorn CSI, every Pod, and the
+final authenticated smoke test. After image convergence, all three API servers
+remained continuously Ready for the final stability sample.
+
+## Six-VM destructive rebuild validation
+
+The complete Talos cluster was destroyed and recreated from the OpenTofu state
+on 2026-09-06. The guarded destroy plan contained exactly VMIDs `1001`, `1002`,
+`1003`, `1101`, `1102`, and `1103`; Gateway VM `1200` was explicitly excluded.
+Before deletion, all six VMs were snapshotted to `pbs-gateway` and an encrypted
+application recovery set was written to
+`_out/rebuild-backups/20260906T024154Z`.
+
+All six replacement nodes reached `Ready` with three tainted control-plane
+nodes and three dedicated workers. Registry and Worker data were restored to
+new Longhorn volumes; each volume has one healthy replica on every worker and
+none on the control plane. Tailscale Operator ingress/egress identities were
+recreated, CoreDNS forwarding for `tailb6c7d.ts.net` was restored, and
+`https://ai-worker-cluster.tailb6c7d.ts.net/health` returned healthy.
+
+The post-rebuild end-to-end test created Gateway job
+`ad231cde-5ff6-434b-9bbb-5e5de067f573`. It passed Cloudflare Access rejection,
+Gateway Bearer authentication, idempotency and conflict checks, Tailnet Worker
+dispatch, Worker callback delivery, duplicate event handling, and ended in
+`SUCCEEDED`.
+
+The additional PBS snapshot containing the rebuilt Gateway and dispatcher is
+`pbs-gateway:backup/vm/1200/2026-09-05T19:33:25Z`.
+
+## Original Gateway deployment state (before secure rebuild)
 
 | Item | Value | State |
 |---|---|---|
@@ -81,16 +167,13 @@ The HA node preference is `sv-proxmox-01:3`, `sv-proxmox-02:2`, and
   PostgreSQL rows were checked. The temporary restore VM and its disks were
   then removed.
 
-## Open production gates
+## Historical open production gates (resolved or superseded)
 
-1. Proxmox Backup Server is reachable through the existing Tailscale node, but
-   no PBS storage or scheduled backup is registered in Proxmox. The temporary
-   local backup is not a replacement for PBS.
-2. Ceph remains `HEALTH_WARN`: BlueStore slow-operation indications are now
-   reported for `osd.0` and `osd.2`. Data placement is clean, but the device and
-   I/O path warning must be investigated before production load is increased.
-3. Codex Builder is active for registered projects with a dedicated account,
-   per-job clone, workspace-write sandbox, fixed test commands, time/output
-   limits, and review artifacts. Playwright and Data executors, durable callback
-   outbox/retry, automatic log secret redaction, and the Gateway scheduler remain
-   implementation work.
+1. PBS backup for VM 1200 was completed before Ceph decommissioning; recurring
+   ZFS replication now targets both remaining Proxmox nodes.
+2. Ceph was decommissioned and replaced by per-node `local-zfs`; Kubernetes PVs
+   use Longhorn three-replica storage.
+3. Codex Builder is active in the restricted Kubernetes Worker boundary with
+   fixed test commands, time/output limits, and review artifacts. Playwright and
+   Data executors, durable callback outbox/retry, and automatic log secret
+   redaction remain implementation work.

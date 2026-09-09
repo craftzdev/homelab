@@ -1,0 +1,531 @@
+# ===========================================================================
+# 基盤コンポーネントの Application 定義
+#
+# ---------------------------------------------------------------------------
+# 同期順序（sync-wave）
+# ---------------------------------------------------------------------------
+#   -20  policies        : クラスタ全体のネットワークポリシー
+#   -10  cilium          : CNI。これが無いと他の Pod が起動しない
+#   -15  gateway-api-crds : Gateway API の CRD（Cilium より先に必要）
+#    -5  snapshot-controller : VolumeSnapshot の CRD
+#     0  longhorn        : 分散ブロックストレージ（PV の供給元）
+#     1  tailscale       : Tailnet ingress / egress
+#     2  cert-manager    : 証明書管理（他が依存する）
+#     5  monitoring      : 監視
+#     6  security        : Trivy / kubelet 証明書承認
+#
+# Gateway/cloudflared は Business Gateway VM 1200 で稼働するためクラスタには置かない。
+# Velero は外部オブジェクトストレージ設定後に別変更として有効化する。
+#
+# ---------------------------------------------------------------------------
+# バージョンの固定について
+# ---------------------------------------------------------------------------
+# targetRevision は必ず具体的なバージョンを書く。"*" や範囲指定は
+# 「気づかないうちに更新される」ことを意味し、サプライチェーン攻撃と
+# 予期しない破壊的変更の両方のリスクになる（docs/20-security-design.md L4）。
+# 更新は Renovate が PR を出す形で行う。
+# ===========================================================================
+---
+# ---------------------------------------------------------------------------
+# クラスタ全体のネットワークポリシー
+# ---------------------------------------------------------------------------
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: network-policies
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-20"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: infrastructure
+  source:
+    repoURL: https://github.com/craftzdev/homelab.git
+    targetRevision: main
+    path: kubernetes/infra/policies
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kube-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+
+---
+# ---------------------------------------------------------------------------
+# Cilium（CNI）
+#
+# ⚠️ 初回は scripts/bootstrap-cluster.sh が helm install で導入する。
+#    この Application は「以降の管理を ArgoCD へ引き継ぐ」ためのもの。
+#    同じ values.yaml を参照するため、引き継ぎ時に差分は出ない。
+# ---------------------------------------------------------------------------
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cilium
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-10"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: infrastructure
+  # Cilium chart が初回起動時に生成する CA/クライアント/サーバー証明書は
+  # 実行時データであり、Git の desired state ではない。data を比較・適用すると
+  # Argo CD の hard refresh ごとに証明書が再生成され、部分syncが永久に続く。
+  ignoreDifferences:
+    - group: ""
+      kind: Secret
+      name: cilium-ca
+      jsonPointers:
+        - /data
+    - group: ""
+      kind: Secret
+      name: hubble-relay-client-certs
+      jsonPointers:
+        - /data
+    - group: ""
+      kind: Secret
+      name: hubble-server-certs
+      jsonPointers:
+        - /data
+  sources:
+    - repoURL: https://helm.cilium.io/
+      chart: cilium
+      targetRevision: 1.20.1
+      helm:
+        releaseName: cilium
+        valueFiles:
+          - $values/kubernetes/infra/cilium/values.yaml
+    # LoadBalancer IP プールと L2 広告ポリシー
+    - repoURL: https://github.com/craftzdev/homelab.git
+      targetRevision: main
+      path: kubernetes/infra/cilium
+      directory:
+        include: "lb-ipam.yaml"
+    - repoURL: https://github.com/craftzdev/homelab.git
+      targetRevision: main
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kube-system
+  syncPolicy:
+    automated:
+      prune: false # CNI を prune で消すと全断する。手動削除のみ許可。
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+      - RespectIgnoreDifferences=true
+
+---
+# ---------------------------------------------------------------------------
+# snapshot-controller（VolumeSnapshot の CRD とコントローラ）
+#
+# ⚠️ Longhorn より先に導入する必要がある。
+#    VolumeSnapshot / VolumeSnapshotClass / VolumeSnapshotContent は
+#    Kubernetes のコア API ではなく CRD であり、Kubernetes 本体にも
+#    Longhorn の chart にも含まれていない。これが無いと
+#    kubernetes/infra/longhorn/ の VolumeSnapshotClass が適用できず、
+#    Velero の CSI 連携も機能しない。
+# ---------------------------------------------------------------------------
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: snapshot-controller
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-5"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: infrastructure
+  sources:
+    - repoURL: https://piraeus.io/helm-charts/
+      chart: snapshot-controller
+      targetRevision: 5.2.0
+      helm:
+        releaseName: snapshot-controller
+        valueFiles:
+          - $values/kubernetes/infra/snapshot-controller/values.yaml
+    - repoURL: https://github.com/craftzdev/homelab.git
+      targetRevision: main
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kube-system
+  syncPolicy:
+    automated:
+      # ⚠️ prune: false
+      #    CRD を prune で消すと、既存の VolumeSnapshot がすべて失われる。
+      prune: false
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+
+---
+# ---------------------------------------------------------------------------
+# Longhorn（分散ブロックストレージ）
+#
+# Ceph を廃止した後の PV を担う。K8s 内で 3 レプリカを持つため、
+# 1 ノード障害でもデータは失われない。
+# 判断の経緯は docs/adr/0009-drop-ceph-adopt-longhorn.md を参照。
+#
+# ⚠️ Talos 側で以下が揃っている必要がある（tofu/10-proxmox-talos が設定済み）:
+#      - system extension: iscsi-tools, util-linux-tools
+#      - UserVolumeConfig で /var/mnt/longhorn を専用ディスクに切り出し
+#      - kubelet の extraMounts（rshared）
+# ---------------------------------------------------------------------------
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: longhorn
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: infrastructure
+  sources:
+    - repoURL: https://charts.longhorn.io
+      chart: longhorn
+      targetRevision: 1.12.1
+      helm:
+        releaseName: longhorn
+        valueFiles:
+          - $values/kubernetes/infra/longhorn/values.yaml
+    - repoURL: https://github.com/craftzdev/homelab.git
+      targetRevision: main
+      path: kubernetes/infra/longhorn
+      directory:
+        include: "{namespace-and-storageclass.yaml,networkpolicy.yaml}"
+    - repoURL: https://github.com/craftzdev/homelab.git
+      targetRevision: main
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: longhorn-system
+  syncPolicy:
+    automated:
+      # ⚠️ prune: false
+      #    Longhorn の CRD や StorageClass を prune で消すと、
+      #    既存 PV が孤児になりデータへ到達できなくなる。削除は手動で行う。
+      prune: false
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+      - CreateNamespace=false
+
+---
+# ---------------------------------------------------------------------------
+# Internal image registry
+#
+# Worker images are retained on a Longhorn-backed private registry. The TLS
+# Secret is provisioned out-of-band and is intentionally absent from Git.
+# ---------------------------------------------------------------------------
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: image-registry
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: infrastructure
+  source:
+    repoURL: https://github.com/craftzdev/homelab.git
+    targetRevision: main
+    path: kubernetes/infra/image-registry
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: image-registry
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+
+---
+# ---------------------------------------------------------------------------
+# Tailscale Kubernetes Operator
+#
+# OAuth Secret `operator-oauth` は事前に tailscale namespace へ作成する。
+# Git / Argo CD には資格情報を保存しない。Operator は AI Worker の
+# Tailnet-only HTTPS ingress と Gateway 向け egress proxy を管理する。
+# ---------------------------------------------------------------------------
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: tailscale-operator
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: infrastructure
+  sources:
+    - repoURL: https://pkgs.tailscale.com/helmcharts
+      chart: tailscale-operator
+      targetRevision: 1.102.3
+      helm:
+        releaseName: tailscale-operator
+        valueFiles:
+          - $values/kubernetes/infra/tailscale-operator/values.yaml
+    - repoURL: https://github.com/craftzdev/homelab.git
+      targetRevision: main
+      path: kubernetes/infra/tailscale-operator
+      directory:
+        include: '{dnsconfig.yaml,proxyclass.yaml}'
+    - repoURL: https://github.com/craftzdev/homelab.git
+      targetRevision: main
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: tailscale
+  syncPolicy:
+    automated:
+      # OAuth を失った状態で proxy CRD を誤って削除しない。
+      prune: false
+      selfHeal: true
+    # Egress proxy の sysctler init container は Tailscale が要求する
+    # namespaced system component。Worker namespace 自体は restricted のまま保つ。
+    managedNamespaceMetadata:
+      labels:
+        pod-security.kubernetes.io/enforce: privileged
+        pod-security.kubernetes.io/audit: restricted
+        pod-security.kubernetes.io/warn: restricted
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+
+---
+# ---------------------------------------------------------------------------
+# cert-manager
+#
+# 用途: クラスタ内部の TLS 証明書（webhook 用、内部通信用）。
+# 外部公開の TLS は Cloudflare エッジで終端するため、
+# ACME による公開証明書の発行は必須ではない。
+# ---------------------------------------------------------------------------
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cert-manager
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: infrastructure
+  sources:
+    - repoURL: https://charts.jetstack.io
+      chart: cert-manager
+      targetRevision: v1.21.1
+      helm:
+        releaseName: cert-manager
+        valueFiles:
+          - $values/kubernetes/infra/cert-manager/values.yaml
+    - repoURL: https://github.com/craftzdev/homelab.git
+      targetRevision: main
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cert-manager
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+
+---
+# ---------------------------------------------------------------------------
+# Gateway API の CRD
+#
+# ⚠️ Cilium より先に適用する必要がある（sync-wave -15）。
+#    CRD が無い状態で gatewayAPI.enabled: true の Cilium を起動すると、
+#    operator が Gateway API のリソースを watch できずエラーを繰り返す。
+# ---------------------------------------------------------------------------
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: gateway-api-crds
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-15"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: infrastructure
+  source:
+    repoURL: https://github.com/craftzdev/homelab.git
+    targetRevision: main
+    path: kubernetes/infra/gateway-api
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kube-system
+  syncPolicy:
+    automated:
+      # CRD を prune で消すと全ての Gateway / HTTPRoute が失われる
+      prune: false
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+
+---
+# ---------------------------------------------------------------------------
+# 監視
+# ---------------------------------------------------------------------------
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: monitoring
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "5"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: infrastructure
+  sources:
+    - repoURL: https://prometheus-community.github.io/helm-charts
+      chart: kube-prometheus-stack
+      targetRevision: 88.6.1
+      helm:
+        releaseName: kube-prometheus-stack
+        valueFiles:
+          - $values/kubernetes/infra/monitoring/values.yaml
+    # namespace / NetworkPolicy / アラート / Grafana の認証情報（KSOPS）。
+    # directory.include を指定すると kustomization.yaml が無視され
+    # KSOPS が動かないため、kustomize として扱わせる。
+    - repoURL: https://github.com/craftzdev/homelab.git
+      targetRevision: main
+      path: kubernetes/infra/monitoring
+    - repoURL: https://github.com/craftzdev/homelab.git
+      targetRevision: main
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      # kube-prometheus-stack の CRD は非常に大きく、
+      # client-side apply では annotation のサイズ制限に引っかかる
+      - ServerSideApply=true
+
+---
+# ---------------------------------------------------------------------------
+# セキュリティ namespace とネットワークポリシー
+# ---------------------------------------------------------------------------
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: security-config
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: infrastructure
+  source:
+    repoURL: https://github.com/craftzdev/homelab.git
+    targetRevision: main
+    path: kubernetes/infra/security
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: security
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false
+
+---
+# ---------------------------------------------------------------------------
+# kubelet-serving-cert-approver
+#
+# ⚠️ sync-wave を早め（2）にしている理由:
+#    kubelet の serving 証明書が承認されないと、metrics-server や
+#    Prometheus が kubelet に接続できない。監視スタック（wave 5）より
+#    前に稼働している必要がある。
+#
+# ⚠️ このコンポーネントは **Helm chart を提供していない**（kustomize のみ）。
+#    そのため他のコンポーネントと異なり、kustomize の remote resource として
+#    タグ固定で取得する。判断の理由は
+#    kubernetes/infra/kubelet-cert-approver/kustomization.yaml を参照。
+#
+#    namespace は上流のマニフェストが作る `kubelet-serving-cert-approver` を
+#    そのまま使う（マニフェスト側で Namespace リソースが定義されている）。
+# ---------------------------------------------------------------------------
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kubelet-serving-cert-approver
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: infrastructure
+  source:
+    repoURL: https://github.com/craftzdev/homelab.git
+    targetRevision: main
+    path: kubernetes/infra/kubelet-cert-approver
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kubelet-serving-cert-approver
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false
+
+---
+# ---------------------------------------------------------------------------
+# Trivy Operator（脆弱性スキャン）
+# ---------------------------------------------------------------------------
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: trivy-operator
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "6"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: infrastructure
+  sources:
+    - repoURL: https://aquasecurity.github.io/helm-charts/
+      chart: trivy-operator
+      targetRevision: 0.34.0
+      helm:
+        releaseName: trivy-operator
+        valueFiles:
+          - $values/kubernetes/infra/security/values-trivy-operator.yaml
+    - repoURL: https://github.com/craftzdev/homelab.git
+      targetRevision: main
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: security
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true

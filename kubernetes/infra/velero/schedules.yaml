@@ -1,0 +1,81 @@
+# ===========================================================================
+# バックアップスケジュール
+#
+# ⚠️ バックアップは復元テストをして初めてバックアップである。
+#    四半期に 1 度、restore のリハーサルを行うこと
+#    （docs/adr/0008-backup-strategy.md §検証）。
+# ===========================================================================
+---
+# ---------------------------------------------------------------------------
+# 日次: アプリケーションの namespace
+#
+# 基盤コンポーネント（kube-system 等）は Git から再構築できるため
+# 対象外とする。バックアップすべきは「Git に無いもの」= データである。
+# ---------------------------------------------------------------------------
+apiVersion: velero.io/v1
+kind: Schedule
+metadata:
+  name: daily-apps
+  namespace: velero
+spec:
+  # 深夜 2 時（JST）。クラスタの負荷が低い時間帯を選ぶ。
+  # Velero は UTC で解釈するため 17:00 UTC = 02:00 JST。
+  schedule: "0 17 * * *"
+
+  template:
+    ttl: 720h # 30 日保持
+
+    # PVC の中身をオブジェクトストレージへ転送する（Ceph 外へ出す）
+    defaultVolumesToFsBackup: true
+
+    includedNamespaces:
+      # アプリケーションの namespace をここに追加していく。
+      # "*" にすると基盤コンポーネントまで含まれ、バックアップが
+      # 肥大化する上に復元時の副作用が読めなくなる。
+      - default
+
+    excludedResources:
+      # 再生成されるもの・巨大なものは除外する
+      - events
+      - events.events.k8s.io
+      - endpointslices.discovery.k8s.io
+
+    storageLocation: default
+
+---
+# ---------------------------------------------------------------------------
+# 週次: クラスタ全体のメタデータ（PVC は含まない）
+#
+# 「何が動いていたか」の記録。GitOps を徹底していれば Git から
+# 再構築できるはずだが、ArgoCD 管理外のリソースや手動で作られた
+# ものを拾うための保険。
+# ---------------------------------------------------------------------------
+apiVersion: velero.io/v1
+kind: Schedule
+metadata:
+  name: weekly-cluster-metadata
+  namespace: velero
+spec:
+  # 日曜 3 時（JST）
+  schedule: "0 18 * * 0"
+
+  template:
+    ttl: 2160h # 90 日保持
+
+    # メタデータのみ。ボリュームは対象外にして転送量を抑える。
+    snapshotVolumes: false
+    defaultVolumesToFsBackup: false
+
+    excludedNamespaces:
+      # Velero 自身をバックアップすると復元時に競合する
+      - velero
+
+    excludedResources:
+      - events
+      - events.events.k8s.io
+      - endpointslices.discovery.k8s.io
+      # Pod は再作成されるため不要（Deployment 等があれば復元できる）
+      - pods
+      - replicasets
+
+    storageLocation: default

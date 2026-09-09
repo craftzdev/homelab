@@ -1,0 +1,204 @@
+# ===========================================================================
+# Talos machine config パッチ — worker
+#
+# control-plane 用（controlplane.yaml.tftpl）との差分:
+#   - VIP を持たない
+#   - cluster.* の apiServer / etcd / admissionControl 等は設定しない
+#     （worker ではこれらのコンポーネントが動かないため）
+#
+# ⚠️ interfaces はリスト全体が置換されるため、control-plane 用と共通化せず
+#    それぞれのテンプレートで完全に記述している。部分的なマージに頼ると
+#    片方の NIC 定義が消えるという分かりにくい事故が起きる。
+# ===========================================================================
+machine:
+  nodeLabels:
+    # node-role.kubernetes.io/* は Kubernetes の予約済みプレフィックスで、
+    # worker 自身の kubelet からは付与できない。worker の役割は
+    # control-plane ラベルを持たないことで Kubernetes が判定する。
+    # ワークロード配置には、kubelet が安全に登録できる独自ラベルを使う。
+    homelab.craftz.dev/workload-plane: "true"
+    # Longhorn はこのラベルを持つノードだけに既定ディスクを作る。
+    # これにより再構築後もcontrol-planeがstorage nodeへ戻らない。
+    node.longhorn.io/create-default-disk: "true"
+
+  install:
+    disk: /dev/sda
+    image: ${installer_image}
+    wipe: false
+
+  network:
+    # ⚠️ hostname はここ（v1alpha1）には書かない。
+    #    Talos v1.13 ではホスト名の設定が HostnameConfig ドキュメント
+    #    （ファイル末尾）へ移行しており、併用すると
+    #      "static hostname is already set in v1alpha1 config"
+    #    で validate が失敗する。
+    nameservers: ${nameservers}
+
+    interfaces:
+      # --- eth0 相当: VLAN40（Kubernetes 全般）---
+      - deviceSelector:
+          hardwareAddr: "${mac_k8s}"
+        addresses:
+          - ${ip}/24
+        routes:
+          - network: 0.0.0.0/0
+            gateway: ${gateway}
+        mtu: 1500
+        dhcp: false
+
+  time:
+    disabled: false
+    servers: ${ntp_servers}
+
+  features:
+    rbac: true
+    # stableHostname は HostnameConfig と排他のため設定しない
+    # （詳細は controlplane.yaml.tftpl のコメントを参照）
+    apidCheckExtKeyUsage: true
+    kubePrism:
+      enabled: true
+      port: 7445
+    hostDNS:
+      enabled: true
+      forwardKubeDNSToHost: true
+
+  # ディスク暗号化。worker の EPHEMERAL にはコンテナイメージと
+  # emptyDir が置かれるため、control-plane と同様に暗号化する。
+  systemDiskEncryption:
+    state:
+      provider: luks2
+      keys:
+        - nodeID: {}
+          slot: 0
+    ephemeral:
+      provider: luks2
+      keys:
+        - nodeID: {}
+          slot: 0
+
+  kubelet:
+    nodeIP:
+      validSubnets:
+        - ${k8s_subnet}
+    extraArgs:
+      rotate-server-certificates: "true"
+    extraConfig:
+      serverTLSBootstrap: true
+
+    # -----------------------------------------------------------------------
+    # Longhorn のデータパスを kubelet から見えるようにする
+    #
+    # Longhorn の manager / instance-manager は kubelet の mount namespace
+    # を通してレプリカを読み書きする。rshared にしないと、Longhorn が
+    # 作ったマウントが kubelet 側へ伝播せず、Pod がボリュームを
+    # 見つけられない（原因が非常に分かりにくい失敗をする）。
+    # -----------------------------------------------------------------------
+    extraMounts:
+      - destination: /var/mnt/longhorn
+        type: bind
+        source: /var/mnt/longhorn
+        options:
+          - bind
+          - rshared
+          - rw
+
+  sysctls:
+    net.ipv4.conf.all.log_martians: "1"
+    fs.inotify.max_user_watches: "524288"
+    fs.inotify.max_user_instances: "8192"
+
+cluster:
+  network:
+    cni:
+      name: none
+    podSubnets:
+      - ${pod_cidr}
+    serviceSubnets:
+      - ${service_cidr}
+
+  proxy:
+    disabled: true
+
+  discovery:
+    enabled: true
+    registries:
+      kubernetes:
+        disabled: false
+      service:
+        disabled: true
+
+---
+# ===========================================================================
+# ホスト名（Talos v1.13 以降の指定方法）
+#
+# 詳細は controlplane.yaml.tftpl 末尾のコメントを参照。
+# ===========================================================================
+apiVersion: v1alpha1
+kind: HostnameConfig
+# ---------------------------------------------------------------------------
+# ホスト名（Talos v1.13 以降の指定方法）
+#
+# Talos v1.13 でホスト名の設定が v1alpha1 の machine.network.hostname から
+# 独立した HostnameConfig ドキュメントへ移行した。
+#
+# ⚠️ `auto` と `hostname` の関係に注意:
+#    `talosctl gen config`（および terraform-provider-talos）は既定で
+#    `auto: stable` を出力する。ここで `hostname` だけを足すと
+#      "HostnameConfig: 'auto' and 'hostname' cannot be set at the same time"
+#    で validate に失敗する。`auto: off`（自動生成を止める）と併記して
+#    初めて静的なホスト名を指定できる。
+#
+#    strategic merge patch では既存の `auto` を削除できないため
+#    （`auto: null` も `$patch: replace` も効かないことを talosctl v1.13 で
+#    実測確認済み）、値を `off` に上書きする形を取る。
+#
+# 検証コマンド:
+#   talosctl -n <node> get hostnamestatus
+# ---------------------------------------------------------------------------
+auto: off
+hostname: ${hostname}
+
+---
+# ===========================================================================
+# Longhorn 用のデータボリューム
+#
+# ---------------------------------------------------------------------------
+# なぜ専用ディスクを切り出すのか
+# ---------------------------------------------------------------------------
+# Longhorn の既定のデータパスは /var/lib/longhorn だが、Talos の /var は
+# EPHEMERAL パーティション上にあり、再インストールや `talosctl reset` で
+# 初期化される。そこにレプリカを置くと、ノードを 1 台作り直すたびに
+# Longhorn が全レプリカを再同期することになる。
+#
+# VM に 2 本目のディスク（scsi1, serial=longhorn）を付け、
+# UserVolumeConfig で /var/mnt/longhorn として独立させることで、
+# OS のライフサイクルとデータのライフサイクルを分離する。
+#
+# ⚠️ diskSelector は VM 側で固定した serial 番号で判定している。
+#    tofu/10-proxmox-talos/vms.tf の scsi1 の `serial = "longhorn"` を
+#    変更すると、ここが一致しなくなりボリュームが作られない。
+# ===========================================================================
+apiVersion: v1alpha1
+kind: UserVolumeConfig
+name: longhorn
+provisioning:
+  diskSelector:
+    # ---------------------------------------------------------------------
+    # システムディスク以外を選ぶ。
+    #
+    # VM のディスクは 2 本だけ（scsi0 = OS、scsi1 = Longhorn）なので、
+    # 「システムディスクでない方」で一意に決まる。
+    #
+    # serial や by-id のパスで判定する方法もあるが、Proxmox が
+    # ゲストへどう見せるかに依存するため、Talos 自身が知っている
+    # system_disk を基準にする方が確実で壊れにくい。
+    # ---------------------------------------------------------------------
+    match: '!system_disk'
+  # 最小サイズ。これを下回るディスクしか無い場合はエラーになる
+  # （意図しないディスクを掴む事故を防ぐガード）。
+  minSize: 50GB
+  # ディスクの残り全体まで広げる（実サイズは Proxmox 側の
+  # longhorn_disk_gib で決まる）
+  grow: true
+filesystem:
+  type: xfs

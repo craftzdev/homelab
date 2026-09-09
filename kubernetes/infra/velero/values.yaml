@@ -1,0 +1,136 @@
+# ===========================================================================
+# Velero — Kubernetes リソースと PVC のバックアップ
+#
+# ⚠️⚠️ 最重要の設計判断: バックアップ先はクラスタ外に置くこと
+#
+# 旧構成ではクラスタ内の MinIO をバックアップ先にしていたが、
+# その MinIO の PVC も Ceph 上にある。つまり
+#
+#     Ceph が壊れたら、バックアップも一緒に消える。
+#
+# これは「バックアップ」の定義を満たしていない。
+# 誤削除（S3）からは復旧できるが、ストレージ層の障害（S5）や
+# ランサムウェア（S6）には無力である。
+#
+# 本構成では Cloudflare R2（egress 無料・S3 互換）を既定の
+# バックアップ先とする。詳細は docs/adr/0008-backup-strategy.md を参照。
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# 認証情報
+#
+# SOPS で暗号化した Secret（velero-credentials）から読み込む。
+# scripts/ 経由ではなく手動で作成する（README.md 参照）。
+# ---------------------------------------------------------------------------
+credentials:
+  useSecret: true
+  existingSecret: velero-credentials
+
+configuration:
+  # -------------------------------------------------------------------------
+  # バックアップ保存先
+  #
+  # ⚠️ bucket / s3Url は環境に合わせて必ず変更すること。
+  #    未設定のままだと Velero は起動するがバックアップに失敗する。
+  # -------------------------------------------------------------------------
+  backupStorageLocation:
+    - name: default
+      provider: aws
+      bucket: REPLACE_ME_BUCKET
+      default: true
+      config:
+        region: auto
+        # Cloudflare R2 の例:
+        #   https://<account-id>.r2.cloudflarestorage.com
+        s3Url: https://REPLACE_ME.r2.cloudflarestorage.com
+        s3ForcePathStyle: "true"
+        # チェックサムアルゴリズムを無効化する（R2 は一部未対応）
+        checksumAlgorithm: ""
+
+  # -------------------------------------------------------------------------
+  # ボリュームスナップショット
+  #
+  # ceph-csi の VolumeSnapshot を使う。CSI スナップショットは
+  # Ceph 内に作られるため、これ単体では Ceph 障害に耐えられない。
+  # そのため下の defaultVolumesToFsBackup（データを実際に
+  # オブジェクトストレージへ転送する方式）を併用する。
+  # -------------------------------------------------------------------------
+  volumeSnapshotLocation:
+    - name: default
+      provider: csi
+
+  # ⚠️ `features: EnableCSI` は設定しない。
+  #    CSI サポートは Velero v1.14 でコアに統合され、既定で有効になった。
+  #    古い記事の多くはこのフラグを指定しているが、現在は不要である。
+
+  # PVC の中身をファイル単位でオブジェクトストレージへ転送する。
+  # これにより Ceph が全損しても復旧できる（CSI スナップショットだけでは
+  # Ceph 内にしかデータが無いため復旧できない）。
+  defaultVolumesToFsBackup: true
+
+  # バックアップの既定保持期間
+  defaultBackupTTL: 720h # 30 日
+
+  logLevel: info
+
+# ---------------------------------------------------------------------------
+# プラグイン
+#
+# ⚠️ velero-plugin-for-csi は不要である。
+#    Velero v1.14 で CSI プラグインが velero 本体にマージされ、
+#    内部プラグインとして既定で導入されるようになった。
+#    別途 initContainer で入れると重複して問題を起こす。
+#
+# velero-plugin-for-aws のバージョンは Velero 本体と対応関係がある:
+#   plugin v1.14.x ↔ Velero v1.18.x（chart 12.1.0 = appVersion 1.18.1）
+# ---------------------------------------------------------------------------
+initContainers:
+  - name: velero-plugin-for-aws
+    image: velero/velero-plugin-for-aws:v1.14.2
+    volumeMounts:
+      - mountPath: /target
+        name: plugins
+
+# ---------------------------------------------------------------------------
+# node-agent（旧 restic）
+#
+# PVC の中身をファイル単位でオブジェクトストレージへ転送する。
+# CSI スナップショットと違い、Ceph の外へデータが出るため
+# Ceph 全損からも復旧できる。
+# ---------------------------------------------------------------------------
+deployNodeAgent: true
+
+nodeAgent:
+  podVolumePath: /var/lib/kubelet/pods
+  privileged: false
+  tolerations:
+    - key: node-role.kubernetes.io/control-plane
+      operator: Exists
+      effect: NoSchedule
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    memory: 512Mi
+
+metrics:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    additionalLabels:
+      release: kube-prometheus-stack
+
+# スケジュールは schedules.yaml で管理する（Helm ではなくマニフェストで
+# 定義することで、変更内容が Git の差分として読みやすくなる）
+schedules: {}
+
+upgradeCRDs: true
+cleanUpCRDs: false

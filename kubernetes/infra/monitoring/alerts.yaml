@@ -1,0 +1,89 @@
+# ===========================================================================
+# ホームラボ固有のアラート
+#
+# kube-prometheus-stack の既定ルールに加え、この構成特有の
+# 「壊れると困るもの」を監視する。
+# ===========================================================================
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: homelab-rules
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack
+spec:
+  groups:
+    # -----------------------------------------------------------------------
+    # ストレージ
+    # -----------------------------------------------------------------------
+    - name: homelab.storage
+      rules:
+        - alert: PersistentVolumeFillingUp
+          expr: |
+            (kubelet_volume_stats_available_bytes / kubelet_volume_stats_capacity_bytes) < 0.10
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "PVC {{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }} の空き容量が 10% を切りました"
+
+    # -----------------------------------------------------------------------
+    # セキュリティ
+    # -----------------------------------------------------------------------
+    - name: homelab.security
+      rules:
+        - alert: HighSeverityVulnerabilityDetected
+          # Trivy Operator が Critical の脆弱性を検出した
+          expr: |
+            sum(trivy_image_vulnerabilities{severity="Critical"}) > 0
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            summary: "Critical の脆弱性を持つイメージが稼働しています"
+            description: |
+              確認: kubectl get vulnerabilityreports -A
+              イメージを更新してください（Renovate の PR を確認）。
+
+        - alert: NetworkPolicyDropSpike
+          # Cilium が大量にパケットを drop している = ポリシーの誤設定か
+          # 攻撃の兆候。どちらにせよ調査が必要。
+          expr: |
+            sum(rate(cilium_drop_count_total[5m])) > 100
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Cilium のパケット drop が急増しています"
+            description: |
+              ポリシーの設定ミス、または不正なアクセスの可能性があります。
+              確認: hubble observe --verdict DROPPED --last 100
+
+    # -----------------------------------------------------------------------
+    # Talos / クラスタ基盤
+    # -----------------------------------------------------------------------
+    - name: homelab.cluster
+      rules:
+        - alert: EtcdMemberLost
+          # control-plane 3 台構成なので、2 台になると次の 1 台の障害で
+          # クォーラムを失う。早めに気づく必要がある。
+          expr: |
+            count(kube_node_role{role="control-plane"}) < 3
+          for: 15m
+          labels:
+            severity: critical
+          annotations:
+            summary: "control-plane ノードが 3 台未満です"
+            description: |
+              あと 1 台失うと etcd のクォーラムを失い、クラスタが停止します。
+              確認: talosctl -n 172.16.40.11 get members
+
+        - alert: NodeDiskEncryptionMissing
+          # 想定外の設定変更を検知するための保険
+          expr: |
+            absent(node_filesystem_size_bytes{mountpoint="/var"})
+          for: 30m
+          labels:
+            severity: info
+          annotations:
+            summary: "ノードの /var メトリクスが取得できません"
