@@ -39,6 +39,16 @@ spec:
     server: https://kubernetes.default.svc
     namespace: argocd
 
+  # Argo CD adds these finalizers at runtime when the Longhorn chart exposes
+  # PreDelete hooks. Keep the Git-owned cascade finalizer managed while
+  # excluding only the controller-owned PreDelete state from parent drift.
+  ignoreDifferences:
+    - group: argoproj.io
+      kind: Application
+      name: longhorn
+      jqPathExpressions:
+        - '.metadata.finalizers[]? | select(startswith("pre-delete-finalizer.argocd.argoproj.io"))'
+
   syncPolicy:
     automated:
       # Git から消えたリソースをクラスタからも削除する
@@ -48,3 +58,4 @@ spec:
     syncOptions:
       - CreateNamespace=false
       - ApplyOutOfSyncOnly=true
+      - RespectIgnoreDifferences=true
