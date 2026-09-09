@@ -36,7 +36,6 @@ TAILSCALE_ARGOCD_FQDN="${TAILSCALE_ARGOCD_FQDN:-argocd.tailb6c7d.ts.net}"
 CF_ACCESS_CLIENT_ID_SERVICE="${CF_ACCESS_CLIENT_ID_SERVICE:-dev.craftz.ai-business-gateway.cloudflare-access-client-id}"
 CF_ACCESS_CLIENT_SECRET_SERVICE="${CF_ACCESS_CLIENT_SECRET_SERVICE:-dev.craftz.ai-business-gateway.cloudflare-access-client-secret}"
 EXPECTED_VMIDS=(1001 1002 1003 1101 1102 1103)
-EXPECTED_NAMES=(k8s-1 k8s-2 k8s-3 k8s-worker-1 k8s-worker-2 k8s-worker-3)
 PVE_HOSTS=(172.16.10.11 172.16.10.12 172.16.10.13)
 PVE_VMIDS=("1001 1101" "1002 1102" "1003 1103")
 EXECUTE=0
@@ -245,6 +244,8 @@ backup_cluster_data() {
     "${BACKUP_DIR}/registry-tls.secret.json.age"
   encrypt_secret tailscale operator-oauth \
     "${BACKUP_DIR}/tailscale-oauth.secret.json.age"
+  encrypt_secret arc-runners arc-github-app \
+    "${BACKUP_DIR}/arc-github-app.secret.json.age"
   encrypt_secret tailscale operator \
     "${BACKUP_DIR}/tailscale-operator-state.secret.json.age"
   backup_tailnet_proxy_state ingress ai-worker ai-business-worker \
@@ -259,7 +260,7 @@ backup_cluster_data() {
     >"${BACKUP_DIR}/worker-image.txt"
   cp "${TOFU_DIR}/terraform.tfstate" "${BACKUP_DIR}/terraform.tfstate.encrypted"
   chmod 600 "${BACKUP_DIR}/terraform.tfstate.encrypted" "${BACKUP_DIR}/worker-image.txt"
-  (cd "${BACKUP_DIR}" && shasum -a 256 *.age terraform.tfstate.encrypted worker-image.txt >SHA256SUMS)
+  (cd "${BACKUP_DIR}" && shasum -a 256 ./*.age terraform.tfstate.encrypted worker-image.txt >SHA256SUMS)
   ok "Encrypted recovery set created at ${BACKUP_DIR}"
 }
 
@@ -283,6 +284,7 @@ verify_recovery_set() {
     ai-worker-data.tar.age registry-data.tar.age
     ai-worker-runtime.secret.json.age ai-worker-codex-auth.secret.json.age
     registry-tls.secret.json.age tailscale-oauth.secret.json.age
+    arc-github-app.secret.json.age
     terraform.tfstate.encrypted worker-image.txt SHA256SUMS
   )
   for recovery_file in "${required_recovery_files[@]}"; do
@@ -359,9 +361,11 @@ remove_stale_tailnet_cluster_devices() {
     devices_json="$(curl -fsS -H "Authorization: Bearer ${access_token}" \
       https://api.tailscale.com/api/v2/tailnet/-/devices)"
     if [[ "${tag}" == tag:ai-worker-trusted ]]; then
+      # shellcheck disable=SC2016 # jq, not the shell, expands $worker_fqdn.
       selector='(.name == $worker_fqdn or .hostname == "ai-worker-ai-gateway-egress")'
       maximum=2
     elif [[ "${tag}" == tag:argocd ]]; then
+      # shellcheck disable=SC2016 # jq, not the shell, expands $argocd_fqdn.
       selector='(.name == $argocd_fqdn or .hostname == "argocd")'
       maximum=1
     else
@@ -627,6 +631,7 @@ restore_platform() {
   "${SCRIPT_DIR}/bootstrap-cluster-secrets.sh"
   restore_secret "${BACKUP_DIR}/registry-tls.secret.json.age"
   restore_secret "${BACKUP_DIR}/tailscale-oauth.secret.json.age"
+  restore_secret "${BACKUP_DIR}/arc-github-app.secret.json.age"
   if [[ -s "${BACKUP_DIR}/tailscale-operator-state.secret.json.age" ]]; then
     restore_secret "${BACKUP_DIR}/tailscale-operator-state.secret.json.age"
   fi

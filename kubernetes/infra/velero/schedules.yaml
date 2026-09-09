@@ -23,7 +23,7 @@ spec:
   schedule: "0 17 * * *"
 
   template:
-    ttl: 720h # 30 日保持
+    ttl: 720h  # 30 日保持
 
     # PVC の中身をオブジェクトストレージへ転送する（Ceph 外へ出す）
     defaultVolumesToFsBackup: true
@@ -60,7 +60,7 @@ spec:
   schedule: "0 18 * * 0"
 
   template:
-    ttl: 2160h # 90 日保持
+    ttl: 2160h  # 90 日保持
 
     # メタデータのみ。ボリュームは対象外にして転送量を抑える。
     snapshotVolumes: false

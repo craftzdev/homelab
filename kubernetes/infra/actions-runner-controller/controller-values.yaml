@@ -1,0 +1,32 @@
+# Actions Runner Controller is a control-plane component. The generated job
+# runners are configured separately and never receive this ServiceAccount.
+replicaCount: 1
+
+flags:
+  logLevel: info
+  logFormat: json
+  runnerMaxConcurrentReconciles: 2
+  updateStrategy: eventual
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+nodeSelector:
+  homelab.craftz.dev/workload-plane: "true"
+
+podSecurityContext:
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: ["ALL"]
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 1000

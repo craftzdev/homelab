@@ -28,7 +28,7 @@ def extract_charts():
     形式が変わったら気づけるよう、1 件も見つからなければエラーにする。
     """
     pattern = re.compile(
-        r"repoURL:\s*(?P<repo>https?://[^\s]+)\s*\n"
+        r"repoURL:\s*(?P<repo>(?:https?://|oci://|ghcr\.io/)[^\s]+)\s*\n"
         r"\s*chart:\s*(?P<chart>[^\s]+)\s*\n"
         r"\s*targetRevision:\s*(?P<version>[^\s]+)"
         r"(?:.*?valueFiles:\s*\n\s*-\s*\$values/(?P<values>[^\s]+))?",
@@ -52,10 +52,11 @@ def main() -> int:
     print(f"{len(charts)} 件の chart を検証します\n")
 
     failed = False
-    for i, (repo, chart, version, values) in enumerate(charts):
-        alias = f"repo{i}"
-        print(f"::group::{chart} {version} ({repo})")
-
+    aliases = {}
+    for repo, _, _, _ in charts:
+        if repo.startswith(("oci://", "ghcr.io/")) or repo in aliases:
+            continue
+        alias = f"repo{len(aliases)}"
         add = subprocess.run(
             ["helm", "repo", "add", alias, repo],
             capture_output=True, text=True,
@@ -64,10 +65,24 @@ def main() -> int:
             print(f"::error::helm repo add に失敗: {repo}")
             print(add.stderr.strip())
             failed = True
-            print("::endgroup::")
-            continue
+        else:
+            aliases[repo] = alias
 
-        cmd = ["helm", "template", chart, f"{alias}/{chart}",
+    if failed:
+        return 1
+
+    subprocess.run(["helm", "repo", "update"], capture_output=True)
+
+    for repo, chart, version, values in charts:
+        print(f"::group::{chart} {version} ({repo})")
+        if repo.startswith("oci://"):
+            chart_ref = f"{repo.rstrip('/')}/{chart}"
+        elif repo.startswith("ghcr.io/"):
+            chart_ref = f"oci://{repo.rstrip('/')}/{chart}"
+        else:
+            chart_ref = f"{aliases[repo]}/{chart}"
+
+        cmd = ["helm", "template", chart, chart_ref,
                "--version", version, "--kube-version", "1.34.3"]
         if values:
             vf = REPO / values
@@ -92,5 +107,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    subprocess.run(["helm", "repo", "update"], capture_output=True)
     sys.exit(main())

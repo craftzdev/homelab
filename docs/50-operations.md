@@ -287,6 +287,33 @@ curl -s -o /dev/null -w '%{http_code}\n' \
 
 ---
 
+### 3.8 Kubernetes GitHub Actions Runner
+
+CIのmain pushと手動実行は、Actions Runner Controller（ARC）が作る
+`homelab-runner`へ送ります。Runner Podはジョブごとに破棄され、待機Podは0、
+同時実行数は1です。fork由来のpull requestは宅内クラスタへ入れず、引き続き
+`ubuntu-latest`で実行します。
+
+GitHub Appは`craftzdev/homelab`だけにインストールし、Repository permissionsの
+`Administration: Read and write`と`Metadata: Read-only`だけを付与します。
+秘密鍵をGitへ置かず、次のSecretをクラスタへ直接作成します。
+
+```bash
+kubectl create namespace arc-runners --dry-run=client -o yaml | kubectl apply -f -
+kubectl -n arc-runners create secret generic arc-github-app \
+  --from-literal=github_app_id='<APP_ID>' \
+  --from-literal=github_app_installation_id='<INSTALLATION_ID>' \
+  --from-file=github_app_private_key='<DOWNLOADED_PRIVATE_KEY.pem>'
+```
+
+通常のクラスタ全再構築では、このSecretもage暗号化された復旧セットへ退避し、
+ARCを同期する前に復元します。
+
+```bash
+kubectl -n arc-systems get deploy,pods
+kubectl -n arc-runners get autoscalingrunnersets,ephemeralrunnersets,pods
+```
+
 ## 4. 日常の運用
 
 ### 4.1 よく使うコマンド

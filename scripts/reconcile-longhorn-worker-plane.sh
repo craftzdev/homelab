@@ -9,7 +9,6 @@ set -euo pipefail
 # control-plane nodes. It is safe to run repeatedly.
 
 namespace=${LONGHORN_NAMESPACE:-longhorn-system}
-worker_selector='homelab.craftz.dev/workload-plane=true'
 control_planes=(k8s-1 k8s-2 k8s-3)
 workers=(k8s-worker-1 k8s-worker-2 k8s-worker-3)
 

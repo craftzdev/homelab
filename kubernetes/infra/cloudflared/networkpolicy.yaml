@@ -87,7 +87,7 @@ spec:
             - port: "443"
               protocol: TCP
             - port: "443"
-              protocol: UDP # QUIC
+              protocol: UDP  # QUIC
 
     # --- Origin（Gateway）への転送 ---
     #

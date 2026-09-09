@@ -7,21 +7,6 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 KUBECONFIG_PATH="${KUBECONFIG:-${REPO_ROOT}/_out/kubeconfig}"
 APPLICATION_TIMEOUT_SECONDS="${APPLICATION_TIMEOUT_SECONDS:-1800}"
 
-readonly EXPECTED_APPLICATIONS=(
-  network-policies
-  gateway-api-crds
-  cilium
-  snapshot-controller
-  longhorn
-  image-registry
-  tailscale-operator
-  security-config
-  kubelet-serving-cert-approver
-  monitoring
-  cert-manager
-  trivy-operator
-)
-
 info() { printf '[INFO] %s\n' "$*"; }
 ok() { printf '[OK]   %s\n' "$*"; }
 die() { printf '[ERROR] %s\n' "$*" >&2; exit 1; }
@@ -97,6 +82,7 @@ refresh_application() {
 verify_ksops_runtime() {
   info "Verifying KSOPS and the age key inside repo-server"
   for _ in $(seq 1 60); do
+    # shellcheck disable=SC2016 # The remote shell expands this variable.
     if kubectl --request-timeout=15s -n argocd \
         exec deploy/argocd-repo-server -c repo-server -- \
         sh -c 'command -v ksops >/dev/null && test -s "$SOPS_AGE_KEY_FILE"' \
@@ -180,6 +166,11 @@ for app in image-registry tailscale-operator security-config monitoring; do
 done
 
 for app in cert-manager trivy-operator network-policies; do
+  resume_application "${app}"
+  wait_for_application "${app}"
+done
+
+for app in arc-controller arc-runners; do
   resume_application "${app}"
   wait_for_application "${app}"
 done

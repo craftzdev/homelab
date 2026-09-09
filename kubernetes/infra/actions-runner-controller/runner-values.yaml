@@ -1,0 +1,42 @@
+githubConfigUrl: https://github.com/craftzdev/homelab
+githubConfigSecret: arc-github-app
+
+# Zero idle Pods: GitHub creates one ephemeral runner only when a trusted job
+# is queued. Limiting concurrency also prevents CI from exhausting the cluster.
+runnerScaleSetName: homelab-runner
+minRunners: 0
+maxRunners: 1
+
+controllerServiceAccount:
+  namespace: arc-systems
+  name: arc-controller-gha-rs-controller
+
+template:
+  spec:
+    automountServiceAccountToken: false
+    nodeSelector:
+      homelab.craftz.dev/workload-plane: "true"
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 1001
+      runAsGroup: 1001
+      fsGroup: 1001
+      seccompProfile:
+        type: RuntimeDefault
+    containers:
+      - name: runner
+        image: >-
+          ghcr.io/actions/actions-runner@sha256:e5496277be5d09bc968b3d64911b74e219ac4a3f2edce956a3ecf9271bea1ef4
+        command: ["/home/runner/run.sh"]
+        resources:
+          requests:
+            cpu: 500m
+            memory: 1Gi
+          limits:
+            cpu: "2"
+            memory: 4Gi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
+
