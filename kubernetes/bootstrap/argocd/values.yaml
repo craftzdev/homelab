@@ -126,7 +126,7 @@ repoServer:
 # controller
 # ===========================================================================
 controller:
-  replicas: 1 # 小規模クラスタでは 1 で十分（sharding は不要）
+  replicas: 1  # 小規模クラスタでは 1 で十分（sharding は不要）
 
   resources:
     requests:

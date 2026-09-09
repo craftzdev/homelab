@@ -35,6 +35,7 @@ fi
 # ---------------------------------------------------------------------------
 TMP_FILE="$(mktemp "${TMPDIR:-/tmp}/cloudflared-secret.XXXXXX.yaml")"
 chmod 600 "${TMP_FILE}"
+# shellcheck disable=SC2317 # Invoked indirectly by trap.
 cleanup() { rm -f "${TMP_FILE}"; }
 trap cleanup EXIT INT TERM
 

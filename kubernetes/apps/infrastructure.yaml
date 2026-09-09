@@ -13,6 +13,8 @@
 #     2  cert-manager    : 証明書管理（他が依存する）
 #     5  monitoring      : 監視
 #     6  security        : Trivy / kubelet 証明書承認
+#     7  arc-controller  : GitHub Actions Runner Controller
+#     8  arc-runners     : ephemeral runner scale set
 #
 # Gateway/cloudflared は Business Gateway VM 1200 で稼働するためクラスタには置かない。
 # Velero は外部オブジェクトストレージ設定後に別変更として有効化する。
@@ -112,7 +114,7 @@ spec:
     namespace: kube-system
   syncPolicy:
     automated:
-      prune: false # CNI を prune で消すと全断する。手動削除のみ許可。
+      prune: false  # CNI を prune で消すと全断する。手動削除のみ許可。
       selfHeal: true
     syncOptions:
       - ServerSideApply=true
@@ -300,6 +302,86 @@ spec:
         pod-security.kubernetes.io/enforce: privileged
         pod-security.kubernetes.io/audit: restricted
         pod-security.kubernetes.io/warn: restricted
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+
+---
+# ---------------------------------------------------------------------------
+# GitHub Actions Runner Controller
+#
+# GitHub App credentials are held in the out-of-band arc-github-app Secret.
+# The controller and runner scale set are separate Applications so the CRDs and
+# controller are healthy before the AutoscalingRunnerSet is reconciled.
+# ---------------------------------------------------------------------------
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: arc-controller
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "7"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: infrastructure
+  sources:
+    - repoURL: ghcr.io/actions/actions-runner-controller-charts
+      chart: gha-runner-scale-set-controller
+      targetRevision: 0.14.2
+      helm:
+        releaseName: arc-controller
+        valueFiles:
+          - $values/kubernetes/infra/actions-runner-controller/controller-values.yaml
+    - repoURL: https://github.com/craftzdev/homelab.git
+      targetRevision: main
+      path: kubernetes/infra/actions-runner-controller
+      directory:
+        include: namespace-and-policy.yaml
+    - repoURL: https://github.com/craftzdev/homelab.git
+      targetRevision: main
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: arc-systems
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: arc-runners
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "8"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: infrastructure
+  sources:
+    - repoURL: ghcr.io/actions/actions-runner-controller-charts
+      chart: gha-runner-scale-set
+      targetRevision: 0.14.2
+      helm:
+        releaseName: homelab-runner
+        valueFiles:
+          - $values/kubernetes/infra/actions-runner-controller/runner-values.yaml
+    - repoURL: https://github.com/craftzdev/homelab.git
+      targetRevision: main
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: arc-runners
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
     syncOptions:
       - CreateNamespace=true
       - ServerSideApply=true

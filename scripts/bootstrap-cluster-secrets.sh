@@ -33,7 +33,8 @@ else
 fi
 [[ -n "${grafana_password}" ]] || die "Grafana password is empty"
 
-for namespace in monitoring cert-manager security image-registry tailscale; do
+for namespace in monitoring cert-manager security image-registry tailscale \
+  arc-systems arc-runners; do
   kubectl create namespace "${namespace}" --dry-run=client -o yaml \
     | kubectl apply -f - >/dev/null
 done

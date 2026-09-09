@@ -69,7 +69,7 @@ configuration:
   defaultVolumesToFsBackup: true
 
   # バックアップの既定保持期間
-  defaultBackupTTL: 720h # 30 日
+  defaultBackupTTL: 720h  # 30 日
 
   logLevel: info
 
