@@ -15,6 +15,42 @@ and Cloudflare Access Service Auth are active. The Gateway validates the Access
 JWT again at the application boundary. Do not bind port 8080 to a LAN address
 as a workaround.
 
+## Grok Bot MCP
+
+The public process also exposes a stateless Streamable HTTP MCP endpoint:
+
+```text
+https://gateway.craftz.dev/mcp
+```
+
+It is an adapter over the existing Gateway job model; the REST API, PostgreSQL
+state machine, Worker dispatch, and callback contract remain authoritative.
+The MCP surface intentionally exposes only these tools:
+
+- `submit_job`
+- `get_job`
+- `wait_for_job`
+- `get_review_url`
+
+`submit_job` accepts only the Worker-backed actions `browser.research`,
+`analytics.read`, `stripe.read`, `code.build`, `code.fix`, and `test.run`.
+Only `research` and `preview` environments are available. Production,
+deployment, publishing, and other irreversible actions are not exposed through
+MCP.
+
+Every MCP request must pass both authentication layers:
+
+```text
+CF-Access-Client-Id: <Cloudflare Access service-token client ID>
+CF-Access-Client-Secret: <Cloudflare Access service-token client secret>
+Authorization: Bearer <Gateway API token>
+```
+
+Cloudflare first authenticates the service token and injects
+`Cf-Access-Jwt-Assertion`. The Gateway then verifies that JWT and independently
+verifies its own Bearer token. Do not put any of these values in a Bot prompt,
+repository file, shared skill, or connector URL.
+
 ## Local start
 
 ```bash
@@ -38,6 +74,13 @@ in the Gateway `.env` file:
 ```bash
 sudo --preserve-env=CF_ACCESS_CLIENT_ID,CF_ACCESS_CLIENT_SECRET \
   /opt/ai-business-gateway/scripts/smoke-test.sh
+```
+
+The MCP discovery and end-to-end job test can be run from an environment that
+already has the three credentials in memory:
+
+```bash
+python scripts/mcp-smoke-test.py
 ```
 
 The deployed callback listener is available inside the Tailnet at:
