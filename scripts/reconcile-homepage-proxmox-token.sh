@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 # Create and reconcile Homepage's read-only Proxmox API identity.
+# Values are validated before intentional client-side expansion in SSH command
+# strings. Proxmox's CLI is available only on the remote host.
+# shellcheck disable=SC2029
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -20,6 +23,12 @@ for tool in curl jq kubectl security ssh; do
   command -v "${tool}" >/dev/null || die "required command not found: ${tool}"
 done
 [[ -s "${KUBECONFIG_PATH}" ]] || die "kubeconfig not found: ${KUBECONFIG_PATH}"
+[[ "${PVE_HOST}" =~ ^[0-9]+(\.[0-9]+){3}$ ]] \
+  || die "PVE_HOST must be an IPv4 address"
+[[ "${PVE_USER}" =~ ^[A-Za-z][A-Za-z0-9._-]*@pve$ ]] \
+  || die "PVE_USER is invalid"
+[[ "${PVE_TOKEN_ID}" =~ ^[A-Za-z][A-Za-z0-9._-]+$ ]] \
+  || die "PVE_TOKEN_ID is invalid"
 
 ssh_options=(-o BatchMode=yes -o ConnectTimeout=10)
 users_json="$(ssh "${ssh_options[@]}" root@"${PVE_HOST}" \
