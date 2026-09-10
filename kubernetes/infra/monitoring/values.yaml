@@ -3,7 +3,7 @@
 #
 # ⚠️ Grafana と Prometheus の UI は管理平面である。
 #    インターネットへ公開しない（docs/20-security-design.md §4）。
-#    宅内からは LoadBalancer IP または port-forward でアクセスする。
+#    Tailnet管理者はTailscale HTTPS、障害時はport-forwardでアクセスする。
 # ===========================================================================
 
 # ---------------------------------------------------------------------------
@@ -150,31 +150,21 @@ grafana:
     size: 5Gi
 
   # -------------------------------------------------------------------------
-  # 宅内からアクセスできるように LoadBalancer で公開する。
-  #
-  # ⚠️ この IP はインターネットには公開されない
-  #    （ルータでポートフォワードしない限り到達不可）。
-  #
-  # `homelab.io/lan-exposed: "true"` ラベルが必須である。
-  # Cilium の IP プールはこのラベルを持つ Service だけを対象にしており、
-  # 「うっかり type: LoadBalancer にしたら宅内公開されていた」という
-  # 事故を防いでいる（kubernetes/infra/cilium/lb-ipam.yaml 参照）。
+  # GrafanaはTailscale Ingress経由だけで恒久公開する。ClusterIPに固定し、
+  # LAN上の認証前HTTP listenerを持たせない。
   # -------------------------------------------------------------------------
   service:
-    type: LoadBalancer
-    loadBalancerIP: "172.16.40.201"
-    labels:
-      homelab.io/lan-exposed: "true"
+    type: ClusterIP
 
   ingress:
     enabled: false
 
   grafana.ini:
     server:
-      root_url: "http://172.16.40.201/"
+      root_url: "https://grafana.tailb6c7d.ts.net/"
     security:
       # クリックジャッキング対策
-      cookie_secure: false
+      cookie_secure: true
       cookie_samesite: strict
       # バージョン情報の露出を抑える
       hide_version: true

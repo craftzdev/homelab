@@ -47,3 +47,25 @@ spec:
     - fromEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: argocd
+
+---
+# Tailscale Ingress proxyからGrafanaのHTTP listenerだけを許可する。
+# Tailnet側のHTTPS終端と管理者限定GrantはTailscaleが担当する。
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: grafana-tailnet-ingress
+  namespace: monitoring
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/instance: kube-prometheus-stack
+      app.kubernetes.io/name: grafana
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: tailscale
+      toPorts:
+        - ports:
+            - port: "3000"
+              protocol: TCP

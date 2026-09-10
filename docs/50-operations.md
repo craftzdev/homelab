@@ -252,8 +252,17 @@ fallbackとしてのみ、上記の`kubectl port-forward`を使用してくだ�
 （既定パスワードで静かに起動するより、明確に失敗する方が安全なため）。
 
 手順は [kubernetes/infra/monitoring/README.md](../kubernetes/infra/monitoring/README.md)
-を参照してください。要約すると、強いパスワードを生成して SOPS で暗号化し、
-`grafana-admin.sops.yaml` としてコミットします。
+を参照してください。再構築スクリプトがmacOS KeychainからKubernetes Secretへ
+投入するため、パスワードはGitへコミットしません。
+
+通常のGUIアクセスはTailnet管理者端末から次を開きます。
+
+```text
+https://grafana.tailb6c7d.ts.net
+```
+
+Grafanaの **Explore** でデータソース **Loki** を選ぶと、クラスタログ、監査ログ、
+Kubernetes Eventを検索できます。
 
 ### 3.6 Cloudflare の設定
 

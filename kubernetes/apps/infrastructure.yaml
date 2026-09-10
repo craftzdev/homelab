@@ -286,7 +286,7 @@ spec:
       targetRevision: main
       path: kubernetes/infra/tailscale-operator
       directory:
-        include: '{argocd-ingress.yaml,dnsconfig.yaml,proxyclass.yaml}'
+        include: '{argocd-ingress.yaml,grafana-ingress.yaml,dnsconfig.yaml,proxyclass.yaml}'
     - repoURL: https://github.com/craftzdev/homelab.git
       targetRevision: main
       ref: values

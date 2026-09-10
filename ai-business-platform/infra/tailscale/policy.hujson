@@ -31,8 +31,8 @@
       "ip": ["tcp:443"],
     },
 
-    // Argo CD is a privileged management surface. Only Tailnet admins may
-    // reach it, and only on the HTTPS listener managed by the Operator.
+    // Argo CD and Grafana are privileged management surfaces. Only Tailnet
+    // admins may reach them over the Operator-managed HTTPS listeners.
     {
       "src": ["autogroup:admin"],
       "dst": ["tag:argocd"],

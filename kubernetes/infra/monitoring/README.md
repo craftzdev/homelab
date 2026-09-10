@@ -5,7 +5,7 @@
 **この手順を実施しないと Grafana は起動しません。** これは意図的な設計です。
 
 `kube-prometheus-stack` は `adminPassword` を指定しないと既定値
-（`admin` / `prom-operator`）で起動します。宅内 LoadBalancer に公開している以上、
+（`admin` / `prom-operator`）で起動します。Tailnetへ公開している以上、
 「気づかないうちに既知のパスワードで動いている」状態は避けるべきです。
 そのため `admin.existingSecret` を必須にし、**設定漏れが明確な失敗として現れる**
 ようにしています。
@@ -33,12 +33,16 @@ security add-generic-password -U \
 
 | サービス | アクセス | 備考 |
 | --- | --- | --- |
-| Grafana | http://172.16.40.201/ | 宅内のみ。Cilium の L2 Announcement で払い出し |
+| Grafana | https://grafana.tailb6c7d.ts.net/ | Tailnet管理者のみ。Tailscale HTTPS |
 | Prometheus | `kubectl -n monitoring port-forward svc/kube-prometheus-stack-prometheus 9090:9090` | ClusterIP のみ |
 | Alertmanager | `kubectl -n monitoring port-forward svc/kube-prometheus-stack-alertmanager 9093:9093` | ClusterIP のみ |
 
-> ⚠️ いずれも**インターネットには公開していません**。管理平面を外部に
-> 出さない方針です（[docs/20-security-design.md §4](../../../docs/20-security-design.md)）。
+Grafanaで左メニューの **Explore** を開き、データソースに **Loki** を選ぶ。
+Podログは `{cluster="homelab"}`、監査ログは `{log_class="audit"}`、Kubernetes
+Eventは `{job="kubernetes/events"}` で検索できる。
+
+> ⚠️ いずれも**インターネットには公開していません**。GrafanaはTailnet管理者、
+> それ以外はport-forwardだけに制限する。
 
 ## Talos 特有の注意
 

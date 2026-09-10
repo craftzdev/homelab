@@ -1,8 +1,10 @@
 # Tailscale Kubernetes Operator
 
-The Operator provides Tailnet-only HTTPS ingress for the AI Worker and Argo CD,
-plus an egress proxy back to the Business Gateway. Argo CD is available only at
-`https://argocd.<tailnet>.ts.net` and uses the dedicated `tag:argocd` identity.
+The Operator provides Tailnet-only HTTPS ingress for the AI Worker, Argo CD,
+and Grafana, plus an egress proxy back to the Business Gateway. Argo CD and
+Grafana are available at `https://argocd.<tailnet>.ts.net` and
+`https://grafana.<tailnet>.ts.net`. Both management UIs use the existing
+admin-only `tag:argocd` policy.
 OAuth credentials are created with
 `Devices Core`, `Auth Keys`, and `Services` read/write scopes and the
 `tag:k8s-operator` tag. Credentials are installed directly as a Kubernetes
