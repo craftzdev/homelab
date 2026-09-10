@@ -20,9 +20,10 @@ alloy:
         format = "logfmt"
       }
 
+      // 既存のローテート済み監査ログを再投入せず、現在のファイルだけを追尾する。
       local.file_match "kubernetes_audit" {
         path_targets = [{
-          __path__   = "/var/log/audit/kube/kube-apiserver*.log",
+          __path__   = "/var/log/audit/kube/kube-apiserver.log",
           cluster    = "homelab",
           job        = "kubernetes/audit",
           log_class  = "audit",
@@ -32,8 +33,9 @@ alloy:
       }
 
       loki.source.file "kubernetes_audit" {
-        targets    = local.file_match.kubernetes_audit.targets
-        forward_to = [loki.write.cluster.receiver]
+        targets       = local.file_match.kubernetes_audit.targets
+        forward_to    = [loki.write.cluster.receiver]
+        tail_from_end = true
       }
 
       loki.write "cluster" {
@@ -64,6 +66,9 @@ alloy:
     allowPrivilegeEscalation: false
     capabilities:
       drop: ["ALL"]
+      # Talosは監査ディレクトリを0700、ファイルを0600で管理する。
+      # rootの広い既定capabilityは落とし、読み取りに必要なものだけを戻す。
+      add: ["DAC_READ_SEARCH"]
     readOnlyRootFilesystem: true
     runAsUser: 0
     runAsGroup: 0
