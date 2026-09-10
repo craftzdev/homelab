@@ -146,6 +146,10 @@ spec:
             - name: pve-ca
               mountPath: /etc/homepage/pve-ca
               readOnly: true
+            - name: assets
+              mountPath: /app/public/images/portal-background.jpg
+              subPath: portal-background.jpg
+              readOnly: true
       volumes:
         - name: config
           configMap:
@@ -155,3 +159,6 @@ spec:
         - name: pve-ca
           configMap:
             name: homepage-pve-ca
+        - name: assets
+          configMap:
+            name: homepage-assets

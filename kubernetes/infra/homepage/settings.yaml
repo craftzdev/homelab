@@ -2,6 +2,12 @@ title: Craftz Homelab
 description: Proxmox and Kubernetes operations portal
 theme: dark
 color: slate
+background:
+  image: /images/portal-background.jpg
+  opacity: 72
+cardBlur: md
+fullWidth: true
+useEqualHeights: true
 headerStyle: boxedWidgets
 target: _blank
 statusStyle: dot
@@ -16,12 +22,16 @@ layout:
   Infrastructure:
     style: row
     columns: 2
+    header: false
   Kubernetes:
     style: row
     columns: 3
+    header: false
   AI Platform:
     style: row
     columns: 2
+    header: false
   Development:
     style: row
     columns: 2
+    header: false

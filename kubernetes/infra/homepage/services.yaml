@@ -51,3 +51,11 @@
         icon: github.png
         href: https://github.com/craftzdev/homelab/actions
         description: Validation on the in-cluster runner
+    - Talos Documentation:
+        icon: si-talos
+        href: https://docs.siderolabs.com/talos/
+        description: Cluster lifecycle and operating system reference
+    - Kubernetes Documentation:
+        icon: kubernetes.png
+        href: https://kubernetes.io/docs/
+        description: Kubernetes concepts and API reference

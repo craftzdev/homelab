@@ -24,6 +24,9 @@ configMapGenerator:
   - name: homepage-pve-ca
     files:
       - pve-root-ca.pem
+  - name: homepage-assets
+    files:
+      - assets/portal-background.jpg
 
 generatorOptions:
   labels:
