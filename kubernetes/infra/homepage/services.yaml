@@ -20,7 +20,7 @@
 
 - Kubernetes:
     - Argo CD:
-        icon: argocd.png
+        icon: argo-cd.png
         href: https://argocd.tailb6c7d.ts.net/
         description: GitOps applications and synchronization
     - Grafana:
@@ -44,15 +44,15 @@
 
 - Development:
     - Homelab Repository:
-        icon: github.png
+        icon: github-light.png
         href: https://github.com/craftzdev/homelab
         description: Cluster desired state
     - GitHub Actions:
-        icon: github.png
+        icon: github-light.png
         href: https://github.com/craftzdev/homelab/actions
         description: Validation on the in-cluster runner
     - Talos Documentation:
-        icon: si-talos
+        icon: talos.png
         href: https://docs.siderolabs.com/talos/
         description: Cluster lifecycle and operating system reference
     - Kubernetes Documentation:
