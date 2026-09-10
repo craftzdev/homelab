@@ -7,6 +7,10 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 KUBECONFIG_PATH="${KUBECONFIG:-${REPO_ROOT}/_out/kubeconfig}"
 GRAFANA_KEYCHAIN_SERVICE="${GRAFANA_KEYCHAIN_SERVICE:-dev.craftz.homelab.grafana-admin}"
 GRAFANA_KEYCHAIN_ACCOUNT="${GRAFANA_KEYCHAIN_ACCOUNT:-admin}"
+MINIO_KEYCHAIN_SERVICE="${MINIO_KEYCHAIN_SERVICE:-dev.craftz.homelab.minio-root}"
+MINIO_KEYCHAIN_ACCOUNT="${MINIO_KEYCHAIN_ACCOUNT:-minio-root}"
+LOKI_S3_KEYCHAIN_SERVICE="${LOKI_S3_KEYCHAIN_SERVICE:-dev.craftz.homelab.loki-s3}"
+LOKI_S3_KEYCHAIN_ACCOUNT="${LOKI_S3_KEYCHAIN_ACCOUNT:-loki}"
 WORKER_REPO_KEYCHAIN_SERVICE="${WORKER_REPO_KEYCHAIN_SERVICE:-dev.craftz.homelab.argocd-ai-worker-deploy-key}"
 WORKER_REPO_KEYCHAIN_ACCOUNT="${WORKER_REPO_KEYCHAIN_ACCOUNT:-craftzdev/ai-business-worker}"
 WORKER_REPO_URL="${WORKER_REPO_URL:-git@github.com:craftzdev/ai-business-worker.git}"
@@ -36,8 +40,8 @@ else
 fi
 [[ -n "${grafana_password}" ]] || die "Grafana password is empty"
 
-for namespace in monitoring cert-manager security image-registry tailscale \
-  arc-systems arc-runners argocd; do
+for namespace in monitoring logging logging-audit cert-manager security \
+  image-registry tailscale arc-systems arc-runners argocd; do
   kubectl create namespace "${namespace}" --dry-run=client -o yaml \
     | kubectl apply -f - >/dev/null
 done
@@ -57,6 +61,60 @@ stringData:
 EOF
 
 unset grafana_password
+
+# MinIO root and Loki's dedicated S3 credential are independent. Loki never
+# receives the MinIO administrator password. Values are generated only once and
+# kept in the macOS Keychain so a complete cluster rebuild produces the same
+# application credentials without committing them to Git.
+if minio_root_password="$(security find-generic-password \
+    -s "${MINIO_KEYCHAIN_SERVICE}" -a "${MINIO_KEYCHAIN_ACCOUNT}" -w 2>/dev/null)"; then
+  info "Using the existing MinIO root credential from macOS Keychain"
+else
+  info "Creating the initial MinIO root credential in macOS Keychain"
+  minio_root_password="$(openssl rand -base64 32)"
+  security add-generic-password -U \
+    -s "${MINIO_KEYCHAIN_SERVICE}" \
+    -a "${MINIO_KEYCHAIN_ACCOUNT}" \
+    -w "${minio_root_password}" >/dev/null
+fi
+[[ -n "${minio_root_password}" ]] || die "MinIO root password is empty"
+
+if loki_s3_secret="$(security find-generic-password \
+    -s "${LOKI_S3_KEYCHAIN_SERVICE}" -a "${LOKI_S3_KEYCHAIN_ACCOUNT}" -w 2>/dev/null)"; then
+  info "Using the existing Loki S3 credential from macOS Keychain"
+else
+  info "Creating the initial Loki S3 credential in macOS Keychain"
+  loki_s3_secret="$(openssl rand -base64 32)"
+  security add-generic-password -U \
+    -s "${LOKI_S3_KEYCHAIN_SERVICE}" \
+    -a "${LOKI_S3_KEYCHAIN_ACCOUNT}" \
+    -w "${loki_s3_secret}" >/dev/null
+fi
+[[ -n "${loki_s3_secret}" ]] || die "Loki S3 secret is empty"
+
+kubectl apply -f - >/dev/null <<EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: minio-root-credentials
+  namespace: logging
+type: Opaque
+stringData:
+  root-user: minio-root
+  root-password: "${minio_root_password}"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: loki-s3-credentials
+  namespace: logging
+type: Opaque
+stringData:
+  AWS_ACCESS_KEY_ID: loki
+  AWS_SECRET_ACCESS_KEY: "${loki_s3_secret}"
+EOF
+
+unset minio_root_password loki_s3_secret
 
 # The private Worker repository uses a repository-scoped, read-only GitHub
 # Deploy Key. The Keychain value is base64 so multiline OpenSSH key material

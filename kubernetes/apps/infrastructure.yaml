@@ -12,6 +12,9 @@
 #     1  tailscale       : Tailnet ingress / egress
 #     2  cert-manager    : 証明書管理（他が依存する）
 #     5  monitoring      : 監視
+#     5  logging-storage : MinIO（Loki のオブジェクトストレージ）
+#     6  logging         : Loki / Alloy
+#     6  logging-audit   : control-plane の Kubernetes 監査ログ収集
 #     6  security        : Trivy / kubelet 証明書承認
 #     7  arc-controller  : GitHub Actions Runner Controller
 #     8  arc-runners     : ephemeral runner scale set
@@ -503,6 +506,137 @@ spec:
     syncOptions:
       # kube-prometheus-stack の CRD は非常に大きく、
       # client-side apply では annotation のサイズ制限に引っかかる
+      - ServerSideApply=true
+
+---
+# ---------------------------------------------------------------------------
+# ログ基盤の永続ストレージ
+#
+# MinIO は単一 Pod とし、Longhorn の 2 レプリカでノード障害に備える。
+# MinIO 自身の分散レプリケーションと Longhorn のレプリケーションを重ねない。
+# ---------------------------------------------------------------------------
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: logging-storage
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "5"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: infrastructure
+  source:
+    repoURL: https://github.com/craftzdev/homelab.git
+    targetRevision: main
+    path: kubernetes/infra/logging/storage
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: logging
+  syncPolicy:
+    automated:
+      # MinIO の PVC/PV は Retain。Application の誤削除時にもデータを残す。
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false
+      - ServerSideApply=true
+
+---
+# ---------------------------------------------------------------------------
+# Loki と Kubernetes ログ/Event収集用 Alloy
+# ---------------------------------------------------------------------------
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: logging
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "6"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: infrastructure
+  sources:
+    - repoURL: https://grafana.github.io/helm-charts
+      chart: loki
+      targetRevision: 7.3.0
+      helm:
+        releaseName: loki
+        valueFiles:
+          - $values/kubernetes/infra/logging/loki-values.yaml
+    - repoURL: https://grafana.github.io/helm-charts
+      chart: alloy
+      targetRevision: 1.12.1
+      helm:
+        releaseName: alloy-logs
+        valueFiles:
+          - $values/kubernetes/infra/logging/alloy-logs-values.yaml
+    - repoURL: https://grafana.github.io/helm-charts
+      chart: alloy
+      targetRevision: 1.12.1
+      helm:
+        releaseName: alloy-events
+        valueFiles:
+          - $values/kubernetes/infra/logging/alloy-events-values.yaml
+    - repoURL: https://github.com/craftzdev/homelab.git
+      targetRevision: main
+      path: kubernetes/infra/logging/stack
+    - repoURL: https://github.com/craftzdev/homelab.git
+      targetRevision: main
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: logging
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false
+      - ServerSideApply=true
+
+---
+# ---------------------------------------------------------------------------
+# kube-apiserver の監査ファイル収集用 Alloy
+#
+# /var/log/audit/kube の hostPath が必要なため、通常ログとは別 namespace に
+# 隔離する。control-plane だけへ配置し、ホスト側は読み取り専用でマウントする。
+# ---------------------------------------------------------------------------
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: logging-audit
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "6"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: infrastructure
+  sources:
+    - repoURL: https://grafana.github.io/helm-charts
+      chart: alloy
+      targetRevision: 1.12.1
+      helm:
+        releaseName: alloy-audit
+        valueFiles:
+          - $values/kubernetes/infra/logging/alloy-audit-values.yaml
+    - repoURL: https://github.com/craftzdev/homelab.git
+      targetRevision: main
+      path: kubernetes/infra/logging/audit
+    - repoURL: https://github.com/craftzdev/homelab.git
+      targetRevision: main
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: logging-audit
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false
       - ServerSideApply=true
 
 ---

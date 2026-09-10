@@ -1,0 +1,41 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: logging-rules
+  namespace: logging
+  labels:
+    release: kube-prometheus-stack
+spec:
+  groups:
+    - name: homelab.logging
+      rules:
+        - alert: LoggingStatefulSetUnavailable
+          expr: |
+            kube_statefulset_status_replicas_ready{namespace="logging",statefulset=~"loki|minio"} < 1
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: "ログ基盤の {{ $labels.statefulset }} が停止しています"
+            description: |
+              MinIO停止中はLokiが永続化できず、Loki停止中はログを検索できません。
+
+        - alert: LoggingStorageFillingUpWarning
+          expr: |
+            kubelet_volume_stats_available_bytes{namespace="logging"}
+              / kubelet_volume_stats_capacity_bytes{namespace="logging"} < 0.30
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: "ログPVC {{ $labels.persistentvolumeclaim }} の空き容量が30%未満です"
+
+        - alert: LoggingStorageFillingUpCritical
+          expr: |
+            kubelet_volume_stats_available_bytes{namespace="logging"}
+              / kubelet_volume_stats_capacity_bytes{namespace="logging"} < 0.10
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: "ログPVC {{ $labels.persistentvolumeclaim }} の空き容量が10%未満です"

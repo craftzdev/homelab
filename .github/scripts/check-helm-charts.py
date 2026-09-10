@@ -58,7 +58,7 @@ def main() -> int:
             continue
         alias = f"repo{len(aliases)}"
         add = subprocess.run(
-            ["helm", "repo", "add", alias, repo],
+            ["helm", "repo", "add", alias, repo, "--force-update"],
             capture_output=True, text=True,
         )
         if add.returncode != 0:

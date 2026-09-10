@@ -1,0 +1,106 @@
+fullnameOverride: alloy-audit
+
+crds:
+  create: false
+
+rbac:
+  create: false
+
+serviceAccount:
+  create: true
+  automountServiceAccountToken: false
+
+alloy:
+  enableReporting: false
+  storagePath: /var/lib/alloy
+  configMap:
+    content: |-
+      logging {
+        level  = "info"
+        format = "logfmt"
+      }
+
+      local.file_match "kubernetes_audit" {
+        path_targets = [{
+          __path__   = "/var/log/audit/kube/kube-apiserver*.log",
+          cluster    = "homelab",
+          job        = "kubernetes/audit",
+          log_class  = "audit",
+          node       = sys.env("NODE_NAME"),
+        }]
+        sync_period = "10s"
+      }
+
+      loki.source.file "kubernetes_audit" {
+        targets    = local.file_match.kubernetes_audit.targets
+        forward_to = [loki.write.cluster.receiver]
+      }
+
+      loki.write "cluster" {
+        endpoint {
+          url = "http://loki.logging.svc.cluster.local:3100/loki/api/v1/push"
+        }
+      }
+  extraEnv:
+    - name: NODE_NAME
+      valueFrom:
+        fieldRef:
+          fieldPath: spec.nodeName
+  mounts:
+    extra:
+      - name: audit-logs
+        mountPath: /var/log/audit/kube
+        readOnly: true
+      - name: alloy-state
+        mountPath: /var/lib/alloy
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      cpu: 100m
+      memory: 128Mi
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop: ["ALL"]
+    readOnlyRootFilesystem: true
+    runAsUser: 0
+    runAsGroup: 0
+    seccompProfile:
+      type: RuntimeDefault
+
+global:
+  podSecurityContext:
+    runAsUser: 0
+    runAsGroup: 0
+    seccompProfile:
+      type: RuntimeDefault
+
+controller:
+  type: daemonset
+  nodeSelector:
+    node-role.kubernetes.io/control-plane: ""
+  tolerations:
+    - key: node-role.kubernetes.io/control-plane
+      operator: Exists
+      effect: NoSchedule
+  volumes:
+    extra:
+      - name: audit-logs
+        hostPath:
+          path: /var/log/audit/kube
+          type: Directory
+      - name: alloy-state
+        hostPath:
+          path: /var/lib/alloy-audit
+          type: DirectoryOrCreate
+
+serviceMonitor:
+  enabled: true
+  additionalLabels:
+    release: kube-prometheus-stack
+  interval: 30s
+
+networkPolicy:
+  enabled: false

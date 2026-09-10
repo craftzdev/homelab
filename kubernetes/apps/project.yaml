@@ -30,6 +30,7 @@ spec:
     - https://charts.longhorn.io
     - https://charts.jetstack.io
     - https://prometheus-community.github.io/helm-charts
+    - https://grafana.github.io/helm-charts
     - https://aquasecurity.github.io/helm-charts/
     - https://backube.github.io/helm-charts/
     - https://piraeus.io/helm-charts/
@@ -54,6 +55,10 @@ spec:
       namespace: cert-manager
     - server: https://kubernetes.default.svc
       namespace: monitoring
+    - server: https://kubernetes.default.svc
+      namespace: logging
+    - server: https://kubernetes.default.svc
+      namespace: logging-audit
     - server: https://kubernetes.default.svc
       namespace: security
     - server: https://kubernetes.default.svc

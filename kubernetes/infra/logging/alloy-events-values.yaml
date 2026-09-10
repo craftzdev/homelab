@@ -1,0 +1,78 @@
+fullnameOverride: alloy-events
+
+crds:
+  create: false
+
+alloy:
+  enableReporting: false
+  storagePath: /tmp/alloy
+  configMap:
+    content: |-
+      logging {
+        level  = "info"
+        format = "logfmt"
+      }
+
+      loki.source.kubernetes_events "cluster" {
+        job_name   = "kubernetes/events"
+        log_format = "logfmt"
+        forward_to = [loki.write.cluster.receiver]
+      }
+
+      loki.write "cluster" {
+        external_labels = {
+          cluster   = "homelab",
+          log_class = "infrastructure",
+        }
+
+        endpoint {
+          url = "http://loki.logging.svc.cluster.local:3100/loki/api/v1/push"
+        }
+      }
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      cpu: 100m
+      memory: 128Mi
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop: ["ALL"]
+    readOnlyRootFilesystem: true
+    runAsNonRoot: true
+    runAsUser: 473
+    runAsGroup: 473
+    seccompProfile:
+      type: RuntimeDefault
+
+global:
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 473
+    runAsGroup: 473
+    fsGroup: 473
+    seccompProfile:
+      type: RuntimeDefault
+
+controller:
+  type: deployment
+  replicas: 1
+  nodeSelector: {}
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: node-role.kubernetes.io/control-plane
+                operator: DoesNotExist
+
+serviceMonitor:
+  enabled: true
+  additionalLabels:
+    release: kube-prometheus-stack
+  interval: 30s
+
+networkPolicy:
+  enabled: false

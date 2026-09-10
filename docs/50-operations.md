@@ -168,6 +168,8 @@ BACKUP_DIR="$PWD/_out/rebuild-backups/<timestamp>" \
 | Cloudflare Access client ID | `dev.craftz.ai-business-gateway.cloudflare-access-client-id` | `craftz` |
 | Cloudflare Access client secret | `dev.craftz.ai-business-gateway.cloudflare-access-client-secret` | `craftz` |
 | Business Gateway API token | `dev.craftz.ai-business-gateway.gateway-api-token` | `craftz` |
+| MinIO root password | `dev.craftz.homelab.minio-root` | `minio-root` |
+| Loki S3 secret | `dev.craftz.homelab.loki-s3` | `loki` |
 
 初回の外部レジストリ取得ではCilium、Longhorn、監視スタックの展開に時間が
 かかります。成功メッセージが出るまでは、途中で起動済みのPodやVMだけを見て

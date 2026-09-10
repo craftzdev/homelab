@@ -1,0 +1,148 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: minio-loki-policy
+  namespace: logging
+  labels:
+    app.kubernetes.io/name: minio-bucket-bootstrap
+    app.kubernetes.io/part-of: logging
+data:
+  policy.json: |
+    {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": [
+            "s3:GetBucketLocation",
+            "s3:ListBucket",
+            "s3:ListBucketMultipartUploads"
+          ],
+          "Resource": [
+            "arn:aws:s3:::loki-chunks",
+            "arn:aws:s3:::loki-ruler",
+            "arn:aws:s3:::loki-admin"
+          ]
+        },
+        {
+          "Effect": "Allow",
+          "Action": [
+            "s3:AbortMultipartUpload",
+            "s3:DeleteObject",
+            "s3:GetObject",
+            "s3:ListMultipartUploadParts",
+            "s3:PutObject"
+          ],
+          "Resource": [
+            "arn:aws:s3:::loki-chunks/*",
+            "arn:aws:s3:::loki-ruler/*",
+            "arn:aws:s3:::loki-admin/*"
+          ]
+        }
+      ]
+    }
+
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: minio-bucket-bootstrap
+  namespace: logging
+  labels:
+    app.kubernetes.io/name: minio-bucket-bootstrap
+    app.kubernetes.io/part-of: logging
+spec:
+  # MinIOデータを復元/再作成した場合も、バケットと最小権限ユーザーを戻す。
+  schedule: "17 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      backoffLimit: 6
+      ttlSecondsAfterFinished: 3600
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: minio-bucket-bootstrap
+            app.kubernetes.io/part-of: logging
+        spec:
+          restartPolicy: OnFailure
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            fsGroup: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: bootstrap
+              image: docker.io/pgsty/mc:RELEASE.2026-03-13T08-57-32Z
+              imagePullPolicy: IfNotPresent
+              command: ["/bin/sh", "-ec"]
+              args:
+                - |
+                  until mc alias set local http://minio:9000 \
+                    "${MINIO_ROOT_USER}" "${MINIO_ROOT_PASSWORD}"; do
+                    sleep 5
+                  done
+                  mc mb --ignore-existing local/loki-chunks
+                  mc mb --ignore-existing local/loki-ruler
+                  mc mb --ignore-existing local/loki-admin
+                  mc anonymous set none local/loki-chunks
+                  mc anonymous set none local/loki-ruler
+                  mc anonymous set none local/loki-admin
+                  mc admin user add local \
+                    "${LOKI_ACCESS_KEY}" "${LOKI_SECRET_KEY}"
+                  mc admin policy create local loki-readwrite \
+                    /etc/minio/policy.json
+                  mc admin policy attach local loki-readwrite \
+                    --user "${LOKI_ACCESS_KEY}"
+              env:
+                - name: MINIO_ROOT_USER
+                  valueFrom:
+                    secretKeyRef:
+                      name: minio-root-credentials
+                      key: root-user
+                - name: MINIO_ROOT_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: minio-root-credentials
+                      key: root-password
+                - name: LOKI_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: loki-s3-credentials
+                      key: AWS_ACCESS_KEY_ID
+                - name: LOKI_SECRET_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: loki-s3-credentials
+                      key: AWS_SECRET_ACCESS_KEY
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 32Mi
+                limits:
+                  cpu: 200m
+                  memory: 128Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: ["ALL"]
+                readOnlyRootFilesystem: true
+              volumeMounts:
+                - name: policy
+                  mountPath: /etc/minio
+                  readOnly: true
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: policy
+              configMap:
+                name: minio-loki-policy
+            - name: tmp
+              emptyDir:
+                sizeLimit: 32Mi

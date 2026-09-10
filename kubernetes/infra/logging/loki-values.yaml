@@ -1,0 +1,130 @@
+# Small-cluster mode: one Loki process, TSDB indexes, MinIO object storage.
+deploymentMode: SingleBinary
+
+global:
+  extraArgs:
+    - -config.expand-env=true
+  extraEnvFrom:
+    - secretRef:
+        name: loki-s3-credentials
+
+serviceAccount:
+  automountServiceAccountToken: false
+
+rbac:
+  namespaced: true
+
+loki:
+  auth_enabled: false
+
+  commonConfig:
+    path_prefix: /var/loki
+    replication_factor: 1
+
+  schemaConfig:
+    configs:
+      - from: "2024-01-01"
+        store: tsdb
+        object_store: s3
+        schema: v13
+        index:
+          prefix: index_
+          period: 24h
+
+  storage:
+    type: s3
+    bucketNames:
+      chunks: loki-chunks
+      ruler: loki-ruler
+      admin: loki-admin
+    s3:
+      endpoint: minio.logging.svc.cluster.local:9000
+      region: us-east-1
+      accessKeyId: ${AWS_ACCESS_KEY_ID}
+      secretAccessKey: ${AWS_SECRET_ACCESS_KEY}
+      signatureVersion: v4
+      s3ForcePathStyle: true
+      insecure: true
+
+  compactor:
+    retention_enabled: true
+    delete_request_store: s3
+
+  limits_config:
+    allow_structured_metadata: true
+    volume_enabled: true
+    retention_period: 720h
+    retention_stream:
+      # AI Worker とCI runnerは再生成可能なアプリケーションログ。
+      - selector: '{log_class="application"}'
+        priority: 1
+        period: 336h
+      # kube-apiserver監査ログはインシデント調査のため長く残す。
+      - selector: '{log_class="audit"}'
+        priority: 2
+        period: 2160h
+
+  analytics:
+    reporting_enabled: false
+
+singleBinary:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+  nodeSelector: {}
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: node-role.kubernetes.io/control-plane
+                operator: DoesNotExist
+  persistence:
+    enabled: true
+    storageClass: longhorn-logging-retain
+    size: 20Gi
+    whenDeleted: Retain
+    whenScaled: Retain
+    enableStatefulSetAutoDeletePVC: false
+
+# SingleBinary以外のモードを明示的に無効化する。
+read:
+  replicas: 0
+write:
+  replicas: 0
+backend:
+  replicas: 0
+
+gateway:
+  enabled: false
+
+chunksCache:
+  enabled: false
+resultsCache:
+  enabled: false
+
+minio:
+  enabled: false
+
+test:
+  enabled: false
+lokiCanary:
+  enabled: false
+
+monitoring:
+  dashboards:
+    enabled: true
+    labels:
+      grafana_dashboard: "1"
+  rules:
+    enabled: false
+  serviceMonitor:
+    enabled: true
+    labels:
+      release: kube-prometheus-stack
+    interval: 30s

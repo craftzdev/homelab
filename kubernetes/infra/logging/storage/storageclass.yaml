@@ -1,0 +1,17 @@
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: longhorn-logging-retain
+  labels:
+    app.kubernetes.io/part-of: observability
+provisioner: driver.longhorn.io
+allowVolumeExpansion: true
+reclaimPolicy: Retain
+volumeBindingMode: Immediate
+parameters:
+  # MinIO/Loki の自己複製は使わず、Longhorn でノード障害に備える。
+  # 3 replica より容量を抑えつつ、1 worker の故障を許容する。
+  numberOfReplicas: "2"
+  staleReplicaTimeout: "30"
+  fsType: ext4
+  dataLocality: disabled
