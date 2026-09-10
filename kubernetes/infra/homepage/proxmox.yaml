@@ -1,0 +1,3 @@
+# Homepage v2 requires this file even when Proxmox inventory discovery is not
+# used. The service widget is configured separately in services.yaml.
+{}

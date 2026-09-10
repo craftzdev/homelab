@@ -18,6 +18,7 @@ configMapGenerator:
       - bookmarks.yaml
       - kubernetes.yaml
       - docker.yaml
+      - proxmox.yaml
       - custom.css
       - custom.js
   - name: homepage-pve-ca
