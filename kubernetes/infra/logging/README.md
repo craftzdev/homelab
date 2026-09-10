@@ -61,6 +61,13 @@ MinIO Console、MinIO API、Loki APIは外部公開しない。緊急調査時�
 ## バックアップ境界
 
 Longhorn replicaは冗長化でありバックアップではない。PBSによる6ノードVMの
-バックアップにはLonghornディスクとMinIOデータも含まれるが、独立したS3コピー
-ではない。PBS側に専用S3互換保存先を追加した場合は`mc mirror`を構成し、
-日次でクラスタ外コピーする。PBS datastore内部へ直接ファイルを書かないこと。
+バックアップにはLonghornディスクとMinIOデータも含まれる。実測したPBSの保存先は
+`172.16.10.51`のdatastore `gateway-backup`（Proxmox側ID `pbs-gateway`）である。
+`scripts/reconcile-pbs-kubernetes-backup.sh --apply`が6 VMを毎日02:30 JSTにsnapshotし、
+daily 7 / weekly 4 / monthly 3世代を保持する。バックアップ負荷を抑えるため50MiB/s、
+I/O idle priorityに制限する。
+
+これはクラスタ全損時の復旧点であり、MinIOの独立したS3コピーではない。
+PBS datastore内部へ通常ファイルを直接書くとdatastoreを破損しうるため禁止する。
+オブジェクト単位の復旧が必要になった場合は、PBS本体へ別MinIOを同居させず、
+別NASまたはオフサイトS3へ`mc mirror`する。

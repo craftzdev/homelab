@@ -64,9 +64,15 @@ ceph-csi の VolumeSnapshot と連携し、CSI スナップショットを取得
 VM 丸ごとのイメージバックアップ。PBS は 172.16.10.51 で稼働中。
 
 - 対象: Kubernetes ノード VM 6 台
-- 頻度: 週次（Talos はステートレスに近いため日次は不要）
-- 保持: 4 世代
+- 保存先: datastore `gateway-backup`（Proxmox側storage ID `pbs-gateway`）
+- 頻度: 日次02:30 JST（MinIO、Registry等のLonghornデータもVM diskに含むため）
+- 保持: daily 7 / weekly 4 / monthly 3
+- 負荷制御: 50MiB/s、I/O idle priority、zstd 1 thread
+- 構成管理: `scripts/reconcile-pbs-kubernetes-backup.sh --apply`
 - **PBS は Ceph とは別の物理筐体にある**ため、S5/S6 に対して有効
+
+2026-09-10の実測では、PBSは総容量476.5GB、使用218.9GB、空き233.3GBだった。
+PBS datastoreにはPBSネイティブ形式以外のファイルを直接置かない。
 
 ### snapscheduler（補助）
 

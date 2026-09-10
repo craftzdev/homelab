@@ -535,6 +535,7 @@ PBSスナップショットと、再構築時に作るage暗号化済みApplicat
 | 項目 | 頻度 | コマンド / 手順 |
 | --- | --- | --- |
 | etcd スナップショット | 日次 | `./scripts/etcd-snapshot.sh`（cron 化推奨） |
+| Kubernetes 6 VMのPBSバックアップ | 日次02:30 | `./scripts/reconcile-pbs-kubernetes-backup.sh`で設定を照合 |
 | 脆弱性レポートの確認 | 週次 | `kubectl get vulnerabilityreports -A` |
 | Renovate の PR 対応 | 週次 | GitHub の PR を確認 |
 | Longhorn volumeの状態確認 | 週次 | `kubectl -n longhorn-system get volumes.longhorn.io` |
