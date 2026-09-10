@@ -17,6 +17,23 @@ rbac:
 loki:
   auth_enabled: false
 
+  podSecurityContext:
+    fsGroup: 10001
+    fsGroupChangePolicy: OnRootMismatch
+    runAsGroup: 10001
+    runAsNonRoot: true
+    runAsUser: 10001
+    seccompProfile:
+      type: RuntimeDefault
+
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop: ["ALL"]
+    readOnlyRootFilesystem: true
+    seccompProfile:
+      type: RuntimeDefault
+
   commonConfig:
     path_prefix: /var/loki
     replication_factor: 1
@@ -69,6 +86,11 @@ loki:
 
 singleBinary:
   replicas: 1
+  extraArgs:
+    - -config.expand-env=true
+  extraEnvFrom:
+    - secretRef:
+        name: loki-s3-credentials
   resources:
     requests:
       cpu: 100m
@@ -115,6 +137,11 @@ test:
   enabled: false
 lokiCanary:
   enabled: false
+
+sidecar:
+  # Rulerを使わないためKubernetes APIをwatchするsidecarも不要。
+  rules:
+    enabled: false
 
 monitoring:
   dashboards:

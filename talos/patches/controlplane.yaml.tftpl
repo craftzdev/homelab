@@ -155,6 +155,15 @@ machine:
           - rshared
           - rw
 
+      # kube-apiserverの監査ログを、logging-audit namespaceのAlloyへ
+      # read-only hostPathとして公開する。通常Podからは参照できない。
+      - destination: /var/log/audit/kube
+        type: bind
+        source: /var/log/audit/kube
+        options:
+          - bind
+          - ro
+
   # -------------------------------------------------------------------------
   # sysctl
   # Talos は既定で kptr_restrict / dmesg_restrict 等のハードニングを行うため、

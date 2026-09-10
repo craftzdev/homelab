@@ -121,6 +121,10 @@ spec:
                     secretKeyRef:
                       name: loki-s3-credentials
                       key: AWS_SECRET_ACCESS_KEY
+                - name: HOME
+                  value: /tmp
+                - name: MC_CONFIG_DIR
+                  value: /tmp/.mc
               resources:
                 requests:
                   cpu: 10m

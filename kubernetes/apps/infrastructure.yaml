@@ -526,6 +526,13 @@ metadata:
     - resources-finalizer.argocd.argoproj.io
 spec:
   project: infrastructure
+  ignoreDifferences:
+    # StatefulSet controllerがPVC templateへ実行時statusを追加する。
+    - group: apps
+      kind: StatefulSet
+      name: minio
+      jqPathExpressions:
+        - .spec.volumeClaimTemplates[]?.status
   source:
     repoURL: https://github.com/craftzdev/homelab.git
     targetRevision: main
@@ -541,6 +548,7 @@ spec:
     syncOptions:
       - CreateNamespace=false
       - ServerSideApply=true
+      - RespectIgnoreDifferences=true
 
 ---
 # ---------------------------------------------------------------------------
@@ -557,6 +565,13 @@ metadata:
     - resources-finalizer.argocd.argoproj.io
 spec:
   project: infrastructure
+  ignoreDifferences:
+    - group: apps
+      kind: StatefulSet
+      name: loki
+      jqPathExpressions:
+        - .spec.volumeClaimTemplates[]?.spec.volumeMode
+        - .spec.volumeClaimTemplates[]?.status
   sources:
     - repoURL: https://grafana.github.io/helm-charts
       chart: loki
@@ -595,6 +610,7 @@ spec:
     syncOptions:
       - CreateNamespace=false
       - ServerSideApply=true
+      - RespectIgnoreDifferences=true
 
 ---
 # ---------------------------------------------------------------------------

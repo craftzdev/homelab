@@ -147,13 +147,16 @@ spec:
           emptyDir:
             sizeLimit: 256Mi
   volumeClaimTemplates:
-    - metadata:
+    - apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
         name: data
         labels:
           app.kubernetes.io/name: minio
           app.kubernetes.io/part-of: logging
       spec:
         accessModes: ["ReadWriteOnce"]
+        volumeMode: Filesystem
         storageClassName: longhorn-logging-retain
         resources:
           requests:
