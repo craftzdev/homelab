@@ -6,6 +6,10 @@ crds:
 alloy:
   enableReporting: false
   storagePath: /tmp/alloy
+  mounts:
+    extra:
+      - name: alloy-storage
+        mountPath: /tmp/alloy
   configMap:
     content: |-
       logging {
@@ -119,6 +123,11 @@ global:
 
 controller:
   type: daemonset
+  volumes:
+    extra:
+      - name: alloy-storage
+        emptyDir:
+          sizeLimit: 256Mi
   tolerations:
     - key: node-role.kubernetes.io/control-plane
       operator: Exists

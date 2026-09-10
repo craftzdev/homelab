@@ -6,6 +6,10 @@ crds:
 alloy:
   enableReporting: false
   storagePath: /tmp/alloy
+  mounts:
+    extra:
+      - name: alloy-storage
+        mountPath: /tmp/alloy
   configMap:
     content: |-
       logging {
@@ -59,6 +63,11 @@ global:
 controller:
   type: deployment
   replicas: 1
+  volumes:
+    extra:
+      - name: alloy-storage
+        emptyDir:
+          sizeLimit: 128Mi
   nodeSelector: {}
   affinity:
     nodeAffinity:
