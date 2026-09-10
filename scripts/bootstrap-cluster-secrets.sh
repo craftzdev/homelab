@@ -14,6 +14,8 @@ LOKI_S3_KEYCHAIN_ACCOUNT="${LOKI_S3_KEYCHAIN_ACCOUNT:-loki}"
 WORKER_REPO_KEYCHAIN_SERVICE="${WORKER_REPO_KEYCHAIN_SERVICE:-dev.craftz.homelab.argocd-ai-worker-deploy-key}"
 WORKER_REPO_KEYCHAIN_ACCOUNT="${WORKER_REPO_KEYCHAIN_ACCOUNT:-craftzdev/ai-business-worker}"
 WORKER_REPO_URL="${WORKER_REPO_URL:-git@github.com:craftzdev/ai-business-worker.git}"
+HOMEPAGE_PVE_KEYCHAIN_SERVICE="${HOMEPAGE_PVE_KEYCHAIN_SERVICE:-dev.craftz.homelab.homepage-proxmox-token}"
+HOMEPAGE_PVE_KEYCHAIN_ACCOUNT="${HOMEPAGE_PVE_KEYCHAIN_ACCOUNT:-homepage@pve!homepage}"
 
 info() { printf '[INFO] %s\n' "$*"; }
 ok() { printf '[OK]   %s\n' "$*"; }
@@ -41,7 +43,7 @@ fi
 [[ -n "${grafana_password}" ]] || die "Grafana password is empty"
 
 for namespace in monitoring logging logging-audit cert-manager security \
-  image-registry tailscale arc-systems arc-runners argocd; do
+  image-registry tailscale arc-systems arc-runners argocd portal; do
   kubectl create namespace "${namespace}" --dry-run=client -o yaml \
     | kubectl apply -f - >/dev/null
 done
@@ -115,6 +117,30 @@ stringData:
 EOF
 
 unset minio_root_password loki_s3_secret
+
+# Homepage gets a Proxmox API token with PVEAuditor only. Token creation and
+# ACL reconciliation are handled by reconcile-homepage-proxmox-token.sh; this
+# bootstrap step only copies the existing secret from Keychain into Kubernetes.
+if homepage_pve_token="$(security find-generic-password \
+    -s "${HOMEPAGE_PVE_KEYCHAIN_SERVICE}" \
+    -a "${HOMEPAGE_PVE_KEYCHAIN_ACCOUNT}" -w 2>/dev/null)"; then
+  [[ -n "${homepage_pve_token}" ]] || die "Homepage Proxmox token is empty"
+  kubectl apply -f - >/dev/null <<EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: homepage-integrations
+  namespace: portal
+type: Opaque
+stringData:
+  HOMEPAGE_VAR_PROXMOX_USERNAME: "${HOMEPAGE_PVE_KEYCHAIN_ACCOUNT}"
+  HOMEPAGE_VAR_PROXMOX_TOKEN: "${homepage_pve_token}"
+EOF
+  unset homepage_pve_token
+  ok "Homepage Proxmox credential is present"
+else
+  info "Homepage Proxmox token is absent from Keychain; run reconcile-homepage-proxmox-token.sh"
+fi
 
 # The private Worker repository uses a repository-scoped, read-only GitHub
 # Deploy Key. The Keychain value is base64 so multiline OpenSSH key material

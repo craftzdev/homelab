@@ -539,7 +539,27 @@ PBSスナップショットと、再構築時に作るage暗号化済みApplicat
 
 ## 7. セキュリティ運用
 
-### 7.1 定期的に実施すること
+### 7.1 管理ポータル
+
+HomepageはTailnet内の次のURLから開きます。
+
+```text
+https://portal.tailb6c7d.ts.net
+```
+
+Proxmoxウィジェットは`homepage@pve!homepage`の監査専用tokenを使用します。
+初回作成、ACLの再適用、macOS KeychainとKubernetes Secretの同期は次の
+冪等スクリプトで行います。
+
+```bash
+./scripts/reconcile-homepage-proxmox-token.sh
+```
+
+Homepage自身にはKubernetes API tokenを渡していません。クラスタ操作は
+Argo CD、メトリクス・ログ確認はGrafanaから行い、Homepageはリンク集と
+読み取り専用サマリーに限定します。
+
+### 7.2 定期的に実施すること
 
 | 項目 | 頻度 | コマンド / 手順 |
 | --- | --- | --- |
@@ -552,7 +572,7 @@ PBSスナップショットと、再構築時に作るage暗号化済みApplicat
 | Service Token のローテーション | 90 日 | `service_token_secret_version` を +1 して apply |
 | age 鍵のバックアップ確認 | 半期 | パスワードマネージャの内容を確認 |
 
-### 7.2 Git 履歴に残る平文パスワードの除去
+### 7.3 Git 履歴に残る平文パスワードの除去
 
 > ⚠️ **リポジトリを公開する前に必ず実施してください。**
 
@@ -596,7 +616,7 @@ git push --force --tags
 >
 > が正しい対処です。「消したから大丈夫」にはなりません。
 
-### 7.3 OpenTofu ステートの保護
+### 7.4 OpenTofu ステートの保護
 
 `tofu/*/terraform.tfstate` には以下が**平文で**含まれます。
 

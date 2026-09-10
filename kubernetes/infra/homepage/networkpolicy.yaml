@@ -1,0 +1,56 @@
+# Homepage is the only workload allowed to query the Proxmox management API.
+# The token has PVEAuditor only, and this policy restricts the destination to
+# one cluster API endpoint and TCP 8006.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: homepage-rules
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: homepage
+  ingress:
+    # HTTPS is terminated by the dedicated Tailscale proxy.
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: tailscale
+      toPorts:
+        - ports:
+            - port: "3000"
+              protocol: TCP
+    # kubelet executes the readiness and liveness probes.
+    - fromEntities:
+        - host
+        - remote-node
+      toPorts:
+        - ports:
+            - port: "3000"
+              protocol: TCP
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+    - toCIDR:
+        - 172.16.10.11/32
+      toPorts:
+        - ports:
+            - port: "8006"
+              protocol: TCP

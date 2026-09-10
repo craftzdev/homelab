@@ -1,0 +1,18 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: homepage
+  annotations:
+    # Management UIs share the existing admin-only Tailnet Grant.
+    tailscale.com/tags: tag:argocd
+    tailscale.com/proxy-class: restricted-userspace
+spec:
+  ingressClassName: tailscale
+  defaultBackend:
+    service:
+      name: homepage
+      port:
+        name: http
+  tls:
+    - hosts:
+        - portal

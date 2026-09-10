@@ -19,6 +19,7 @@
 #   TAILSCALE_WORKER_FQDN=... canonical Worker MagicDNS name
 #   TAILSCALE_ARGOCD_FQDN=... canonical Argo CD MagicDNS name
 #   TAILSCALE_GRAFANA_FQDN=... canonical Grafana MagicDNS name
+#   TAILSCALE_PORTAL_FQDN=... canonical Homepage MagicDNS name
 #   GATEWAY_SMOKE=0      skip the external Gateway-to-Worker test (default: 1)
 #   CF_ACCESS_*_SERVICE  macOS Keychain service names for the smoke test
 set -euo pipefail
@@ -35,6 +36,7 @@ GATEWAY_SMOKE="${GATEWAY_SMOKE:-1}"
 TAILSCALE_WORKER_FQDN="${TAILSCALE_WORKER_FQDN:-ai-worker-cluster.tailb6c7d.ts.net}"
 TAILSCALE_ARGOCD_FQDN="${TAILSCALE_ARGOCD_FQDN:-argocd.tailb6c7d.ts.net}"
 TAILSCALE_GRAFANA_FQDN="${TAILSCALE_GRAFANA_FQDN:-grafana.tailb6c7d.ts.net}"
+TAILSCALE_PORTAL_FQDN="${TAILSCALE_PORTAL_FQDN:-portal.tailb6c7d.ts.net}"
 CF_ACCESS_CLIENT_ID_SERVICE="${CF_ACCESS_CLIENT_ID_SERVICE:-dev.craftz.ai-business-gateway.cloudflare-access-client-id}"
 CF_ACCESS_CLIENT_SECRET_SERVICE="${CF_ACCESS_CLIENT_SECRET_SERVICE:-dev.craftz.ai-business-gateway.cloudflare-access-client-secret}"
 EXPECTED_VMIDS=(1001 1002 1003 1101 1102 1103)
@@ -260,6 +262,8 @@ backup_cluster_data() {
     "${BACKUP_DIR}/tailscale-argocd-state.secret.json.age"
   backup_tailnet_proxy_state ingress monitoring grafana \
     "${BACKUP_DIR}/tailscale-grafana-state.secret.json.age"
+  backup_tailnet_proxy_state ingress portal homepage \
+    "${BACKUP_DIR}/tailscale-portal-state.secret.json.age"
 
   kubectl --kubeconfig "${KUBECONFIG_PATH}" -n ai-worker get deploy ai-business-worker \
     -o jsonpath='{.spec.template.spec.containers[0].image}' \
@@ -312,13 +316,16 @@ verify_recovery_set() {
     tailscale-worker-state.secret.json.age \
     tailscale-gateway-egress-state.secret.json.age \
     tailscale-argocd-state.secret.json.age \
-    tailscale-grafana-state.secret.json.age; do
+    tailscale-grafana-state.secret.json.age \
+    tailscale-portal-state.secret.json.age; do
     [[ -s "${BACKUP_DIR}/${tailnet_state_file}" ]] && tailnet_state_count=$((tailnet_state_count + 1))
   done
-  # Three/four files are accepted for recovery sets created before the Argo CD
-  # or Grafana Tailnet ingress existed. Current recovery sets contain all five.
+  # Older recovery sets can predate individual management UI ingresses.
+  # Current recovery sets contain the Operator, two Worker proxies, and all
+  # three management UIs (six state files in total).
   [[ "${tailnet_state_count}" == 0 || "${tailnet_state_count}" == 3 \
-      || "${tailnet_state_count}" == 4 || "${tailnet_state_count}" == 5 ]] \
+      || "${tailnet_state_count}" == 4 || "${tailnet_state_count}" == 5 \
+      || "${tailnet_state_count}" == 6 ]] \
     || die "Tailnet state backup is incomplete"
   if [[ "${tailnet_state_count}" == 3 ]]; then
     for tailnet_state_file in \
@@ -339,7 +346,8 @@ remove_stale_tailnet_cluster_devices() {
 
   if [[ -s "${BACKUP_DIR}/tailscale-worker-state.secret.json.age" \
       && -s "${BACKUP_DIR}/tailscale-argocd-state.secret.json.age" \
-      && -s "${BACKUP_DIR}/tailscale-grafana-state.secret.json.age" ]]; then
+      && -s "${BACKUP_DIR}/tailscale-grafana-state.secret.json.age" \
+      && -s "${BACKUP_DIR}/tailscale-portal-state.secret.json.age" ]]; then
     info "Preserving Tailnet identities and TLS certificate cache for recreation"
     return
   fi
@@ -374,21 +382,21 @@ remove_stale_tailnet_cluster_devices() {
       selector='(.name == $worker_fqdn or .hostname == "ai-worker-ai-gateway-egress")'
       maximum=2
     elif [[ "${tag}" == tag:argocd ]]; then
-      # Argo CD and Grafana intentionally share this admin-only tag. Remove
+      # Management UIs intentionally share this admin-only tag. Remove
       # only identities absent from the selected recovery set.
-      if [[ ! -s "${BACKUP_DIR}/tailscale-argocd-state.secret.json.age" \
-          && ! -s "${BACKUP_DIR}/tailscale-grafana-state.secret.json.age" ]]; then
-        # shellcheck disable=SC2016 # jq expands the two FQDN variables.
-        selector='(.name == $argocd_fqdn or .hostname == "argocd" or .name == $grafana_fqdn or .hostname == "grafana")'
-        maximum=2
-      elif [[ ! -s "${BACKUP_DIR}/tailscale-argocd-state.secret.json.age" ]]; then
-        # shellcheck disable=SC2016 # jq expands $argocd_fqdn.
-        selector='(.name == $argocd_fqdn or .hostname == "argocd")'
-        maximum=1
-      else
-        # shellcheck disable=SC2016 # jq expands $grafana_fqdn.
-        selector='(.name == $grafana_fqdn or .hostname == "grafana")'
-        maximum=1
+      selector='false'
+      maximum=0
+      if [[ ! -s "${BACKUP_DIR}/tailscale-argocd-state.secret.json.age" ]]; then
+        selector="${selector} or (.name == \$argocd_fqdn or .hostname == \"argocd\")"
+        maximum=$((maximum + 1))
+      fi
+      if [[ ! -s "${BACKUP_DIR}/tailscale-grafana-state.secret.json.age" ]]; then
+        selector="${selector} or (.name == \$grafana_fqdn or .hostname == \"grafana\")"
+        maximum=$((maximum + 1))
+      fi
+      if [[ ! -s "${BACKUP_DIR}/tailscale-portal-state.secret.json.age" ]]; then
+        selector="${selector} or (.name == \$portal_fqdn or .hostname == \"portal\")"
+        maximum=$((maximum + 1))
       fi
     else
       selector='(.hostname == "tailscale-operator")'
@@ -397,6 +405,7 @@ remove_stale_tailnet_cluster_devices() {
     device_ids="$(jq -r --arg worker_fqdn "${TAILSCALE_WORKER_FQDN}" \
       --arg argocd_fqdn "${TAILSCALE_ARGOCD_FQDN}" \
       --arg grafana_fqdn "${TAILSCALE_GRAFANA_FQDN}" \
+      --arg portal_fqdn "${TAILSCALE_PORTAL_FQDN}" \
       --arg tag "${tag}" "[.devices[]
         | select(${selector})
         | select((.tags // []) | index(\$tag))
@@ -685,12 +694,21 @@ restore_platform() {
       ingress monitoring grafana tag:argocd
     restart_tailnet_proxy ingress monitoring grafana
   fi
+  if [[ -s "${BACKUP_DIR}/tailscale-portal-state.secret.json.age" ]]; then
+    restore_tailnet_proxy_state \
+      "${BACKUP_DIR}/tailscale-portal-state.secret.json.age" \
+      ingress portal homepage tag:argocd
+    restart_tailnet_proxy ingress portal homepage
+  fi
   kubectl -n argocd wait \
     --for=jsonpath='{.status.loadBalancer.ingress[0].hostname}'="${TAILSCALE_ARGOCD_FQDN}" \
     ingress/argocd --timeout=10m
   kubectl -n monitoring wait \
     --for=jsonpath='{.status.loadBalancer.ingress[0].hostname}'="${TAILSCALE_GRAFANA_FQDN}" \
     ingress/grafana --timeout=10m
+  kubectl -n portal wait \
+    --for=jsonpath='{.status.loadBalancer.ingress[0].hostname}'="${TAILSCALE_PORTAL_FQDN}" \
+    ingress/homepage --timeout=10m
   "${SCRIPT_DIR}/configure-tailscale-dns.sh"
   kubectl -n longhorn-system rollout status daemonset/longhorn-manager --timeout=15m
   "${SCRIPT_DIR}/reconcile-longhorn-worker-plane.sh"
@@ -858,7 +876,9 @@ verify_rebuild() {
     "https://${TAILSCALE_ARGOCD_FQDN}/" >/dev/null
   curl -fsS --retry 12 --retry-all-errors --retry-delay 5 \
     "https://${TAILSCALE_GRAFANA_FQDN}/api/health" >/dev/null
-  ok "Six-node cluster, GitOps platform, Tailnet Worker, Argo CD, and Grafana verified"
+  curl -fsS --retry 12 --retry-all-errors --retry-delay 5 \
+    "https://${TAILSCALE_PORTAL_FQDN}/api/healthcheck" >/dev/null
+  ok "Six-node cluster, GitOps platform, Tailnet Worker, and management UIs verified"
 }
 
 verify_gateway_worker_path() {

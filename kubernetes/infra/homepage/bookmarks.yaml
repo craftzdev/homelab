@@ -1,0 +1,7 @@
+- Operations:
+    - Talos Documentation:
+        - abbr: TL
+          href: https://docs.siderolabs.com/talos/
+    - Kubernetes Documentation:
+        - abbr: K8S
+          href: https://kubernetes.io/docs/

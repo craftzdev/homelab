@@ -1,0 +1,53 @@
+- Infrastructure:
+    - Proxmox VE:
+        icon: proxmox.png
+        href: https://172.16.10.11:8006/
+        description: Three-node virtualization cluster
+        widget:
+          type: proxmox
+          url: https://172.16.10.11:8006
+          username: "{{HOMEPAGE_VAR_PROXMOX_USERNAME}}"
+          password: "{{HOMEPAGE_VAR_PROXMOX_TOKEN}}"
+          fields:
+            - vms
+            - lxc
+            - resources.cpu
+            - resources.mem
+    - Proxmox Backup Server:
+        icon: proxmox.png
+        href: https://172.16.10.51:8007/
+        description: gateway-backup datastore and VM snapshots
+
+- Kubernetes:
+    - Argo CD:
+        icon: argocd.png
+        href: https://argocd.tailb6c7d.ts.net/
+        description: GitOps applications and synchronization
+    - Grafana:
+        icon: grafana.png
+        href: https://grafana.tailb6c7d.ts.net/
+        description: Metrics, logs, events, and audit logs
+    - AI Worker:
+        icon: kubernetes.png
+        href: https://ai-worker-cluster.tailb6c7d.ts.net/health
+        description: Kubernetes-hosted build and automation worker
+
+- AI Platform:
+    - Business Gateway:
+        icon: cloudflare.png
+        href: https://gateway.craftz.dev/
+        description: Cloudflare Access protected Grok gateway
+    - Worker Review:
+        icon: openai.png
+        href: https://ai-worker-cluster.tailb6c7d.ts.net/
+        description: Job results and review artifacts
+
+- Development:
+    - Homelab Repository:
+        icon: github.png
+        href: https://github.com/craftzdev/homelab
+        description: Cluster desired state
+    - GitHub Actions:
+        icon: github.png
+        href: https://github.com/craftzdev/homelab/actions
+        description: Validation on the in-cluster runner

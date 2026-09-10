@@ -1,0 +1,11 @@
+- greeting:
+    text_size: xl
+    text: Homelab Operations
+
+- datetime:
+    text_size: md
+    format:
+      timeStyle: short
+      dateStyle: long
+      hourCycle: h23
+    locale: ja-JP

@@ -17,6 +17,7 @@
 #     6  logging-audit   : control-plane の Kubernetes 監査ログ収集
 #     6  security        : Trivy / kubelet 証明書承認
 #     7  arc-controller  : GitHub Actions Runner Controller
+#     7  homepage        : Tailnet-only management portal
 #     8  arc-runners     : ephemeral runner scale set
 #
 # Gateway/cloudflared は Business Gateway VM 1200 で稼働するためクラスタには置かない。
@@ -549,6 +550,45 @@ spec:
       - CreateNamespace=false
       - ServerSideApply=true
       - RespectIgnoreDifferences=true
+
+---
+# ---------------------------------------------------------------------------
+# Homepage management portal
+#
+# Proxmox integration credentials are materialized from macOS Keychain by
+# scripts/bootstrap-cluster-secrets.sh. The application itself remains fully
+# declarative and the secret never enters Git or Argo CD.
+# ---------------------------------------------------------------------------
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: homepage
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "7"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: infrastructure
+  source:
+    repoURL: https://github.com/craftzdev/homelab.git
+    targetRevision: main
+    path: kubernetes/infra/homepage
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: portal
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    managedNamespaceMetadata:
+      labels:
+        pod-security.kubernetes.io/enforce: restricted
+        pod-security.kubernetes.io/audit: restricted
+        pod-security.kubernetes.io/warn: restricted
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
 
 ---
 # ---------------------------------------------------------------------------

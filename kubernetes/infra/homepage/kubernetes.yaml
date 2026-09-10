@@ -1,0 +1,4 @@
+# Service discovery and cluster metrics are intentionally not configured.
+# Homepage has no Kubernetes API token; Argo CD and Grafana remain the
+# authoritative cluster views with their own least-privilege controls.
+{}
