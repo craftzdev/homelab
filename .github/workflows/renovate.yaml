@@ -1,0 +1,121 @@
+# ===========================================================================
+# Renovate — 依存関係の更新 PR を毎週作成する
+#
+# ---------------------------------------------------------------------------
+# なぜ専用 Pod や CronJob を作らないのか
+# ---------------------------------------------------------------------------
+# Renovate は「週に一度、数分だけ動けばよい」処理であり、常駐させる理由が無い。
+# GitHub の schedule を起点に既存の ephemeral ARC Runner で実行すれば、
+# 待機中のリソース消費はゼロで、GitHub-hosted Runner の時間も消費しない。
+#
+# ---------------------------------------------------------------------------
+# なぜ公式 Action を使わないのか
+# ---------------------------------------------------------------------------
+# renovatebot/github-action は内部で Docker コンテナを起動する。homelab-runner
+# には Docker デーモンが無い（runner-values.yaml は dind を使わない）ため動かない。
+# Node.js を用意し、バージョンを固定した npm package を直接実行する。
+#
+# ---------------------------------------------------------------------------
+# なぜ GITHUB_TOKEN ではなく専用 GitHub App なのか
+# ---------------------------------------------------------------------------
+# GITHUB_TOKEN で作成した PR は後続 Workflow を起動しない。それでは更新 PR で
+# validate が走らず、Renovate を入れる意味が半減する。ARC Controller 用 App の
+# 秘密鍵は再利用せず、権限を最小化した homelab-renovate App を使う。
+# ===========================================================================
+name: renovate
+
+on:
+  schedule:
+    # 毎週土曜日 10:00 JST。renovate.json の
+    # "after 9am and before 6pm on saturday" に収まる時刻を選んでいる。
+    - cron: "0 1 * * 6"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry-run mode (empty = create real branches and PRs)"
+        type: choice
+        default: ""
+        options:
+          - ""
+          - extract
+          - lookup
+          - full
+
+# 実行中の Renovate を新しい実行で打ち切ると、作成途中のブランチと PR が
+# 中途半端に残る。待たせる方が安全。
+concurrency:
+  group: renovate-homelab
+  cancel-in-progress: false
+
+# リポジトリへの書き込みは App の installation token で行う。Workflow 自身の
+# GITHUB_TOKEN には何も渡さない。
+permissions:
+  contents: read
+
+env:
+  # renovate: datasource=node-version depName=node
+  NODE_VERSION: "24.21.0"
+  # renovate: datasource=npm depName=renovate
+  RENOVATE_VERSION: "44.82.0"
+
+jobs:
+  renovate:
+    name: dependency update
+    runs-on: homelab-runner
+    timeout-minutes: 30
+    steps:
+      - name: Mint a short-lived installation token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.RENOVATE_APP_ID }}
+          private-key: ${{ secrets.RENOVATE_APP_PRIVATE_KEY }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install Renovate
+        run: npm install --global "renovate@${RENOVATE_VERSION}"
+
+      # コミット作者を App の bot identity に一致させる。数値 ID は App を
+      # install するまで確定しないため、埋め込まずに実行時へ解決する。
+      - name: Resolve the bot commit identity
+        id: identity
+        env:
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+        run: |
+          set -euo pipefail
+          user_id="$(curl -fsS \
+            -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/users/${APP_SLUG}%5Bbot%5D" \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
+          echo "username=${APP_SLUG}[bot]" >>"${GITHUB_OUTPUT}"
+          echo "git_author=${APP_SLUG}[bot] <${user_id}+${APP_SLUG}[bot]@users.noreply.github.com>" \
+            >>"${GITHUB_OUTPUT}"
+
+      - name: Run Renovate
+        env:
+          # 短期 installation token。ログへ出力しない。
+          RENOVATE_TOKEN: ${{ steps.app-token.outputs.token }}
+          RENOVATE_PLATFORM: github
+          RENOVATE_REPOSITORIES: '["craftzdev/homelab"]'
+          RENOVATE_USERNAME: ${{ steps.identity.outputs.username }}
+          RENOVATE_GIT_AUTHOR: ${{ steps.identity.outputs.git_author }}
+          # 設定は対象リポジトリの renovate.json から Renovate 自身に検出させる。
+          # onboarding PR は不要で、設定が読めない場合は黙って既定動作へ
+          # 落ちるのではなく失敗させる。
+          RENOVATE_ONBOARDING: "false"
+          RENOVATE_REQUIRE_CONFIG: required
+          LOG_LEVEL: info
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          args=()
+          if [[ -n "${DRY_RUN}" ]]; then
+            args+=("--dry-run=${DRY_RUN}")
+            # 手動確認を更新時間帯の外で行えるようにする。schedule の上書きは
+            # dry-run のときだけで、週次の実行は renovate.json の schedule に従う。
+            args+=('--force={"schedule":["at any time"]}')
+          fi
+          renovate "${args[@]}"

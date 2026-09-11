@@ -8,15 +8,26 @@
   "timezone": "Asia/Tokyo",
   "schedule": ["after 9am and before 6pm on saturday"],
 
-  "_comment_why": [
+  "description": [
     "バージョンを固定する（latest を使わない）方針を取っているため、",
     "更新を人手で追い続けるのは現実的でない。Renovate が PR を出し、",
     "レビューしてマージする形にすることで、",
     "  - 何がいつ更新されたかが Git 履歴に残る",
     "  - 破壊的変更を事前に確認できる",
     "  - セキュリティ更新を見落としにくくなる",
-    "という状態を保つ。"
+    "という状態を保つ。",
+    "",
+    "prConcurrentLimit / branchConcurrentLimit は、しばらく放置した後の",
+    "初回実行で数十本の PR が一度に開き、レビューされないまま滞留する",
+    "（= 更新されないのと同じ状態になる）ことを防ぐための上限である。",
+    "1 度に扱える量へ絞り、消化したぶんだけ次が出てくる形にする。",
+    "",
+    "注意: Renovate の設定スキーマにコメント用のキーは無い。説明はこの",
+    "description（機能には影響しない）か packageRules の description に書く。",
+    "独自キーを足すと config warning issue が作成される。"
   ],
+  "prConcurrentLimit": 5,
+  "branchConcurrentLimit": 5,
 
   "packageRules": [
     {
@@ -45,17 +56,26 @@
       ]
     },
     {
-      "description": "CNI と CSI は影響が大きいため自動マージしない",
+      "description": "CNI と CSI は影響が大きいため自動マージせず、個別 PR にする",
       "matchPackageNames": [
         "cilium",
-        "/ceph-csi/"
+        "/longhorn/"
       ],
+      "groupName": null,
       "automerge": false,
       "labels": ["critical-infrastructure"],
       "prBodyNotes": [
         ":warning: CNI/CSI の更新はクラスタ全体に影響する。",
-        "メンテナンス時間帯に、1 コンポーネントずつ適用すること。"
+        "メンテナンス時間帯に、1 コンポーネントずつ適用すること。",
+        "Cilium は全 Pod の通信、Longhorn は全 PV のデータ経路を担う。"
       ]
+    },
+    {
+      "description": "major 更新は破壊的変更を含みうる。patch group へ混ぜず個別 PR にする",
+      "matchUpdateTypes": ["major"],
+      "groupName": null,
+      "automerge": false,
+      "labels": ["major-update"]
     },
     {
       "description": "cloudflared は外部公開経路の要。更新の遅延はセキュリティリスク",
@@ -72,6 +92,14 @@
       "managerFilePatterns": ["/^tofu/.+\\.tf$/"],
       "matchStrings": [
         "#\\s*renovate:\\s*datasource=(?<datasource>.*?)\\s+depName=(?<depName>.*?)\\s*\\n\\s*default\\s*=\\s*\"(?<currentValue>.*?)\""
+      ]
+    },
+    {
+      "description": "Workflow の env へ固定したバージョン（Renovate 自身と Node.js）を追跡する",
+      "customType": "regex",
+      "managerFilePatterns": ["/^\\.github/workflows/.+\\.ya?ml$/"],
+      "matchStrings": [
+        "#\\s*renovate:\\s*datasource=(?<datasource>\\S+)\\s+depName=(?<depName>\\S+)\\s*\\n\\s*[A-Z_]+:\\s*\"(?<currentValue>[^\"]+)\""
       ]
     },
     {
