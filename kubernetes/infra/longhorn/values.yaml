@@ -55,6 +55,11 @@ defaultSettings:
   nodeDownPodDeletionPolicy: delete-both-statefulset-and-deployment-pod
   replicaReplenishmentWaitInterval: 1800
 
+  # ノード復旧後に複数ボリュームを一斉再構築すると、家庭用SSDのI/Oが飽和し
+  # DBボリュームの通常書き込みまでタイムアウトする。各ノード1本ずつに絞り、
+  # 復旧速度よりワークロードの安定性を優先する。
+  concurrentReplicaRebuildPerNodeLimit: 1
+
   # ディスクの使用率がこれを超えるとスケジュールしない
   storageOverProvisioningPercentage: 150
   storageMinimalAvailablePercentage: 20
