@@ -22,6 +22,7 @@
 #     7  homepage        : Tailnet-only management portal
 #     8  arc-runners     : ephemeral runner scale set
 #     6  umami           : Tailnet-only analytics with HA PostgreSQL
+#     3  gateway         : Cilium Gateway API の外部公開入口
 #     7  gatus           : Cloudflare 公開経路の外形監視
 #
 # Gateway/cloudflared は Business Gateway VM 1200 で稼働するためクラスタには置かない。
@@ -485,6 +486,40 @@ spec:
         releaseName: ai-agent-builder
         valueFiles:
           - $values/kubernetes/infra/actions-runner-controller/agent-builder-values.yaml
+    - repoURL: https://github.com/craftzdev/homelab.git
+      targetRevision: main
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: arc-runners
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: arc-point-guide-builder
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "8"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: infrastructure
+  sources:
+    - repoURL: ghcr.io/actions/actions-runner-controller-charts
+      chart: gha-runner-scale-set
+      targetRevision: 0.14.2
+      helm:
+        releaseName: point-guide-builder
+        valueFiles:
+          - $values/kubernetes/infra/actions-runner-controller/point-guide-builder-values.yaml
     - repoURL: https://github.com/craftzdev/homelab.git
       targetRevision: main
       ref: values
@@ -1030,5 +1065,82 @@ spec:
       selfHeal: true
     syncOptions:
       # namespace-and-policy.yaml が Pod Security ラベル付きで作る。
+      - CreateNamespace=false
+      - ServerSideApply=true
+
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: arc-point-guide-scraper-builder
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: '8'
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: infrastructure
+  sources:
+    - repoURL: ghcr.io/actions/actions-runner-controller-charts
+      chart: gha-runner-scale-set
+      targetRevision: 0.14.2
+      helm:
+        releaseName: point-guide-scraper-builder
+        valueFiles:
+          - $values/kubernetes/infra/actions-runner-controller/point-guide-scraper-builder-values.yaml
+    - repoURL: https://github.com/craftzdev/homelab.git
+      targetRevision: main
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: arc-runners
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+
+---
+# ---------------------------------------------------------------------------
+# Cilium Gateway API — 外部公開の入口
+#
+# Gateway 本体は cilium-agent 内の Envoy として動くため、この Application が
+# 作るのは namespace と Gateway / HTTPRoute リソースだけである。
+#
+# Service は `io.cilium/lb-mode: clusterip` により ClusterIP に固定する。
+# LoadBalancer にすると VLAN40 へ L2 公開され、Cloudflare Access を迂回できる
+# 第 2 の入口ができてしまう。外部からの到達は cloudflared 経由だけに保つ。
+#
+# HTTPRoute を受け付ける namespace は `homelab.io/gateway-access: external`
+# ラベルで明示的に絞る。これが無いと、namespace を作れる者が誰でも
+# 任意の内部サービスをインターネットへ公開できてしまう。
+# ---------------------------------------------------------------------------
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: gateway
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: infrastructure
+  source:
+    repoURL: https://github.com/craftzdev/homelab.git
+    targetRevision: main
+    path: kubernetes/infra/gateway
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: gateway
+  syncPolicy:
+    automated:
+      # 公開中のルートを prune で消すと外部から全断する。削除は手動で行う。
+      prune: false
+      selfHeal: true
+    syncOptions:
+      # namespace は gateway.yaml が Pod Security ラベル付きで作る。
       - CreateNamespace=false
       - ServerSideApply=true

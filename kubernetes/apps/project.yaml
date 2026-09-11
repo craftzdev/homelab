@@ -85,6 +85,9 @@ spec:
     # Gatus（公開経路の外形監視）
     - server: https://kubernetes.default.svc
       namespace: status
+    # Cilium Gateway API の外部公開入口
+    - server: https://kubernetes.default.svc
+      namespace: gateway
     # kubelet-serving-cert-approver は上流マニフェストが専用 namespace を作る
     - server: https://kubernetes.default.svc
       namespace: kubelet-serving-cert-approver

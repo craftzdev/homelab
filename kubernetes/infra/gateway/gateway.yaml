@@ -37,6 +37,12 @@ metadata:
     app.kubernetes.io/name: gateway
     app.kubernetes.io/part-of: external-access
 
+    # 下の default-404 HTTPRoute はこの namespace にあるため、Gateway の
+    # allowedRoutes セレクタに一致していなければ受け付けられない。
+    # このラベルが無いと catch-all が機能せず、未定義のホスト名に対して
+    # Gateway の既定応答が露出する。
+    homelab.io/gateway-access: external
+
 ---
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
