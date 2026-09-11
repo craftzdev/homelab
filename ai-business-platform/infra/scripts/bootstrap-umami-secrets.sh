@@ -34,7 +34,7 @@ app_secret="$(ensure_generated_keychain_secret dev.craftz.umami.app-secret)"
 ensure_generated_keychain_secret dev.craftz.umami.admin-password >/dev/null
 minio_secret="$(ensure_generated_keychain_secret dev.craftz.umami.minio-secret-key)"
 minio_access=umami-cnpg
-database_url="postgresql://umami:${db_password}@umami-postgres-rw.analytics.svc.cluster.local:5432/umami?sslmode=require"
+database_url="postgresql://umami:${db_password}@umami-postgres-rw.analytics.svc.cluster.local:5432/umami?sslmode=verify-full&sslrootcert=/etc/umami/postgres-ca/ca.crt"
 
 kubectl --kubeconfig "${KUBECONFIG_PATH}" -n "${ANALYTICS_NAMESPACE}" \
   create secret generic umami-db-owner \

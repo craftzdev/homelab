@@ -125,7 +125,17 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            - name: postgres-ca
+              mountPath: /etc/umami/postgres-ca
+              readOnly: true
       volumes:
         - name: tmp
           emptyDir:
             sizeLimit: 256Mi
+        - name: postgres-ca
+          secret:
+            secretName: umami-postgres-ca
+            defaultMode: 0444
+            items:
+              - key: ca.crt
+                path: ca.crt
