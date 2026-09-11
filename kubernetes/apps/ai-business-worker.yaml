@@ -14,7 +14,7 @@ spec:
   sourceRepos:
     - git@github.com:craftzdev/ai-business-agent.git
     - git@github.com:craftzdev/ai-business-worker.git
-    - https://github.com/craftzdev/ai-business-control-plane.git
+    - git@github.com:craftzdev/ai-business-control-plane.git
   destinations:
     - server: https://kubernetes.default.svc
       namespace: ai-agent

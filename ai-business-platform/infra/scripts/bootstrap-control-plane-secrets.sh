@@ -4,11 +4,17 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 KUBECONFIG_PATH="${1:-${REPO_ROOT}/_out/kubeconfig}"
+DEPLOY_KEY_PATH="${CONTROL_PLANE_DEPLOY_KEY_PATH:-/Users/craftz/.ssh/argocd-ai-business-control-plane}"
 NAMESPACE=ai-control-plane
 RUNTIME_SECRET=ai-business-control-plane-runtime
 
 [[ -s "${KUBECONFIG_PATH}" ]] || {
   echo "kubeconfig not found: ${KUBECONFIG_PATH}" >&2
+  exit 1
+}
+
+[[ -s "${DEPLOY_KEY_PATH}" ]] || {
+  echo "control plane deploy key not found: ${DEPLOY_KEY_PATH}" >&2
   exit 1
 }
 
@@ -49,21 +55,14 @@ kubectl --kubeconfig "${KUBECONFIG_PATH}" -n ai-worker get secret harbor-pull -o
   | jq 'del(.metadata.creationTimestamp,.metadata.resourceVersion,.metadata.uid,.metadata.ownerReferences,.metadata.managedFields) | .metadata.namespace="ai-control-plane"' \
   | kubectl --kubeconfig "${KUBECONFIG_PATH}" apply -f - >/dev/null
 
-github_app_id="$(kubectl --kubeconfig "${KUBECONFIG_PATH}" -n arc-runners \
-  get secret arc-github-app -o jsonpath='{.data.github_app_id}' | base64 -d)"
-github_app_installation_id="$(kubectl --kubeconfig "${KUBECONFIG_PATH}" -n arc-runners \
-  get secret arc-github-app -o jsonpath='{.data.github_app_installation_id}' | base64 -d)"
-github_app_private_key="$(kubectl --kubeconfig "${KUBECONFIG_PATH}" -n arc-runners \
-  get secret arc-github-app -o jsonpath='{.data.github_app_private_key}' | base64 -d)"
+deploy_key="$(<"${DEPLOY_KEY_PATH}")"
 
 kubectl --kubeconfig "${KUBECONFIG_PATH}" -n argocd \
   create secret generic ai-business-control-plane-repository \
   --from-literal=type=git \
-  --from-literal=url=https://github.com/craftzdev/ai-business-control-plane.git \
+  --from-literal=url=git@github.com:craftzdev/ai-business-control-plane.git \
   --from-literal=project=ai-business \
-  --from-literal=githubAppID="${github_app_id}" \
-  --from-literal=githubAppInstallationID="${github_app_installation_id}" \
-  --from-literal=githubAppPrivateKey="${github_app_private_key}" \
+  --from-literal=sshPrivateKey="${deploy_key}" \
   --dry-run=client -o yaml \
   | kubectl --kubeconfig "${KUBECONFIG_PATH}" apply -f - >/dev/null
 kubectl --kubeconfig "${KUBECONFIG_PATH}" -n argocd label secret \
@@ -71,5 +70,5 @@ kubectl --kubeconfig "${KUBECONFIG_PATH}" -n argocd label secret \
   argocd.argoproj.io/secret-type=repository --overwrite >/dev/null
 
 unset admin_token session_secret gateway_token cf_client_id cf_client_secret
-unset github_app_id github_app_installation_id github_app_private_key
+unset deploy_key
 echo "Control Plane runtime and repository credentials are reconciled."
