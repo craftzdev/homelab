@@ -29,12 +29,14 @@ HARBOR_SECRET_KEYCHAIN_SERVICE="${HARBOR_SECRET_KEYCHAIN_SERVICE:-dev.craftz.hom
 HARBOR_SECRET_KEYCHAIN_ACCOUNT="${HARBOR_SECRET_KEYCHAIN_ACCOUNT:-harbor}"
 HARBOR_DATABASE_KEYCHAIN_SERVICE="${HARBOR_DATABASE_KEYCHAIN_SERVICE:-dev.craftz.homelab.harbor-database}"
 HARBOR_DATABASE_KEYCHAIN_ACCOUNT="${HARBOR_DATABASE_KEYCHAIN_ACCOUNT:-postgres}"
+HARBOR_PULL_KEYCHAIN_SERVICE="${HARBOR_PULL_KEYCHAIN_SERVICE:-dev.craftz.homelab.harbor-k8s-pull}"
+HARBOR_PULL_KEYCHAIN_ACCOUNT="${HARBOR_PULL_KEYCHAIN_ACCOUNT:-robot\$ai-business+k8s-pull}"
 
 info() { printf '[INFO] %s\n' "$*"; }
 ok() { printf '[OK]   %s\n' "$*"; }
 die() { printf '[ERROR] %s\n' "$*" >&2; exit 1; }
 
-for tool in kubectl security openssl; do
+for tool in jq kubectl security openssl; do
   command -v "${tool}" >/dev/null || die "required command not found: ${tool}"
 done
 [[ -s "${KUBECONFIG_PATH}" ]] || die "kubeconfig not found: ${KUBECONFIG_PATH}"
@@ -56,7 +58,8 @@ fi
 [[ -n "${grafana_password}" ]] || die "Grafana password is empty"
 
 for namespace in monitoring logging logging-audit cert-manager security \
-  image-registry harbor tailscale arc-systems arc-runners argocd portal ai-agent; do
+  image-registry harbor tailscale arc-systems arc-runners argocd portal \
+  ai-agent ai-worker; do
   kubectl create namespace "${namespace}" --dry-run=client -o yaml \
     | kubectl apply -f - >/dev/null
 done
@@ -190,6 +193,32 @@ EOF
 fi
 
 unset harbor_admin_password harbor_secret_key harbor_database_password
+
+# Workload Pods get a read-only Harbor robot account. The CI publisher uses a
+# different push-capable credential that is never copied into Kubernetes.
+harbor_pull_password="$(security find-generic-password \
+  -s "${HARBOR_PULL_KEYCHAIN_SERVICE}" -a "${HARBOR_PULL_KEYCHAIN_ACCOUNT}" -w 2>/dev/null)" \
+  || die "Harbor pull credential is missing from macOS Keychain"
+harbor_pull_auth="$(printf '%s:%s' "${HARBOR_PULL_KEYCHAIN_ACCOUNT}" \
+  "${harbor_pull_password}" | openssl base64 -A)"
+harbor_pull_config="$(printf '%s' "${harbor_pull_auth}" | jq -Rcn \
+  '{auths: {"harbor.tailb6c7d.ts.net": {auth: input}}}')"
+harbor_pull_config_b64="$(printf '%s' "${harbor_pull_config}" | openssl base64 -A)"
+
+for namespace in ai-agent ai-worker; do
+  kubectl apply -f - >/dev/null <<EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: harbor-pull
+  namespace: ${namespace}
+type: kubernetes.io/dockerconfigjson
+data:
+  .dockerconfigjson: ${harbor_pull_config_b64}
+EOF
+done
+ok "Harbor read-only pull credential reconciled"
+unset harbor_pull_password harbor_pull_auth harbor_pull_config harbor_pull_config_b64
 
 # Gateway-facing and Worker-facing tokens are deliberately independent. They
 # are generated once and retained in Keychain; changing one trust boundary does

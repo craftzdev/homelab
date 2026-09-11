@@ -460,6 +460,76 @@ spec:
       - ServerSideApply=true
 
 ---
+# Repository-scoped ephemeral image builders. They are separate from the
+# daemonless homelab validation runner and exist only while a CI job is active.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: arc-agent-builder
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "8"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: infrastructure
+  sources:
+    - repoURL: ghcr.io/actions/actions-runner-controller-charts
+      chart: gha-runner-scale-set
+      targetRevision: 0.14.2
+      helm:
+        releaseName: ai-agent-builder
+        valueFiles:
+          - $values/kubernetes/infra/actions-runner-controller/agent-builder-values.yaml
+    - repoURL: https://github.com/craftzdev/homelab.git
+      targetRevision: main
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: arc-runners
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: arc-worker-builder
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "8"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: infrastructure
+  sources:
+    - repoURL: ghcr.io/actions/actions-runner-controller-charts
+      chart: gha-runner-scale-set
+      targetRevision: 0.14.2
+      helm:
+        releaseName: ai-worker-builder
+        valueFiles:
+          - $values/kubernetes/infra/actions-runner-controller/worker-builder-values.yaml
+    - repoURL: https://github.com/craftzdev/homelab.git
+      targetRevision: main
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: arc-runners
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+
+---
 # ---------------------------------------------------------------------------
 # cert-manager
 #

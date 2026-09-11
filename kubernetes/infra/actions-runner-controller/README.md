@@ -1,20 +1,25 @@
 # Kubernetes GitHub Actions runner
 
-Actions Runner Controller (ARC) creates an ephemeral runner Pod for trusted
-push and manual workflows in `craftzdev/homelab`. Pull requests continue to
-use `ubuntu-latest`, so code from a fork never executes inside the home
-network.
+Actions Runner Controller (ARC) creates ephemeral runner Pods. The
+`homelab-runner` scale set validates `craftzdev/homelab` without a container
+daemon. Two repository-scoped scale sets build application images:
 
-The scale set is named `homelab-runner`, has zero idle runners, and allows at
-most one concurrent job. Runner Pods receive no Kubernetes ServiceAccount
-token, run without privilege escalation, and are restricted to public HTTPS
-egress. RFC1918, Tailnet, and link-local destinations are denied.
+- `ai-agent-builder` for `craftzdev/ai-business-agent`
+- `ai-worker-builder` for `craftzdev/ai-business-worker`
+
+The builder Pods use ARC's ephemeral Docker-in-Docker mode and disappear after
+each job. Cilium permits them to reach public HTTPS plus
+`harbor.tailb6c7d.ts.net:443`; access to the Kubernetes API and home networks
+remains blocked.
+
+Every scale set has zero idle runners and allows at most one concurrent job.
+Runner Pods receive no Kubernetes ServiceAccount token.
 
 ARC authenticates with the pre-created `arc-github-app` Secret in the
 `arc-runners` namespace. It must contain `github_app_id`,
 `github_app_installation_id`, and `github_app_private_key`. Never commit these
 values. The GitHub App needs repository `Administration: read and write` and
-`Metadata: read-only`; install it only on `craftzdev/homelab`.
+`Metadata: read-only`. Every scale set is bound to one exact repository URL.
 
 The current installation uses GitHub App `craftz-homelab-arc-runner` (App ID
 `4890688`, installation ID `160444144`). Its private key is also stored as

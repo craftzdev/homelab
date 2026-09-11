@@ -13,7 +13,9 @@ kind: Namespace
 metadata:
   name: arc-runners
   labels:
-    pod-security.kubernetes.io/enforce: baseline
+    # Repository-scoped image builders use ARC's ephemeral Docker-in-Docker
+    # mode. Cilium still limits their network access.
+    pod-security.kubernetes.io/enforce: privileged
     pod-security.kubernetes.io/audit: restricted
     pod-security.kubernetes.io/warn: restricted
 
@@ -79,8 +81,8 @@ spec:
   policyTypes: [Ingress, Egress]
 
 ---
-# Job Pods are untrusted execution environments. They can resolve DNS and use
-# public HTTPS, but cannot reach the Kubernetes API, Tailnet, or home networks.
+# Job Pods can resolve DNS and use public HTTPS. They cannot reach the
+# Kubernetes API or home networks. Harbor HTTPS is the sole Tailnet exception.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -111,4 +113,9 @@ spec:
         - ports:
             - port: "443"
               protocol: TCP
-
+    - toFQDNs:
+        - matchName: harbor.tailb6c7d.ts.net
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
