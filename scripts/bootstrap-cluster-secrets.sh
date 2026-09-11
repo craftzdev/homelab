@@ -141,6 +141,54 @@ stringData:
   POSTGRES_PASSWORD: "${harbor_database_password}"
 EOF
 
+# Argo CD renders Helm without live-cluster `lookup`, so the upstream Harbor
+# chart cannot copy the existing database password into its generated
+# harbor-core Secret. Patch only that map key after the chart has created the
+# rest of the Secret. Server-side apply preserves every chart-owned key.
+if kubectl -n harbor get secret harbor-core >/dev/null 2>&1; then
+  current_harbor_client_password="$(kubectl -n harbor get secret harbor-core \
+    -o jsonpath='{.data.POSTGRESQL_PASSWORD}' | openssl base64 -d -A)"
+  if [[ "${current_harbor_client_password}" != "${harbor_database_password}" ]]; then
+    kubectl apply --server-side --field-manager=harbor-bootstrap -f - >/dev/null <<EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: harbor-core
+  namespace: harbor
+type: Opaque
+stringData:
+  POSTGRESQL_PASSWORD: "${harbor_database_password}"
+EOF
+    ok "Harbor database client credential reconciled"
+  else
+    info "Harbor database client credential is already current"
+  fi
+  unset current_harbor_client_password
+else
+  info "Harbor chart Secrets are not present yet; reconcile after its first render"
+fi
+
+if kubectl -n harbor get secret harbor-exporter >/dev/null 2>&1; then
+  current_harbor_exporter_password="$(kubectl -n harbor get secret harbor-exporter \
+    -o jsonpath='{.data.HARBOR_DATABASE_PASSWORD}' | openssl base64 -d -A)"
+  if [[ "${current_harbor_exporter_password}" != "${harbor_database_password}" ]]; then
+    kubectl apply --server-side --field-manager=harbor-bootstrap -f - >/dev/null <<EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: harbor-exporter
+  namespace: harbor
+type: Opaque
+stringData:
+  HARBOR_DATABASE_PASSWORD: "${harbor_database_password}"
+EOF
+    ok "Harbor exporter database credential reconciled"
+  else
+    info "Harbor exporter database credential is already current"
+  fi
+  unset current_harbor_exporter_password
+fi
+
 unset harbor_admin_password harbor_secret_key harbor_database_password
 
 # Gateway-facing and Worker-facing tokens are deliberately independent. They

@@ -168,6 +168,21 @@ for app in image-registry tailscale-operator security-config monitoring; do
   wait_for_application "${app}"
 done
 
+# Harbor's upstream chart uses Helm `lookup` to retain its internal database
+# credential. Argo CD deliberately renders without cluster lookup, so bootstrap
+# the chart first, then inject the Keychain-backed client value into the one
+# generated Secret key before enforcing application health.
+resume_application harbor
+for _ in $(seq 1 60); do
+  kubectl --request-timeout=15s -n harbor get secret harbor-core \
+    >/dev/null 2>&1 && break
+  sleep 5
+done
+kubectl --request-timeout=15s -n harbor get secret harbor-core >/dev/null 2>&1 \
+  || die "Harbor did not render its runtime Secrets"
+"${SCRIPT_DIR}/bootstrap-cluster-secrets.sh"
+wait_for_application harbor
+
 for app in cert-manager trivy-operator network-policies; do
   resume_application "${app}"
   wait_for_application "${app}"
