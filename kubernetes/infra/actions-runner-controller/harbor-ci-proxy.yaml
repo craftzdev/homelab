@@ -1,35 +1,6 @@
-apiVersion: cert-manager.io/v1
-kind: Issuer
-metadata:
-  name: harbor-ci-selfsigned
-  namespace: arc-runners
-spec:
-  selfSigned: {}
-
----
-apiVersion: cert-manager.io/v1
-kind: Certificate
-metadata:
-  name: harbor-ci-proxy
-  namespace: arc-runners
-spec:
-  secretName: harbor-ci-proxy-tls
-  commonName: 172.16.40.201
-  ipAddresses:
-    - 172.16.40.201
-  isCA: true
-  usages:
-    - server auth
-    - digital signature
-    - key encipherment
-    - cert sign
-  issuerRef:
-    name: harbor-ci-selfsigned
-    kind: Issuer
-  duration: 8760h
-  renewBefore: 720h
-
----
+# Secret/harbor-ci-proxy-tls is restored by bootstrap-cluster-secrets.sh from
+# macOS Keychain. Talos trusts its public certificate as a private registry CA;
+# it therefore must not be rotated independently by cert-manager.
 apiVersion: v1
 kind: ConfigMap
 metadata:

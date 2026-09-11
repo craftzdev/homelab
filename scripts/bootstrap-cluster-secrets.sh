@@ -31,6 +31,9 @@ HARBOR_DATABASE_KEYCHAIN_SERVICE="${HARBOR_DATABASE_KEYCHAIN_SERVICE:-dev.craftz
 HARBOR_DATABASE_KEYCHAIN_ACCOUNT="${HARBOR_DATABASE_KEYCHAIN_ACCOUNT:-postgres}"
 HARBOR_PULL_KEYCHAIN_SERVICE="${HARBOR_PULL_KEYCHAIN_SERVICE:-dev.craftz.homelab.harbor-k8s-pull}"
 HARBOR_PULL_KEYCHAIN_ACCOUNT="${HARBOR_PULL_KEYCHAIN_ACCOUNT:-robot\$ai-business+k8s-pull}"
+HARBOR_CI_CERT_KEYCHAIN_SERVICE="${HARBOR_CI_CERT_KEYCHAIN_SERVICE:-dev.craftz.homelab.harbor-ci-proxy-tls-cert}"
+HARBOR_CI_KEY_KEYCHAIN_SERVICE="${HARBOR_CI_KEY_KEYCHAIN_SERVICE:-dev.craftz.homelab.harbor-ci-proxy-tls-key}"
+HARBOR_CI_TLS_KEYCHAIN_ACCOUNT="${HARBOR_CI_TLS_KEYCHAIN_ACCOUNT:-172.16.40.201}"
 
 info() { printf '[INFO] %s\n' "$*"; }
 ok() { printf '[OK]   %s\n' "$*"; }
@@ -79,6 +82,47 @@ stringData:
 EOF
 
 unset grafana_password
+
+# Talos and the self-hosted runners must trust the same stable Harbor LAN
+# certificate. cert-manager must not rotate this private trust root behind the
+# nodes' backs, so its certificate and key are recovered from macOS Keychain.
+harbor_ci_cert_b64="$(security find-generic-password \
+  -s "${HARBOR_CI_CERT_KEYCHAIN_SERVICE}" \
+  -a "${HARBOR_CI_TLS_KEYCHAIN_ACCOUNT}" -w 2>/dev/null)" \
+  || die "Harbor LAN TLS certificate is missing from macOS Keychain"
+harbor_ci_key_b64="$(security find-generic-password \
+  -s "${HARBOR_CI_KEY_KEYCHAIN_SERVICE}" \
+  -a "${HARBOR_CI_TLS_KEYCHAIN_ACCOUNT}" -w 2>/dev/null)" \
+  || die "Harbor LAN TLS private key is missing from macOS Keychain"
+harbor_ci_cert="$(printf '%s' "${harbor_ci_cert_b64}" | openssl base64 -d -A)"
+harbor_ci_key="$(printf '%s' "${harbor_ci_key_b64}" | openssl base64 -d -A)"
+
+printf '%s\n' "${harbor_ci_cert}" | openssl x509 -noout -checkend 2592000 >/dev/null \
+  || die "Harbor LAN TLS certificate expires within 30 days"
+harbor_ci_cert_pub="$(printf '%s\n' "${harbor_ci_cert}" \
+  | openssl x509 -pubkey -noout \
+  | openssl pkey -pubin -outform DER 2>/dev/null \
+  | openssl dgst -sha256)"
+harbor_ci_key_pub="$(printf '%s\n' "${harbor_ci_key}" \
+  | openssl pkey -pubout -outform DER 2>/dev/null \
+  | openssl dgst -sha256)"
+[[ "${harbor_ci_cert_pub}" == "${harbor_ci_key_pub}" ]] \
+  || die "Harbor LAN TLS certificate and private key do not match"
+
+kubectl apply -f - >/dev/null <<EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: harbor-ci-proxy-tls
+  namespace: arc-runners
+type: kubernetes.io/tls
+data:
+  tls.crt: ${harbor_ci_cert_b64}
+  tls.key: ${harbor_ci_key_b64}
+EOF
+ok "Stable Harbor LAN TLS certificate reconciled"
+unset harbor_ci_cert harbor_ci_key harbor_ci_cert_pub harbor_ci_key_pub
+unset harbor_ci_cert_b64 harbor_ci_key_b64
 
 # Harbor credentials remain outside Git. The database Secret uses the name
 # expected by the upstream chart; Argo CD ignores Secret data and only manages
@@ -201,8 +245,11 @@ harbor_pull_password="$(security find-generic-password \
   || die "Harbor pull credential is missing from macOS Keychain"
 harbor_pull_auth="$(printf '%s:%s' "${HARBOR_PULL_KEYCHAIN_ACCOUNT}" \
   "${harbor_pull_password}" | openssl base64 -A)"
-harbor_pull_config="$(printf '%s' "${harbor_pull_auth}" | jq -Rcn \
-  '{auths: {"harbor.tailb6c7d.ts.net": {auth: input}}}')"
+harbor_pull_config="$(jq -cn --arg auth "${harbor_pull_auth}" \
+  '{auths: {
+    "harbor.tailb6c7d.ts.net": {auth: $auth},
+    "172.16.40.201:5000": {auth: $auth}
+  }}')"
 harbor_pull_config_b64="$(printf '%s' "${harbor_pull_config}" | openssl base64 -A)"
 
 for namespace in ai-agent ai-worker; do

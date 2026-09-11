@@ -1,6 +1,6 @@
 # Internal registry trust is machine configuration, not Cloud-Init state.
-# The certificate is public material; the matching private key stays only in
-# the image-registry/registry-tls Kubernetes Secret.
+# The certificate is public material; its matching private key is restored
+# from macOS Keychain into a Kubernetes TLS Secret during bootstrap.
 apiVersion: v1alpha1
 kind: RegistryTLSConfig
 name: ${registry_endpoint}
