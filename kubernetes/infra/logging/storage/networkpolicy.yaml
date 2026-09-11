@@ -51,6 +51,11 @@ spec:
             io.kubernetes.pod.namespace: logging
             app.kubernetes.io/name: minio-bucket-bootstrap
         - matchLabels:
+            io.kubernetes.pod.namespace: logging
+            app.kubernetes.io/name: minio-umami-bootstrap
+        - matchLabels:
+            io.kubernetes.pod.namespace: analytics
+        - matchLabels:
             io.kubernetes.pod.namespace: monitoring
       toPorts:
         - ports:
@@ -67,6 +72,26 @@ spec:
   endpointSelector:
     matchLabels:
       app.kubernetes.io/name: minio-bucket-bootstrap
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: logging
+            app.kubernetes.io/name: minio
+      toPorts:
+        - ports:
+            - port: "9000"
+              protocol: TCP
+
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: minio-umami-bootstrap-egress
+  namespace: logging
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: minio-umami-bootstrap
   egress:
     - toEndpoints:
         - matchLabels:

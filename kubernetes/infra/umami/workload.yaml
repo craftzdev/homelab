@@ -1,0 +1,131 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: umami
+  namespace: analytics
+  labels:
+    app.kubernetes.io/name: umami
+    app.kubernetes.io/part-of: analytics
+spec:
+  selector:
+    app.kubernetes.io/name: umami
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: umami
+  namespace: analytics
+  labels:
+    app.kubernetes.io/name: umami
+    app.kubernetes.io/part-of: analytics
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: umami
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: umami
+        app.kubernetes.io/part-of: analytics
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      nodeSelector:
+        homelab.craftz.dev/workload-plane: "true"
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: wait-for-postgres
+          image: ghcr.io/cloudnative-pg/postgresql:17.11-standard-trixie@sha256:d12317e4365edf4c6237ae6ff5e18d7568a580a5fa8285fae6c385ac5e51d0bf
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-ec"]
+          args:
+            - until pg_isready -h umami-postgres-rw -U umami -d umami; do sleep 3; done
+          env:
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: umami-db-owner
+                  key: password
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+      containers:
+        - name: umami
+          image: ghcr.io/umami-software/umami:postgresql-latest@sha256:fa32d116cf20cad52cbc3fad9a63b46e7fa02299d8f967168eb453d49c476b4a
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - secretRef:
+                name: umami-runtime
+          env:
+            - name: DISABLE_TELEMETRY
+              value: "1"
+          ports:
+            - name: http
+              containerPort: 3000
+              protocol: TCP
+          startupProbe:
+            httpGet:
+              path: /api/heartbeat
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              path: /api/heartbeat
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /api/heartbeat
+              port: http
+            periodSeconds: 30
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi

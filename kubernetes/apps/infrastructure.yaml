@@ -11,6 +11,8 @@
 #     0  longhorn        : 分散ブロックストレージ（PV の供給元）
 #     1  tailscale       : Tailnet ingress / egress
 #     2  cert-manager    : 証明書管理（他が依存する）
+#     4  cloudnative-pg : PostgreSQL operator
+#     5  barman         : CloudNativePG backup plugin
 #     5  monitoring      : 監視
 #     5  logging-storage : MinIO（Loki のオブジェクトストレージ）
 #     6  logging         : Loki / Alloy
@@ -19,6 +21,7 @@
 #     7  arc-controller  : GitHub Actions Runner Controller
 #     7  homepage        : Tailnet-only management portal
 #     8  arc-runners     : ephemeral runner scale set
+#     6  umami           : Tailnet-only analytics with HA PostgreSQL
 #
 # Gateway/cloudflared は Business Gateway VM 1200 で稼働するためクラスタには置かない。
 # Velero は外部オブジェクトストレージ設定後に別変更として有効化する。

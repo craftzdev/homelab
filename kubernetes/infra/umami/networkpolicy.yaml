@@ -1,0 +1,73 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: analytics
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress", "Egress"]
+
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: analytics-rules
+  namespace: analytics
+spec:
+  endpointSelector: {}
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: analytics
+        - matchLabels:
+            io.kubernetes.pod.namespace: cnpg-system
+        - matchLabels:
+            io.kubernetes.pod.namespace: monitoring
+    - fromEntities:
+        - host
+        - remote-node
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+    - toEntities:
+        - kube-apiserver
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: analytics
+        - matchLabels:
+            io.kubernetes.pod.namespace: cnpg-system
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: logging
+            app.kubernetes.io/name: minio
+      toPorts:
+        - ports:
+            - port: "9000"
+              protocol: TCP
+
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: umami-tailnet-ingress
+  namespace: analytics
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: umami
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: tailscale
+      toPorts:
+        - ports:
+            - port: "3000"
+              protocol: TCP

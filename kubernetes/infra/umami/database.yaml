@@ -1,0 +1,106 @@
+apiVersion: barmancloud.cnpg.io/v1
+kind: ObjectStore
+metadata:
+  name: umami-minio
+  namespace: analytics
+  annotations:
+    argocd.argoproj.io/sync-wave: "-5"
+spec:
+  retentionPolicy: "30d"
+  configuration:
+    destinationPath: s3://umami-postgres/
+    endpointURL: http://minio.logging.svc.cluster.local:9000
+    s3Credentials:
+      accessKeyId:
+        name: umami-s3-credentials
+        key: ACCESS_KEY_ID
+      secretAccessKey:
+        name: umami-s3-credentials
+        key: ACCESS_SECRET_KEY
+    wal:
+      compression: gzip
+    data:
+      compression: gzip
+  instanceSidecarConfiguration:
+    retentionPolicyIntervalSeconds: 1800
+    resources:
+      requests:
+        cpu: 25m
+        memory: 64Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
+
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: umami-postgres
+  namespace: analytics
+  annotations:
+    argocd.argoproj.io/sync-wave: "-4"
+  labels:
+    app.kubernetes.io/name: umami-postgres
+    app.kubernetes.io/part-of: analytics
+spec:
+  instances: 3
+  imageName: ghcr.io/cloudnative-pg/postgresql:17.11-standard-trixie@sha256:d12317e4365edf4c6237ae6ff5e18d7568a580a5fa8285fae6c385ac5e51d0bf
+  imagePullPolicy: IfNotPresent
+  primaryUpdateStrategy: unsupervised
+  enableSuperuserAccess: false
+  bootstrap:
+    initdb:
+      database: umami
+      owner: umami
+      secret:
+        name: umami-db-owner
+      postInitSQL:
+        - ALTER DATABASE umami SET timezone TO 'UTC'
+  affinity:
+    enablePodAntiAffinity: true
+    podAntiAffinityType: required
+    topologyKey: kubernetes.io/hostname
+    nodeSelector:
+      homelab.craftz.dev/workload-plane: "true"
+  storage:
+    storageClass: longhorn-cnpg-retain
+    size: 10Gi
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+  postgresql:
+    parameters:
+      timezone: UTC
+      log_timezone: UTC
+      max_connections: "100"
+      shared_buffers: 128MB
+  monitoring:
+    enablePodMonitor: true
+  plugins:
+    - name: barman-cloud.cloudnative-pg.io
+      isWALArchiver: true
+      parameters:
+        barmanObjectName: umami-minio
+
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: ScheduledBackup
+metadata:
+  name: umami-postgres-daily
+  namespace: analytics
+  annotations:
+    argocd.argoproj.io/sync-wave: "-3"
+spec:
+  schedule: "0 30 3 * * *"
+  immediate: true
+  backupOwnerReference: self
+  target: prefer-standby
+  cluster:
+    name: umami-postgres
+  method: plugin
+  pluginConfiguration:
+    name: barman-cloud.cloudnative-pg.io

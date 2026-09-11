@@ -31,6 +31,10 @@
         icon: harbor.png
         href: https://harbor.tailb6c7d.ts.net/
         description: Private OCI images and vulnerability scans
+    - Umami:
+        icon: umami.png
+        href: https://umami.tailb6c7d.ts.net/
+        description: Privacy-first product and traffic analytics
     - AI Worker:
         icon: kubernetes.png
         href: https://ai-worker-cluster.tailb6c7d.ts.net/health

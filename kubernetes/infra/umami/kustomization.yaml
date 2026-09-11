@@ -3,9 +3,7 @@ kind: Kustomization
 
 resources:
   - namespace.yaml
-  - storageclass.yaml
-  - minio.yaml
-  - minio-bootstrap.yaml
-  - minio-umami-bootstrap.yaml
-  - monitoring.yaml
+  - database.yaml
+  - workload.yaml
+  - ingress.yaml
   - networkpolicy.yaml

@@ -1,0 +1,73 @@
+# CloudNativePG owns PostgreSQL lifecycle; the Barman plugin owns continuous
+# WAL archiving and physical backups to the in-cluster MinIO service.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cloudnative-pg
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: infrastructure
+  sources:
+    - repoURL: https://cloudnative-pg.github.io/charts
+      chart: cloudnative-pg
+      targetRevision: 0.29.0
+      helm:
+        releaseName: cnpg
+        valueFiles:
+          - $values/kubernetes/infra/cloudnative-pg/operator-values.yaml
+    - repoURL: https://github.com/craftzdev/homelab.git
+      targetRevision: main
+      path: kubernetes/infra/cloudnative-pg
+      directory:
+        include: "{namespace.yaml,networkpolicy.yaml}"
+    - repoURL: https://github.com/craftzdev/homelab.git
+      targetRevision: main
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cnpg-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false
+      - ServerSideApply=true
+
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cloudnative-pg-barman
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "5"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: infrastructure
+  sources:
+    - repoURL: https://cloudnative-pg.github.io/charts
+      chart: plugin-barman-cloud
+      targetRevision: 0.8.0
+      helm:
+        releaseName: barman
+        valueFiles:
+          - $values/kubernetes/infra/cloudnative-pg/barman-values.yaml
+    - repoURL: https://github.com/craftzdev/homelab.git
+      targetRevision: main
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cnpg-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false
+      - ServerSideApply=true

@@ -89,6 +89,26 @@ parameters:
   dataLocality: best-effort
 
 ---
+# CloudNativePG already maintains synchronous database copies on separate
+# worker nodes. Keep one retained Longhorn replica per PostgreSQL instance to
+# avoid multiplying three database copies into nine block-level copies.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: longhorn-cnpg-retain
+  labels:
+    app.kubernetes.io/part-of: storage
+provisioner: driver.longhorn.io
+allowVolumeExpansion: true
+reclaimPolicy: Retain
+volumeBindingMode: Immediate
+parameters:
+  numberOfReplicas: "1"
+  staleReplicaTimeout: "30"
+  fsType: ext4
+  dataLocality: best-effort
+
+---
 # ===========================================================================
 # VolumeSnapshotClass
 #

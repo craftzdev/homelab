@@ -1,0 +1,23 @@
+replicaCount: 1
+
+config:
+  clusterWide: true
+
+nodeSelector:
+  homelab.craftz.dev/workload-plane: "true"
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+monitoring:
+  podMonitorEnabled: true
+  grafanaDashboard:
+    create: true
+    namespace: monitoring
+    labels:
+      grafana_dashboard: "1"
