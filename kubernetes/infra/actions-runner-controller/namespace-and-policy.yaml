@@ -139,3 +139,12 @@ spec:
         - ports:
             - port: "5000"
               protocol: TCP
+    # kubelet/containerd pulls originate from the Talos node rather than a
+    # workload identity. Limit Harbor's LAN registry listener to cluster nodes.
+    - fromEntities:
+        - host
+        - remote-node
+      toPorts:
+        - ports:
+            - port: "5000"
+              protocol: TCP
