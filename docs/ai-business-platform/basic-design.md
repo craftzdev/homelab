@@ -3,11 +3,11 @@
 | 項目 | 内容 |
 |---|---|
 | 文書名 | AI自律事業運営基盤 基本設計書 |
-| バージョン | 0.6 |
+| バージョン | 0.7 |
 | 作成日 | 2026-09-06 |
 | 入力文書 | AI自律事業運営基盤 要件定義書 v1.0 |
 | 対象フェーズ | Phase 1 MVP |
-| ステータス | Gateway / Cloudflare Access / Talos Kubernetes Worker deployed and E2E verified |
+| ステータス | Gateway / Cloudflare Access / Talos Kubernetes Worker / Control Plane deployed and E2E verified |
 
 ## 1. 目的
 
@@ -57,10 +57,15 @@
 |---|---|
 | `craftzdev/homelab` | Proxmox、Gateway VM、Cloudflare Tunnel、Tailscale Grants、Gatewayの配置と運用 |
 | `craftzdev/ai-business-worker` | Kubernetes Worker API、executor、コンテナ、Workerのテストとリリース |
+| `craftzdev/ai-business-agent` | Product、Developer、QA、Growth等のAgent定義、ハーネス、skills、実行コンテキスト |
+| `craftzdev/ai-business-control-plane` | 人間向けの事業ポートフォリオ、案件状態、監査タイムライン、承認操作の読み取りモデル |
 
 Workerは独立した実行権限、依存関係、リリース周期を持つため、Gatewayおよび
 インフラとは別リポジトリで管理する。Phase 1では共有ライブラリを作らず、
 Workerリポジトリから生成するOpenAPIをGateway→Worker API契約の正とする。
+Control PlaneはGatewayの状態を同期して人間向けに表示するが、Action Policy、
+承認、Job、Auditの正は引き続きGatewayとする。Control PlaneのSQLiteは表示用の
+読み取りモデルであり、Gateway障害時の代替実行基盤にはしない。
 
 ## 4. 実機確認結果と確定値
 
@@ -149,11 +154,13 @@ flowchart TB
 
     subgraph K8S[Talos Kubernetes]
       SERVE[Tailscale Operator Ingress\nHTTPS :443]
+      CP[AI Business Control Plane\nPortfolio / Approval UI]
       WD[Worker API\nClusterIP :8080]
       BW[Builder Executor]
       PW[Browser Executor]
       TW[Test Executor]
       DW[Data Executor]
+      SERVE --> CP
       SERVE --> WD
       WD --> BW
       WD --> PW
@@ -167,6 +174,8 @@ flowchart TB
     PBS[PBS]
 
     Human --> Bots
+    Human -->|Tailnet HTTPS| CP
+    CP -->|Cloudflare Access + Bearer token| CF
     Bots -->|HTTPS / M2M authentication| CF
     CF --> CFd
     GW -->|POST typed Job / Bearer token| TS
