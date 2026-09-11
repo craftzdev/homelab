@@ -96,7 +96,8 @@ metadata:
   annotations:
     argocd.argoproj.io/sync-wave: "-3"
 spec:
-  schedule: "0 30 3 * * *"
+  # CloudNativePG evaluates this six-field cron in UTC: 18:30 UTC = 03:30 JST.
+  schedule: "0 30 18 * * *"
   # Avoid racing the initial primary bootstrap. Operators can trigger the
   # first backup after all three instances are healthy.
   immediate: false
