@@ -83,6 +83,9 @@ spec:
       isWALArchiver: true
       parameters:
         barmanObjectName: umami-minio
+        # Keep this stable for the lifetime of this PostgreSQL cluster. Bump
+        # the suffix only when intentionally starting a new backup lineage.
+        serverName: umami-postgres-v1
 
 ---
 apiVersion: postgresql.cnpg.io/v1
