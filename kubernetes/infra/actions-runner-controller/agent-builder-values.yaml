@@ -66,6 +66,10 @@ template:
             mountPath: /home/runner/_work
           - name: dind-sock
             mountPath: /var/run
+          - name: harbor-ci-cert
+            mountPath: /etc/harbor-ci/ca.crt
+            subPath: tls.crt
+            readOnly: true
         resources:
           requests:
             cpu: 500m
