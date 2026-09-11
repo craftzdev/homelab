@@ -1,0 +1,29 @@
+# The Agent is the policy and capability boundary between the public Gateway
+# and isolated executors. Profiles and schemas are versioned in its own private
+# repository and reconciled continuously by Argo CD.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: ai-business-agent
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "9"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: ai-business
+  source:
+    repoURL: git@github.com:craftzdev/ai-business-agent.git
+    targetRevision: main
+    path: deploy/kubernetes
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: ai-agent
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false
+      - PruneLast=true
+      - ServerSideApply=true

@@ -14,6 +14,13 @@ LOKI_S3_KEYCHAIN_ACCOUNT="${LOKI_S3_KEYCHAIN_ACCOUNT:-loki}"
 WORKER_REPO_KEYCHAIN_SERVICE="${WORKER_REPO_KEYCHAIN_SERVICE:-dev.craftz.homelab.argocd-ai-worker-deploy-key}"
 WORKER_REPO_KEYCHAIN_ACCOUNT="${WORKER_REPO_KEYCHAIN_ACCOUNT:-craftzdev/ai-business-worker}"
 WORKER_REPO_URL="${WORKER_REPO_URL:-git@github.com:craftzdev/ai-business-worker.git}"
+AGENT_REPO_KEYCHAIN_SERVICE="${AGENT_REPO_KEYCHAIN_SERVICE:-dev.craftz.homelab.argocd-ai-agent-deploy-key}"
+AGENT_REPO_KEYCHAIN_ACCOUNT="${AGENT_REPO_KEYCHAIN_ACCOUNT:-craftzdev/ai-business-agent}"
+AGENT_REPO_URL="${AGENT_REPO_URL:-git@github.com:craftzdev/ai-business-agent.git}"
+AGENT_API_KEYCHAIN_SERVICE="${AGENT_API_KEYCHAIN_SERVICE:-dev.craftz.homelab.ai-agent-api-token}"
+AGENT_API_KEYCHAIN_ACCOUNT="${AGENT_API_KEYCHAIN_ACCOUNT:-ai-business-gateway}"
+AGENT_WORKER_KEYCHAIN_SERVICE="${AGENT_WORKER_KEYCHAIN_SERVICE:-dev.craftz.homelab.ai-agent-worker-token}"
+AGENT_WORKER_KEYCHAIN_ACCOUNT="${AGENT_WORKER_KEYCHAIN_ACCOUNT:-ai-business-worker}"
 HOMEPAGE_PVE_KEYCHAIN_SERVICE="${HOMEPAGE_PVE_KEYCHAIN_SERVICE:-dev.craftz.homelab.homepage-proxmox-token}"
 HOMEPAGE_PVE_KEYCHAIN_ACCOUNT="${HOMEPAGE_PVE_KEYCHAIN_ACCOUNT:-homepage@pve!homepage}"
 
@@ -43,7 +50,7 @@ fi
 [[ -n "${grafana_password}" ]] || die "Grafana password is empty"
 
 for namespace in monitoring logging logging-audit cert-manager security \
-  image-registry tailscale arc-systems arc-runners argocd portal; do
+  image-registry tailscale arc-systems arc-runners argocd portal ai-agent; do
   kubectl create namespace "${namespace}" --dry-run=client -o yaml \
     | kubectl apply -f - >/dev/null
 done
@@ -63,6 +70,48 @@ stringData:
 EOF
 
 unset grafana_password
+
+# Gateway-facing and Worker-facing tokens are deliberately independent. They
+# are generated once and retained in Keychain; changing one trust boundary does
+# not force credentials from the other boundary to be exposed or reused.
+if agent_api_token="$(security find-generic-password \
+    -s "${AGENT_API_KEYCHAIN_SERVICE}" -a "${AGENT_API_KEYCHAIN_ACCOUNT}" -w 2>/dev/null)"; then
+  info "Using the existing Agent API token from macOS Keychain"
+else
+  info "Creating the Agent API token in macOS Keychain"
+  agent_api_token="$(openssl rand -hex 32)"
+  security add-generic-password -U \
+    -s "${AGENT_API_KEYCHAIN_SERVICE}" \
+    -a "${AGENT_API_KEYCHAIN_ACCOUNT}" \
+    -w "${agent_api_token}" >/dev/null
+fi
+
+if agent_worker_token="$(security find-generic-password \
+    -s "${AGENT_WORKER_KEYCHAIN_SERVICE}" -a "${AGENT_WORKER_KEYCHAIN_ACCOUNT}" -w 2>/dev/null)"; then
+  info "Using the existing Agent-to-Worker token from macOS Keychain"
+else
+  info "Creating the Agent-to-Worker token in macOS Keychain"
+  agent_worker_token="$(openssl rand -hex 32)"
+  security add-generic-password -U \
+    -s "${AGENT_WORKER_KEYCHAIN_SERVICE}" \
+    -a "${AGENT_WORKER_KEYCHAIN_ACCOUNT}" \
+    -w "${agent_worker_token}" >/dev/null
+fi
+[[ -n "${agent_api_token}" && -n "${agent_worker_token}" ]] \
+  || die "Agent runtime token is empty"
+
+kubectl apply -f - >/dev/null <<EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ai-business-agent-runtime
+  namespace: ai-agent
+type: Opaque
+stringData:
+  agent-api-token: "${agent_api_token}"
+  worker-api-token: "${agent_worker_token}"
+EOF
+unset agent_api_token agent_worker_token
 
 # MinIO root and Loki's dedicated S3 credential are independent. Loki never
 # receives the MinIO administrator password. Values are generated only once and
@@ -171,6 +220,36 @@ EOF
   ok "Argo CD Worker repository credential is present"
 else
   info "Worker repository Deploy Key is absent from Keychain; recovery restore must provide it"
+fi
+
+# The Agent repository has an independent Deploy Key so revocation never
+# broadens or interrupts access to the Worker repository.
+if agent_repo_key_b64="$(security find-generic-password \
+    -s "${AGENT_REPO_KEYCHAIN_SERVICE}" \
+    -a "${AGENT_REPO_KEYCHAIN_ACCOUNT}" -w 2>/dev/null)"; then
+  agent_repo_key="$(printf '%s' "${agent_repo_key_b64}" | openssl base64 -d -A)"
+  [[ "${agent_repo_key}" == '-----BEGIN OPENSSH PRIVATE KEY-----'* ]] \
+    || die "Agent repository Deploy Key in Keychain is invalid"
+  indented_agent_repo_key="$(printf '%s\n' "${agent_repo_key}" | sed 's/^/    /')"
+  kubectl apply -f - >/dev/null <<EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ai-business-agent-repository
+  namespace: argocd
+  labels:
+    argocd.argoproj.io/secret-type: repository
+type: Opaque
+stringData:
+  type: git
+  url: ${AGENT_REPO_URL}
+  sshPrivateKey: |
+${indented_agent_repo_key}
+EOF
+  unset agent_repo_key_b64 agent_repo_key indented_agent_repo_key
+  ok "Argo CD Agent repository credential is present"
+else
+  info "Agent repository Deploy Key is absent from Keychain; recovery restore must provide it"
 fi
 
 ok "Cluster bootstrap secrets are present"

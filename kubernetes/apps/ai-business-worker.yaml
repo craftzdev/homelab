@@ -1,6 +1,6 @@
-# AI Business Worker is intentionally isolated from infrastructure components.
-# Its private source repository is read through a repository-scoped, read-only
-# GitHub Deploy Key stored out of band as an Argo CD repository Secret.
+# AI Business Agent and Worker are intentionally isolated from infrastructure
+# components. Their private repositories use independent repository-scoped,
+# read-only GitHub Deploy Keys stored out of band as Argo CD repository Secrets.
 ---
 apiVersion: argoproj.io/v1alpha1
 kind: AppProject
@@ -10,10 +10,13 @@ metadata:
   finalizers:
     - resources-finalizer.argocd.argoproj.io
 spec:
-  description: AI Business Worker application boundary
+  description: AI Business Agent and Worker application boundary
   sourceRepos:
+    - git@github.com:craftzdev/ai-business-agent.git
     - git@github.com:craftzdev/ai-business-worker.git
   destinations:
+    - server: https://kubernetes.default.svc
+      namespace: ai-agent
     - server: https://kubernetes.default.svc
       namespace: ai-worker
   clusterResourceWhitelist:
@@ -30,6 +33,8 @@ spec:
       kind: Deployment
     - group: networking.k8s.io
       kind: Ingress
+    - group: networking.k8s.io
+      kind: NetworkPolicy
     - group: cilium.io
       kind: CiliumNetworkPolicy
   roles:
