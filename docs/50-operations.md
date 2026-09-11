@@ -306,13 +306,41 @@ Kubernetes Secretへ投入します。
 
 ### 3.6 Cloudflare の設定
 
+#### APIトークンは使い捨てにする
+
+このトークンはTunnelの作成、DNSの編集、Accessポリシーの変更ができます。
+奪われることは外部公開経路を掌握されることと同義であり、手元に置き続ける
+価値はありません。**必要なときに発行し、applyが終わったらCloudflare側で
+revokeしてください。**
+
+保存しなくて困らないのは、トークンを必要とするのが「Cloudflare側を変更する
+とき」だけだからです。
+
+| 操作 | APIトークン |
+| --- | --- |
+| `tofu apply`（Tunnel作成・ホスト名追加・トークンのローテーション） | 要る |
+| `scripts/sync-cloudflare-secrets.sh` | 不要（`tofu output`がstateを読むだけ） |
+| クラスタ全再構築 | 不要（`rebuild-talos-cluster.sh`は`10-proxmox-talos`のみ） |
+| 日常運用・Gatusによる監視 | 不要 |
+
+必要な権限は Zone:DNS:Edit、Account:Cloudflare Tunnel:Edit、
+Account:Access: Apps and Policies:Edit です。
+
+#### 手順
+
 ```bash
 cd tofu/20-cloudflare
 cp terraform.tfvars.example terraform.tfvars
-$EDITOR terraform.tfvars
+$EDITOR terraform.tfvars   # ⚠️ APIトークンはここに書かない
 
-export TF_VAR_cloudflare_api_token='...'
+# 履歴に残さずに読み込む
+read -rs -p 'Cloudflare API token: ' TF_VAR_cloudflare_api_token
+export TF_VAR_cloudflare_api_token
+export TF_VAR_state_encryption_passphrase="$(security find-generic-password \
+  -s dev.craftz.homelab.tofu-state -a talos-k8s -w)"
+
 tofu init && tofu apply
+unset TF_VAR_cloudflare_api_token   # この後Cloudflare側でrevokeする
 
 cd ../..
 ./scripts/sync-cloudflare-secrets.sh
@@ -322,6 +350,19 @@ git add kubernetes/infra/cloudflared/credentials.sops.yaml \
 git commit -m "feat(cloudflared): Tunnel の設定を追加"
 git push
 ```
+
+#### ⚠️ 失ってはいけないのはトークンではない
+
+トークンは作り直せますが、次の3つは作り直せません。
+
+1. **`state_encryption_passphrase`** — macOS Keychainの
+   `dev.craftz.homelab.tofu-state`にあります。失うとstateを復号できず、
+   既存のCloudflareリソースをすべてimportし直すことになります。
+2. **`tofu/20-cloudflare/terraform.tfstate`（暗号化済み）** —
+   TunnelSecretとAccess Service Tokenのclient_secretが入ります。失うと
+   Tunnelは動き続けるのにOpenTofuから管理できない状態になります。
+3. **applyの出力から作る派生シークレット** — cloudflaredのcredentials
+   （SOPSでGitへ）とAccessトークン（Keychainへ）。再構築時に必要です。
 
 ### 3.7 疎通確認
 
