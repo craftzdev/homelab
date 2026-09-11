@@ -45,11 +45,34 @@ metadata:
 
 ---
 # ===========================================================================
-# Gateway が作る Service の設定
+# ⚠️ LAN 側に第 2 の入口を作らせない
 #
-# allocateLoadBalancerNodePorts: false が本体である。これが無いと
-# Kubernetes は LoadBalancer Service に NodePort を割り当て、全ノードの
-# VLAN40 アドレスで Gateway に到達できてしまう。
+# Cilium の Gateway API は必ず Service を作る。type に選べるのは
+# LoadBalancer か NodePort だけで、ClusterIP は指定できない
+# （CiliumGatewayClassConfig の service.type がこの 2 つに限定されている）。
+# 以前 Gateway に書かれていた `io.cilium/lb-mode: clusterip` という
+# annotation は Cilium が読まないため、何の効果も無かった。
+#
+# LAN 側の入口は 2 つありうる。
+#
+#   1. LoadBalancer の外部 IP
+#      → vlan40-pool の serviceSelector が
+#        `homelab.io/lan-exposed: "true"` を要求しており、この Service には
+#        付いていないため IP は割り当てられない。
+#
+#   2. NodePort
+#      → 既定では割り当てられてしまう。全ノードの VLAN40 アドレスで
+#        Gateway に到達でき、Cloudflare Access を迂回できる。
+#        allocateLoadBalancerNodePorts: false がこれを塞ぐ。
+#
+# 結果として Service はクラスタ内の ClusterIP からしか到達できず、
+# 「外部公開は Cloudflare Tunnel のみ」が構成として保証される。
+#
+# ⚠️ この設定を Gateway の spec.infrastructure.parametersRef から参照しては
+#    ならない。Cilium はそれを明示的に拒否し、Gateway が Accepted=False に
+#    なる。GatewayClass の spec.parametersRef だけが対応している。
+#    Cilium 同梱の `cilium` GatewayClass は chart が管理していて書き換えても
+#    戻されるため、専用の GatewayClass を下に定義して束ねる。
 # ===========================================================================
 apiVersion: cilium.io/v2alpha1
 kind: CiliumGatewayClassConfig
@@ -66,6 +89,28 @@ spec:
     allocateLoadBalancerNodePorts: false
 
 ---
+# ===========================================================================
+# 専用 GatewayClass
+#
+# controllerName は Cilium 同梱のものと同じで、担当するコントローラは
+# 変わらない。違いは parametersRef を持てることだけである。
+# ===========================================================================
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: cilium-external
+  labels:
+    app.kubernetes.io/part-of: external-access
+spec:
+  controllerName: io.cilium/gateway-controller
+  description: Cilium gateway class with LAN NodePort allocation disabled.
+  parametersRef:
+    group: cilium.io
+    kind: CiliumGatewayClassConfig
+    name: external-no-nodeport
+    namespace: gateway
+
+---
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
@@ -74,37 +119,10 @@ metadata:
   labels:
     app.kubernetes.io/part-of: external-access
 spec:
-  gatewayClassName: cilium
+  # Cilium 既定の `cilium` ではなく、NodePort を無効化する設定を
+  # parametersRef で束ねた専用の GatewayClass を使う。理由は上記を参照。
+  gatewayClassName: cilium-external
 
-  # -------------------------------------------------------------------------
-  # ⚠️ LAN 側に第 2 の入口を作らせない
-  #
-  # Cilium の Gateway API は必ず Service を作る。type に選べるのは
-  # LoadBalancer か NodePort だけで、ClusterIP は指定できない
-  # （CiliumGatewayClassConfig の service.type がこの 2 つに限定されている）。
-  # 以前ここに書かれていた `io.cilium/lb-mode: clusterip` という annotation は
-  # Cilium が読まないため、何の効果も無かった。
-  #
-  # 実際の入口は 2 つありうる。
-  #
-  #   1. LoadBalancer の外部 IP
-  #      → vlan40-pool の serviceSelector が
-  #        `homelab.io/lan-exposed: "true"` を要求しており、この Service には
-  #        付いていないため IP は割り当てられない。
-  #
-  #   2. NodePort
-  #      → 既定では割り当てられてしまう。全ノードの VLAN40 アドレスで
-  #        Gateway に到達でき、Cloudflare Access を迂回できる。
-  #        下の parametersRef でこれを無効化する。
-  #
-  # 結果として Service は ClusterIP 経由でしか到達できず、
-  # 「外部公開は Cloudflare Tunnel のみ」が構成として保証される。
-  # -------------------------------------------------------------------------
-  infrastructure:
-    parametersRef:
-      group: cilium.io
-      kind: CiliumGatewayClassConfig
-      name: external-no-nodeport
 
   listeners:
     # -------------------------------------------------------------------------
