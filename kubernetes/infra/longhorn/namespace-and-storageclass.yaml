@@ -106,6 +106,10 @@ parameters:
   numberOfReplicas: "1"
   staleReplicaTimeout: "30"
   fsType: ext4
+  # mke2fs の既定 discard は新規ボリューム全域へ I/O を発生させる。
+  # CNPG は各インスタンスを別ボリュームへ初期化するため無効化し、
+  # Longhorn の I/O タイムアウトによる初期化失敗を防ぐ。
+  mkfsParams: "-E nodiscard"
   dataLocality: best-effort
 
 ---
