@@ -59,10 +59,8 @@ metadata:
   labels:
     app.kubernetes.io/part-of: external-access
 spec:
-  description: |
-    外部公開用 Gateway の Service 設定。NodePort を割り当てず、
-    LB IPAM の serviceSelector にも一致させないことで、
-    到達経路をクラスタ内の ClusterIP だけに限定する。
+  # CRD 側で 64 バイトまでに制限されている。詳細は上のコメントを参照。
+  description: External gateway service; no NodePort.
   service:
     type: LoadBalancer
     allocateLoadBalancerNodePorts: false
