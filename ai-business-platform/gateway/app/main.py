@@ -358,6 +358,17 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def qa_project_state(event_data: dict[str, Any]) -> str:
+    """Map a completed QA report to the business workflow state."""
+    report = event_data.get("report")
+    verdict = report.get("verdict") if isinstance(report, dict) else None
+    if verdict == "pass":
+        return "QA_PASSED"
+    if verdict == "fail":
+        return "QA_FAILED"
+    return "QA_REVIEW_REQUIRED"
+
+
 def dispatch_job(job_id: uuid.UUID, request: JobCreate) -> None:
     """Dispatch a persisted Gateway job to one typed Worker endpoint."""
     endpoint = WORKER_ENDPOINTS.get(request.action)
@@ -820,7 +831,11 @@ def receive_worker_event(
                     "product.plan": ("PRD_READY", "prd", event.data.get("report")),
                     "code.build": ("PREVIEW_READY", "build_job_id", event.gateway_job_id),
                     "code.fix": ("PREVIEW_READY", "build_job_id", event.gateway_job_id),
-                    "qa.review": ("QA_PASSED", "qa_job_id", event.gateway_job_id),
+                    "qa.review": (
+                        qa_project_state(event.data),
+                        "qa_job_id",
+                        event.gateway_job_id,
+                    ),
                     "growth.plan": (
                         "GROWTH_REVIEW_READY",
                         "growth_plan",
@@ -840,7 +855,19 @@ def receive_worker_event(
                         connection,
                         job["project_id"],
                         f"{job['action']}.completed",
-                        {"gateway_job_id": str(event.gateway_job_id)},
+                        {
+                            "gateway_job_id": str(event.gateway_job_id),
+                            **(
+                                {
+                                    "verdict": event.data.get("report", {}).get(
+                                        "verdict"
+                                    )
+                                }
+                                if job["action"] == "qa.review"
+                                and isinstance(event.data.get("report"), dict)
+                                else {}
+                            ),
+                        },
                     )
             elif event.event_type == "failed":
                 next_state = "QA_FAILED" if job["action"] == "qa.review" else "FAILED"
