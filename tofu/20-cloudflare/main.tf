@@ -192,20 +192,54 @@ resource "cloudflare_zero_trust_access_application" "published" {
   http_only_cookie_attribute = true
   same_site_cookie_attribute = "strict"
 
-  # 2 つのポリシーはどちらも decision = "non_identity" であり、OR で評価される。
-  # saas_worker のトークンか Gatus のトークンのどちらかを持つリクエストだけが
-  # 通る。Gatus 用を分けてあるため、監視を止めずに業務トークンだけを失効でき、
-  # その逆もできる。
-  policies = [
-    {
-      id         = cloudflare_zero_trust_access_policy.allow_saas_worker.id
-      precedence = 1
-    },
-    {
-      id         = cloudflare_zero_trust_access_policy.allow_gatus_monitor.id
-      precedence = 2
-    },
-  ]
+  # ⚠️ ここに Gatus のポリシーを足さないこと。
+  #    Access アプリケーションはホスト名全体に効くため、監視トークンが
+  #    health endpoint 以外の全パスへ到達できるようになる。監視に必要なのは
+  #    1 パスだけである。Gatus 用は下の gatus_health アプリケーションで、
+  #    health_path だけを対象に分離している。
+  policies = [{
+    id         = cloudflare_zero_trust_access_policy.allow_saas_worker.id
+    precedence = 1
+  }]
+}
+
+# ---------------------------------------------------------------------------
+# health endpoint 専用の Access アプリケーション（Gatus 用）
+#
+# Access はより具体的なパスのアプリケーションを優先する。したがって
+# `example.com/ready` を対象にしたこのアプリケーションが health endpoint を
+# 受け持ち、それ以外のパスは上の published アプリケーションが受け持つ。
+#
+# これにより、Gatus Pod が侵害されても攻撃者が得るのは
+# 「health endpoint にだけ到達できるトークン」になる。業務 API へは
+# エッジで止まる。
+# ---------------------------------------------------------------------------
+resource "cloudflare_zero_trust_access_application" "gatus_health" {
+  for_each = {
+    for k, v in var.published_services : k => v if v.health_path != null
+  }
+
+  account_id = var.cloudflare_account_id
+  name       = "homelab-${each.key}-health"
+  type       = "self_hosted"
+
+  domain = "${each.value.hostname}${each.value.health_path}"
+
+  # 監視は短い間隔で繰り返し来る。セッションを長く持たせる意味が無い。
+  session_duration = "0s"
+
+  service_auth_401_redirect = true
+
+  app_launcher_visible      = false
+  auto_redirect_to_identity = false
+
+  http_only_cookie_attribute = true
+  same_site_cookie_attribute = "strict"
+
+  policies = [{
+    id         = cloudflare_zero_trust_access_policy.allow_gatus_monitor.id
+    precedence = 1
+  }]
 }
 
 # ===========================================================================
@@ -280,10 +314,18 @@ locals {
             # 削除・変更してしまった場合でも、有効な JWT を持たない
             # リクエストは Origin へ到達する前にここで落ちる。
             # -------------------------------------------------------------
+            # ⚠️ health_path を設定したホスト名では aud が 2 種類ありうる。
+            #    health endpoint へのリクエストは gatus_health
+            #    アプリケーションが発行した JWT を持つため、その aud を
+            #    許可リストへ入れないと cloudflared がそこだけ弾き、
+            #    「エッジは通ったのに監視だけ失敗する」状態になる。
             access = {
               required = true
               teamName = var.cloudflare_team_name
-              audTag   = [cloudflare_zero_trust_access_application.published[key].aud]
+              audTag = compact([
+                cloudflare_zero_trust_access_application.published[key].aud,
+                try(cloudflare_zero_trust_access_application.gatus_health[key].aud, ""),
+              ])
             }
             connectTimeout         = "10s"
             noTLSVerify            = false

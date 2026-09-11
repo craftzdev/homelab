@@ -51,6 +51,17 @@ published_services = {
     origin_service = "http://cilium-gateway-external.gateway.svc.cluster.local:80"
     # Access のセッション有効期間。API 用途なので短めにする。
     session_duration = "30m"
+
+    # Gatus に監視させる health endpoint。
+    #
+    # ⚠️ 指定すると、このパスだけを対象にした専用の Access アプリケーションが
+    #    作られ、Gatus のトークンだけを許可する。監視トークンを上の
+    #    アプリケーションのポリシーへ足してはならない。Access はホスト名
+    #    単位で効くため、監視トークンが全パスへ到達できるようになる。
+    #
+    #    「プロセスが生きているか」ではなく「依存先まで健全か」を返す
+    #    パスを選ぶこと。/health より /ready のほうが適していることが多い。
+    health_path = "/ready"
   }
 
   # 追加例:

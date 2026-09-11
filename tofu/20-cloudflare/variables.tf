@@ -119,12 +119,23 @@ variable "published_services" {
       origin_service   : cloudflared から見た転送先 URL（クラスタ内部）
       session_duration : Access のセッション有効期間
       path             : 特定パス配下のみ公開する場合に指定（省略可）
+      health_path      : Gatus に監視させる health endpoint のパス（省略可）
+
+    health_path を指定すると、そのパスだけを対象にした専用の Access
+    アプリケーションが作られ、Gatus のサービストークンだけを許可する。
+
+    ⚠️ 監視用トークンを既存のアプリケーションのポリシーに足してはならない。
+       Access アプリケーションはホスト名単位で効くため、それをすると
+       監視トークンが health endpoint 以外の全パスへ到達できてしまう。
+       監視 Pod が侵害されたときに漏れるのは、health endpoint だけに
+       到達できるトークンであるべきである。
   EOT
   type = map(object({
     hostname         = string
     origin_service   = string
     session_duration = optional(string, "30m")
     path             = optional(string)
+    health_path      = optional(string)
   }))
 
   default = {
@@ -140,6 +151,18 @@ variable "published_services" {
       !can(regex("(?i)(argocd|argo-cd|kubernetes|k8s-api|talos|proxmox|grafana-admin)", v.hostname))
     ])
     error_message = "管理平面と思われるホスト名が published_services に含まれています。管理系サービスをインターネットへ公開することは、この構成の設計方針に反します。"
+  }
+
+  # health_path は「1 パスだけに絞る」ことが目的である。空や / を許すと
+  # ホスト名全体を監視トークンへ開くことになり、分けた意味が無くなる。
+  validation {
+    condition = alltrue([
+      for k, v in var.published_services :
+      v.health_path == null ? true : (
+        startswith(v.health_path, "/") && length(v.health_path) > 1
+      )
+    ])
+    error_message = "health_path は / で始まる 2 文字以上のパスである必要があります。ホスト名全体を監視トークンへ開かないためです。"
   }
 
   validation {

@@ -57,6 +57,35 @@ Gatus は専用の Service Token `gatus-monitor` を使う。`saas-worker` の
 - Access ログ上で監視の定期アクセスと実トラフィックが区別できなくなる。
 - 監視 Pod が侵害されたときに漏れるのが業務 API を叩けるトークンでは困る。
 
+### ⚠️ トークンは health endpoint だけに効くようにする
+
+監視用トークンを既存の Access アプリケーションのポリシーへ足してはならない。
+Access アプリケーションは**ホスト名単位**で効くため、それをすると監視トークンが
+health endpoint 以外の全パスへ到達できるようになる。監視 Pod が侵害されたとき
+に漏れるのは「health endpoint にだけ到達できるトークン」であるべきである。
+
+Access はより具体的なパスのアプリケーションを優先する。したがって
+health endpoint だけを対象にした 2 つ目のアプリケーションを作り、そちらに
+Gatus のポリシーを置く。
+
+```text
+gateway.craftz.dev/ready  → Access app A：gatus-monitor のみ許可
+gateway.craftz.dev        → Access app B：業務トークンのみ許可
+```
+
+`tofu/20-cloudflare` では `published_services` の `health_path` を指定すると
+この 2 つが自動的に作られる（`cloudflare_zero_trust_access_application.gatus_health`）。
+
+ダッシュボードで管理しているホスト名に対して手で設定する場合も、同じ形にすること。
+
+⚠️ cloudflared 側の `originRequest.access.audTag` に **両方の aud** を入れる。
+health endpoint へのリクエストは app A が発行した JWT を持つため、片方だけだと
+cloudflared がそこだけ弾き、「エッジは通ったのに監視だけ失敗する」状態になる。
+
+なお `gateway.craftz.dev` の `/health` と `/ready` はアプリ側の認証を通らない
+（`ai-business-platform/gateway/app/main.py` に `Depends` が無い）。この 2 つを
+守っているのは Cloudflare Access だけである。パスを絞る価値はそこにもある。
+
 トークンは `tofu/20-cloudflare` が作る。値の復旧元は macOS Keychain である。
 
 | 値 | Keychain service | account |
