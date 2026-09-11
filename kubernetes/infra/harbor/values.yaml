@@ -1,0 +1,148 @@
+expose:
+  type: clusterIP
+  tls:
+    enabled: false
+  clusterIP:
+    name: harbor
+    ports:
+      httpPort: 80
+
+externalURL: https://harbor.tailb6c7d.ts.net
+
+existingSecretAdminPassword: harbor-runtime
+existingSecretAdminPasswordKey: HARBOR_ADMIN_PASSWORD
+existingSecretSecretKey: harbor-runtime
+
+persistence:
+  enabled: true
+  resourcePolicy: keep
+  persistentVolumeClaim:
+    registry:
+      storageClass: longhorn-retain
+      accessMode: ReadWriteOnce
+      size: 100Gi
+    jobservice:
+      jobLog:
+        storageClass: longhorn-retain
+        accessMode: ReadWriteOnce
+        size: 5Gi
+    database:
+      storageClass: longhorn-retain
+      accessMode: ReadWriteOnce
+      size: 10Gi
+    redis:
+      storageClass: longhorn-retain
+      accessMode: ReadWriteOnce
+      size: 5Gi
+    trivy:
+      storageClass: longhorn-retain
+      accessMode: ReadWriteOnce
+      size: 10Gi
+
+updateStrategy:
+  type: Recreate
+
+logLevel: info
+
+ipFamily:
+  ipv6:
+    enabled: false
+  ipv4:
+    enabled: true
+
+metrics:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    additionalLabels:
+      release: kube-prometheus-stack
+
+nginx:
+  nodeSelector: &workerSelector
+    homelab.craftz.dev/workload-plane: "true"
+  resources: &smallResources
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+portal:
+  nodeSelector: *workerSelector
+  resources: *smallResources
+
+core:
+  nodeSelector: *workerSelector
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+jobservice:
+  nodeSelector: *workerSelector
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+
+registry:
+  nodeSelector: *workerSelector
+  registry:
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: "1"
+        memory: 1Gi
+  controller:
+    resources: *smallResources
+
+trivy:
+  enabled: true
+  nodeSelector: *workerSelector
+  resources:
+    requests:
+      cpu: 200m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+database:
+  type: internal
+  internal:
+    # The live value is materialized in Secret/harbor-database from Keychain.
+    # Argo CD's Secret-data ignore rule preserves it during Helm rendering.
+    password: ""
+    nodeSelector: *workerSelector
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: "1"
+        memory: 1Gi
+
+redis:
+  type: internal
+  internal:
+    nodeSelector: *workerSelector
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+
+exporter:
+  nodeSelector: *workerSelector
+  resources: *smallResources

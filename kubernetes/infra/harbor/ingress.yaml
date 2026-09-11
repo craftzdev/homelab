@@ -1,0 +1,18 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: harbor
+  namespace: harbor
+  annotations:
+    tailscale.com/tags: tag:argocd
+    tailscale.com/proxy-class: restricted-userspace
+spec:
+  ingressClassName: tailscale
+  defaultBackend:
+    service:
+      name: harbor
+      port:
+        name: http
+  tls:
+    - hosts:
+        - harbor

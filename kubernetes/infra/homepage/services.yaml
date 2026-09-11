@@ -27,6 +27,10 @@
         icon: grafana.png
         href: https://grafana.tailb6c7d.ts.net/
         description: Metrics, logs, events, and audit logs
+    - Harbor:
+        icon: harbor.png
+        href: https://harbor.tailb6c7d.ts.net/
+        description: Private OCI images and vulnerability scans
     - AI Worker:
         icon: kubernetes.png
         href: https://ai-worker-cluster.tailb6c7d.ts.net/health

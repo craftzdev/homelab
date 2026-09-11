@@ -32,6 +32,7 @@ spec:
     - https://prometheus-community.github.io/helm-charts
     - https://grafana.github.io/helm-charts
     - https://aquasecurity.github.io/helm-charts/
+    - https://helm.goharbor.io
     - https://backube.github.io/helm-charts/
     - https://piraeus.io/helm-charts/
     - https://pkgs.tailscale.com/helmcharts
@@ -67,6 +68,8 @@ spec:
       namespace: tailscale
     - server: https://kubernetes.default.svc
       namespace: image-registry
+    - server: https://kubernetes.default.svc
+      namespace: harbor
     - server: https://kubernetes.default.svc
       namespace: argocd
     - server: https://kubernetes.default.svc

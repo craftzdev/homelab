@@ -258,6 +258,60 @@ spec:
 
 ---
 # ---------------------------------------------------------------------------
+# Harbor private OCI registry
+#
+# Harbor is introduced alongside the existing bootstrap registry. The old
+# endpoint remains available until every image and consumer has been migrated
+# and Harbor backup/restore has been verified.
+# ---------------------------------------------------------------------------
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: harbor
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "8"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: infrastructure
+  ignoreDifferences:
+    # Harbor generates several long-lived internal credentials. Secret data is
+    # created out-of-band or on first install and must not rotate on every Helm
+    # render. Metadata remains under GitOps control.
+    - group: ""
+      kind: Secret
+      namespace: harbor
+      jsonPointers:
+        - /data
+  sources:
+    - repoURL: https://helm.goharbor.io
+      chart: harbor
+      targetRevision: 1.19.2
+      helm:
+        releaseName: harbor
+        valueFiles:
+          - $values/kubernetes/infra/harbor/values.yaml
+    - repoURL: https://github.com/craftzdev/homelab.git
+      targetRevision: main
+      path: kubernetes/infra/harbor
+    - repoURL: https://github.com/craftzdev/homelab.git
+      targetRevision: main
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: harbor
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+      - RespectIgnoreDifferences=true
+
+---
+# ---------------------------------------------------------------------------
 # Tailscale Kubernetes Operator
 #
 # OAuth Secret `operator-oauth` は事前に tailscale namespace へ作成する。

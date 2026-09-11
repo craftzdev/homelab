@@ -23,6 +23,12 @@ AGENT_WORKER_KEYCHAIN_SERVICE="${AGENT_WORKER_KEYCHAIN_SERVICE:-dev.craftz.homel
 AGENT_WORKER_KEYCHAIN_ACCOUNT="${AGENT_WORKER_KEYCHAIN_ACCOUNT:-ai-business-worker}"
 HOMEPAGE_PVE_KEYCHAIN_SERVICE="${HOMEPAGE_PVE_KEYCHAIN_SERVICE:-dev.craftz.homelab.homepage-proxmox-token}"
 HOMEPAGE_PVE_KEYCHAIN_ACCOUNT="${HOMEPAGE_PVE_KEYCHAIN_ACCOUNT:-homepage@pve!homepage}"
+HARBOR_ADMIN_KEYCHAIN_SERVICE="${HARBOR_ADMIN_KEYCHAIN_SERVICE:-dev.craftz.homelab.harbor-admin}"
+HARBOR_ADMIN_KEYCHAIN_ACCOUNT="${HARBOR_ADMIN_KEYCHAIN_ACCOUNT:-admin}"
+HARBOR_SECRET_KEYCHAIN_SERVICE="${HARBOR_SECRET_KEYCHAIN_SERVICE:-dev.craftz.homelab.harbor-secret-key}"
+HARBOR_SECRET_KEYCHAIN_ACCOUNT="${HARBOR_SECRET_KEYCHAIN_ACCOUNT:-harbor}"
+HARBOR_DATABASE_KEYCHAIN_SERVICE="${HARBOR_DATABASE_KEYCHAIN_SERVICE:-dev.craftz.homelab.harbor-database}"
+HARBOR_DATABASE_KEYCHAIN_ACCOUNT="${HARBOR_DATABASE_KEYCHAIN_ACCOUNT:-postgres}"
 
 info() { printf '[INFO] %s\n' "$*"; }
 ok() { printf '[OK]   %s\n' "$*"; }
@@ -50,7 +56,7 @@ fi
 [[ -n "${grafana_password}" ]] || die "Grafana password is empty"
 
 for namespace in monitoring logging logging-audit cert-manager security \
-  image-registry tailscale arc-systems arc-runners argocd portal ai-agent; do
+  image-registry harbor tailscale arc-systems arc-runners argocd portal ai-agent; do
   kubectl create namespace "${namespace}" --dry-run=client -o yaml \
     | kubectl apply -f - >/dev/null
 done
@@ -70,6 +76,72 @@ stringData:
 EOF
 
 unset grafana_password
+
+# Harbor credentials remain outside Git. The database Secret uses the name
+# expected by the upstream chart; Argo CD ignores Secret data and only manages
+# its metadata, preventing Helm re-renders from rotating a live database.
+if harbor_admin_password="$(security find-generic-password \
+    -s "${HARBOR_ADMIN_KEYCHAIN_SERVICE}" -a "${HARBOR_ADMIN_KEYCHAIN_ACCOUNT}" -w 2>/dev/null)"; then
+  info "Using the existing Harbor administrator credential from macOS Keychain"
+else
+  info "Creating the initial Harbor administrator credential in macOS Keychain"
+  harbor_admin_password="$(openssl rand -base64 32)"
+  security add-generic-password -U \
+    -s "${HARBOR_ADMIN_KEYCHAIN_SERVICE}" \
+    -a "${HARBOR_ADMIN_KEYCHAIN_ACCOUNT}" \
+    -w "${harbor_admin_password}" >/dev/null
+fi
+
+if harbor_secret_key="$(security find-generic-password \
+    -s "${HARBOR_SECRET_KEYCHAIN_SERVICE}" -a "${HARBOR_SECRET_KEYCHAIN_ACCOUNT}" -w 2>/dev/null)"; then
+  info "Using the existing Harbor encryption key from macOS Keychain"
+else
+  info "Creating the Harbor encryption key in macOS Keychain"
+  harbor_secret_key="$(openssl rand -hex 8)"
+  security add-generic-password -U \
+    -s "${HARBOR_SECRET_KEYCHAIN_SERVICE}" \
+    -a "${HARBOR_SECRET_KEYCHAIN_ACCOUNT}" \
+    -w "${harbor_secret_key}" >/dev/null
+fi
+
+if harbor_database_password="$(security find-generic-password \
+    -s "${HARBOR_DATABASE_KEYCHAIN_SERVICE}" -a "${HARBOR_DATABASE_KEYCHAIN_ACCOUNT}" -w 2>/dev/null)"; then
+  info "Using the existing Harbor database credential from macOS Keychain"
+else
+  info "Creating the Harbor database credential in macOS Keychain"
+  harbor_database_password="$(openssl rand -base64 32)"
+  security add-generic-password -U \
+    -s "${HARBOR_DATABASE_KEYCHAIN_SERVICE}" \
+    -a "${HARBOR_DATABASE_KEYCHAIN_ACCOUNT}" \
+    -w "${harbor_database_password}" >/dev/null
+fi
+
+[[ -n "${harbor_admin_password}" && "${#harbor_secret_key}" == 16 \
+    && -n "${harbor_database_password}" ]] \
+  || die "Harbor credential material is invalid"
+
+kubectl apply -f - >/dev/null <<EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: harbor-runtime
+  namespace: harbor
+type: Opaque
+stringData:
+  HARBOR_ADMIN_PASSWORD: "${harbor_admin_password}"
+  secretKey: "${harbor_secret_key}"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: harbor-database
+  namespace: harbor
+type: Opaque
+stringData:
+  POSTGRES_PASSWORD: "${harbor_database_password}"
+EOF
+
+unset harbor_admin_password harbor_secret_key harbor_database_password
 
 # Gateway-facing and Worker-facing tokens are deliberately independent. They
 # are generated once and retained in Keychain; changing one trust boundary does
