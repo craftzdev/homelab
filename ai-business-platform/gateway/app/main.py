@@ -678,6 +678,54 @@ def approve_production(
     return {"approval_id": str(approval_id), "project_id": approval["project_id"], "state": "APPROVED"}
 
 
+@app.post("/v1/approvals/{approval_id}/cancel")
+def cancel_production_approval(
+    approval_id: uuid.UUID,
+    _: None = Depends(require_gateway_token),
+    __: None = Depends(require_human_approval_token),
+) -> dict[str, Any]:
+    """Withdraw a pending production request without losing the QA decision."""
+    now = utcnow()
+    with pool.connection() as connection:
+        approval = connection.execute(
+            "UPDATE approvals SET state = 'CANCELLED', resolved_at = %s "
+            "WHERE id = %s AND state = 'PENDING' RETURNING project_id",
+            (now, approval_id),
+        ).fetchone()
+        if approval is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, detail="approval is not pending"
+            )
+        project = connection.execute(
+            "SELECT qa_job_id FROM projects WHERE id = %s FOR UPDATE",
+            (approval["project_id"],),
+        ).fetchone()
+        qa_state = "QA_REVIEW_REQUIRED"
+        if project is not None and project["qa_job_id"] is not None:
+            qa_job = connection.execute(
+                "SELECT result FROM jobs WHERE id = %s", (project["qa_job_id"],)
+            ).fetchone()
+            if qa_job is not None and isinstance(qa_job["result"], dict):
+                qa_state = qa_project_state(qa_job["result"])
+        connection.execute(
+            "UPDATE projects SET state = %s, updated_at = %s WHERE id = %s",
+            (qa_state, now, approval["project_id"]),
+        )
+        _project_event(
+            connection,
+            approval["project_id"],
+            "approval.cancelled",
+            {"approval_id": str(approval_id), "restored_state": qa_state},
+        )
+        connection.commit()
+    return {
+        "approval_id": str(approval_id),
+        "project_id": approval["project_id"],
+        "state": "CANCELLED",
+        "project_state": qa_state,
+    }
+
+
 @app.put("/v1/projects/{project_id}/production")
 def record_production_release(
     project_id: str,
@@ -707,18 +755,37 @@ def record_project_analytics(
     request: ProjectAnalyticsUpdate,
     _: None = Depends(require_gateway_token),
 ) -> dict[str, Any]:
+    preview_validation = request.analytics.get("scope") == "preview_validation"
     with pool.connection() as connection:
-        row = connection.execute(
-            "UPDATE projects SET analytics = %s, state = 'MEASURING', updated_at = %s "
-            "WHERE id = %s AND production_url IS NOT NULL RETURNING *",
-            (json.dumps(request.analytics), utcnow(), project_id),
-        ).fetchone()
+        if preview_validation:
+            row = connection.execute(
+                "UPDATE projects SET analytics = %s, state = 'VALIDATION_MEASURING', "
+                "updated_at = %s WHERE id = %s AND production_url IS NULL "
+                "AND state IN ('QA_PASSED', 'QA_REVIEW_REQUIRED', "
+                "'VALIDATION_MEASURING') RETURNING *",
+                (json.dumps(request.analytics), utcnow(), project_id),
+            ).fetchone()
+        else:
+            row = connection.execute(
+                "UPDATE projects SET analytics = %s, state = 'MEASURING', updated_at = %s "
+                "WHERE id = %s AND production_url IS NOT NULL RETURNING *",
+                (json.dumps(request.analytics), utcnow(), project_id),
+            ).fetchone()
         if row is None:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail="analytics require a recorded production release",
+                detail=(
+                    "preview analytics require a completed QA review and "
+                    "scope=preview_validation; other analytics require a recorded "
+                    "production release"
+                ),
             )
-        _project_event(connection, project_id, "analytics.recorded", request.model_dump())
+        event_type = (
+            "analytics.validation_recorded"
+            if preview_validation
+            else "analytics.recorded"
+        )
+        _project_event(connection, project_id, event_type, request.model_dump())
         connection.commit()
     return _public_project(row)
 

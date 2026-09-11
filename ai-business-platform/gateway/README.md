@@ -46,6 +46,15 @@ Production approval is deliberately absent from MCP. It requires the independent
 `X-Human-Approval-Token` header in addition to Cloudflare Access and the Gateway
 Bearer token.
 
+A pending production request can be withdrawn with
+`POST /v1/approvals/{approval_id}/cancel`. Cancellation restores the state
+derived from the latest QA verdict and records an audit event.
+
+Preview-only validation data is accepted without a production release when the
+analytics payload contains `"scope": "preview_validation"`. It is stored as
+validation evidence, moves the project to `VALIDATION_MEASURING`, and must not
+be presented as real-user production analytics.
+
 Every MCP request must pass both authentication layers:
 
 ```text
