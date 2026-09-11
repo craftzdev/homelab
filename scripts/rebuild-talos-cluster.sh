@@ -13,9 +13,11 @@
 #   PBS_BACKUP=0          skip optional whole-VM PBS snapshots (default: 1)
 #   GITOPS_REVISION=...   Git revision used by Argo CD (default: current branch)
 #   AI_WORKER_REPO=...    ai-business-worker checkout
+#   AI_AGENT_REPO=...     ai-business-agent checkout
 #   BACKUP_DIR=...        existing recovery set when using --resume-after-backup
 #   REGISTRY_DATA_BACKUP=... override registry archive for recovery
 #   WORKER_DATA_BACKUP=...   override Worker archive for recovery
+#   AGENT_DATA_BACKUP=...    override Agent archive for recovery
 #   TAILSCALE_WORKER_FQDN=... canonical Worker MagicDNS name
 #   TAILSCALE_ARGOCD_FQDN=... canonical Argo CD MagicDNS name
 #   TAILSCALE_GRAFANA_FQDN=... canonical Grafana MagicDNS name
@@ -30,6 +32,7 @@ TOFU_DIR="${REPO_ROOT}/tofu/10-proxmox-talos"
 KUBECONFIG_PATH="${REPO_ROOT}/_out/kubeconfig"
 REBUILD_KUBECONFIG_PATH="${REPO_ROOT}/_out/rebuild-kubeconfig"
 AI_WORKER_REPO="${AI_WORKER_REPO:-${REPO_ROOT}/../ai-business-worker}"
+AI_AGENT_REPO="${AI_AGENT_REPO:-${REPO_ROOT}/../ai-business-agent}"
 GITOPS_REVISION="${GITOPS_REVISION:-$(git -C "${REPO_ROOT}" branch --show-current)}"
 PBS_BACKUP="${PBS_BACKUP:-1}"
 GATEWAY_SMOKE="${GATEWAY_SMOKE:-1}"
@@ -73,6 +76,8 @@ for tool in tofu jq kubectl talosctl helm age age-keygen security ssh git curl; 
 done
 [[ -d "${AI_WORKER_REPO}/deploy/kubernetes" ]] \
   || die "AI Worker repository not found: ${AI_WORKER_REPO}"
+[[ -d "${AI_AGENT_REPO}/deploy/kubernetes" ]] \
+  || die "AI Agent repository not found: ${AI_AGENT_REPO}"
 [[ "${PBS_BACKUP}" == 0 || "${PBS_BACKUP}" == 1 ]] \
   || die "PBS_BACKUP must be 0 or 1"
 [[ "${GATEWAY_SMOKE}" == 0 || "${GATEWAY_SMOKE}" == 1 ]] \
@@ -95,6 +100,7 @@ timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
 BACKUP_DIR="${BACKUP_DIR:-${REPO_ROOT}/_out/rebuild-backups/${timestamp}}"
 REGISTRY_DATA_BACKUP="${REGISTRY_DATA_BACKUP:-${BACKUP_DIR}/registry-data.tar.age}"
 WORKER_DATA_BACKUP="${WORKER_DATA_BACKUP:-${BACKUP_DIR}/ai-worker-data.tar.age}"
+AGENT_DATA_BACKUP="${AGENT_DATA_BACKUP:-${BACKUP_DIR}/ai-agent-data.tar.age}"
 mkdir -p "${BACKUP_DIR}"
 chmod 700 "${BACKUP_DIR}"
 DESTROY_PLAN="${BACKUP_DIR}/destroy.tfplan"
@@ -237,6 +243,8 @@ backup_cluster_data() {
 
   backup_directory ai-worker deploy/ai-business-worker worker /data \
     "${BACKUP_DIR}/ai-worker-data.tar.age"
+  backup_directory ai-agent deploy/ai-business-agent agent /data \
+    "${BACKUP_DIR}/ai-agent-data.tar.age"
   backup_directory image-registry deploy/registry registry /var/lib/registry \
     "${BACKUP_DIR}/registry-data.tar.age"
 
@@ -244,6 +252,8 @@ backup_cluster_data() {
     "${BACKUP_DIR}/ai-worker-runtime.secret.json.age"
   encrypt_secret ai-worker ai-business-worker-codex-auth \
     "${BACKUP_DIR}/ai-worker-codex-auth.secret.json.age"
+  encrypt_secret ai-agent ai-business-agent-runtime \
+    "${BACKUP_DIR}/ai-agent-runtime.secret.json.age"
   encrypt_secret image-registry registry-tls \
     "${BACKUP_DIR}/registry-tls.secret.json.age"
   encrypt_secret tailscale operator-oauth \
@@ -252,6 +262,8 @@ backup_cluster_data() {
     "${BACKUP_DIR}/arc-github-app.secret.json.age"
   encrypt_secret argocd ai-business-worker-repository \
     "${BACKUP_DIR}/ai-worker-repository.secret.json.age"
+  encrypt_secret argocd ai-business-agent-repository \
+    "${BACKUP_DIR}/ai-agent-repository.secret.json.age"
   encrypt_secret tailscale operator \
     "${BACKUP_DIR}/tailscale-operator-state.secret.json.age"
   backup_tailnet_proxy_state ingress ai-worker ai-business-worker \
@@ -268,9 +280,14 @@ backup_cluster_data() {
   kubectl --kubeconfig "${KUBECONFIG_PATH}" -n ai-worker get deploy ai-business-worker \
     -o jsonpath='{.spec.template.spec.containers[0].image}' \
     >"${BACKUP_DIR}/worker-image.txt"
+  kubectl --kubeconfig "${KUBECONFIG_PATH}" -n ai-agent get deploy ai-business-agent \
+    -o jsonpath='{.spec.template.spec.containers[0].image}' \
+    >"${BACKUP_DIR}/agent-image.txt"
   cp "${TOFU_DIR}/terraform.tfstate" "${BACKUP_DIR}/terraform.tfstate.encrypted"
-  chmod 600 "${BACKUP_DIR}/terraform.tfstate.encrypted" "${BACKUP_DIR}/worker-image.txt"
-  (cd "${BACKUP_DIR}" && shasum -a 256 ./*.age terraform.tfstate.encrypted worker-image.txt >SHA256SUMS)
+  chmod 600 "${BACKUP_DIR}/terraform.tfstate.encrypted" \
+    "${BACKUP_DIR}/worker-image.txt" "${BACKUP_DIR}/agent-image.txt"
+  (cd "${BACKUP_DIR}" && shasum -a 256 ./*.age terraform.tfstate.encrypted \
+    worker-image.txt agent-image.txt >SHA256SUMS)
   ok "Encrypted recovery set created at ${BACKUP_DIR}"
 }
 
@@ -291,11 +308,13 @@ backup_pbs() {
 
 verify_recovery_set() {
   required_recovery_files=(
-    ai-worker-data.tar.age registry-data.tar.age
+    ai-worker-data.tar.age ai-agent-data.tar.age registry-data.tar.age
     ai-worker-runtime.secret.json.age ai-worker-codex-auth.secret.json.age
+    ai-agent-runtime.secret.json.age
     registry-tls.secret.json.age tailscale-oauth.secret.json.age
     arc-github-app.secret.json.age
-    terraform.tfstate.encrypted worker-image.txt SHA256SUMS
+    ai-worker-repository.secret.json.age ai-agent-repository.secret.json.age
+    terraform.tfstate.encrypted worker-image.txt agent-image.txt SHA256SUMS
   )
   for recovery_file in "${required_recovery_files[@]}"; do
     [[ -s "${BACKUP_DIR}/${recovery_file}" ]] \
@@ -304,10 +323,14 @@ verify_recovery_set() {
   (cd "${BACKUP_DIR}" && shasum -a 256 -c SHA256SUMS)
   [[ -s "${WORKER_DATA_BACKUP}" ]] \
     || die "Worker data archive not found: ${WORKER_DATA_BACKUP}"
+  [[ -s "${AGENT_DATA_BACKUP}" ]] \
+    || die "Agent data archive not found: ${AGENT_DATA_BACKUP}"
   [[ -s "${REGISTRY_DATA_BACKUP}" ]] \
     || die "registry data archive not found: ${REGISTRY_DATA_BACKUP}"
   verify_encrypted_tar "${WORKER_DATA_BACKUP}" \
     || die "Worker data archive is not a complete tar stream"
+  verify_encrypted_tar "${AGENT_DATA_BACKUP}" \
+    || die "Agent data archive is not a complete tar stream"
   verify_encrypted_tar "${REGISTRY_DATA_BACKUP}" \
     || die "registry data archive is not a complete tar stream"
   local tailnet_state_count=0 tailnet_state_file
@@ -636,6 +659,7 @@ wait_for_all_pods() {
 }
 
 restore_platform() {
+  local node worker_image agent_image
   pin_rebuild_api_endpoint
   export KUBECONFIG="${KUBECONFIG_PATH}"
   info "Waiting for the pinned kube-apiserver endpoint"
@@ -651,7 +675,6 @@ restore_platform() {
   info "Bootstrapping Cilium and the dedicated worker plane"
   "${SCRIPT_DIR}/bootstrap-cluster.sh"
 
-  local node
   for node in k8s-1 k8s-2 k8s-3; do
     kubectl taint node "${node}" node-role.kubernetes.io/control-plane=:NoSchedule --overwrite
   done
@@ -666,6 +689,9 @@ restore_platform() {
   restore_secret "${BACKUP_DIR}/arc-github-app.secret.json.age"
   if [[ -s "${BACKUP_DIR}/ai-worker-repository.secret.json.age" ]]; then
     restore_secret "${BACKUP_DIR}/ai-worker-repository.secret.json.age"
+  fi
+  if [[ -s "${BACKUP_DIR}/ai-agent-repository.secret.json.age" ]]; then
+    restore_secret "${BACKUP_DIR}/ai-agent-repository.secret.json.age"
   fi
   if [[ -s "${BACKUP_DIR}/tailscale-operator-state.secret.json.age" ]]; then
     restore_secret "${BACKUP_DIR}/tailscale-operator-state.secret.json.age"
@@ -817,8 +843,72 @@ EOF
     --for=jsonpath='{.status.loadBalancer.ingress[0].hostname}'="${TAILSCALE_WORKER_FQDN}" \
     ingress/ai-business-worker --timeout=10m
 
+  info "Restoring AI Agent secrets, audit database, and dispatch state"
+  kubectl apply -f "${AI_AGENT_REPO}/deploy/kubernetes/namespace.yaml" >/dev/null
+  restore_secret "${BACKUP_DIR}/ai-agent-runtime.secret.json.age"
+  kubectl apply -f "${AI_AGENT_REPO}/deploy/kubernetes/pvc.yaml" >/dev/null
+  kubectl wait -n ai-agent --for=jsonpath='{.status.phase}'=Bound \
+    pvc/ai-business-agent-data --timeout=10m
+
+  if kubectl -n ai-agent get deployment ai-business-agent >/dev/null 2>&1; then
+    kubectl -n ai-agent scale deployment ai-business-agent --replicas=0 >/dev/null
+    kubectl -n ai-agent rollout status deployment/ai-business-agent --timeout=5m
+  fi
+  kubectl -n ai-agent delete pod rebuild-agent-data-restore \
+    --ignore-not-found --wait=true --timeout=5m >/dev/null
+
+  agent_image="$(cat "${BACKUP_DIR}/agent-image.txt")"
+  cat <<EOF | kubectl apply -f - >/dev/null
+apiVersion: v1
+kind: Pod
+metadata:
+  name: rebuild-agent-data-restore
+  namespace: ai-agent
+spec:
+  restartPolicy: Never
+  nodeSelector:
+    homelab.craftz.dev/workload-plane: "true"
+  automountServiceAccountToken: false
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 10002
+    runAsGroup: 10002
+    fsGroup: 10002
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: restore
+      image: ${agent_image}
+      command: ["/bin/sh", "-c", "sleep 3600"]
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+        readOnlyRootFilesystem: true
+      volumeMounts:
+        - name: data
+          mountPath: /data
+        - name: tmp
+          mountPath: /tmp
+  volumes:
+    - name: data
+      persistentVolumeClaim:
+        claimName: ai-business-agent-data
+    - name: tmp
+      emptyDir: {}
+EOF
+  kubectl wait -n ai-agent --for=condition=Ready pod/rebuild-agent-data-restore --timeout=10m
+  age -d -i "${AGE_KEY_FILE}" "${AGENT_DATA_BACKUP}" \
+    | kubectl -n ai-agent exec -i rebuild-agent-data-restore -- \
+      sh -c 'mkdir -p /tmp/restore && tar -C /tmp/restore --exclude=./lost+found -xf - && cp -R /tmp/restore/. /data/'
+  kubectl -n ai-agent exec rebuild-agent-data-restore -- test -f /data/agent.db
+  kubectl -n ai-agent delete pod rebuild-agent-data-restore --wait=true >/dev/null
+  kubectl apply -k "${AI_AGENT_REPO}/deploy/kubernetes"
+  kubectl -n ai-agent rollout status deployment/ai-business-agent --timeout=15m
+
   # The bootstrap apply above only stages the PVC/data recovery. Argo CD is the
-  # sole steady-state manager and must adopt every Worker resource without drift.
+  # sole steady-state manager and must adopt every Agent and Worker resource
+  # without drift.
   "${SCRIPT_DIR}/reconcile-cluster-platform.sh"
 
   # DNSConfig records are populated asynchronously after both proxy Pods are
@@ -873,12 +963,14 @@ verify_rebuild() {
   curl -fsS --retry 12 --retry-all-errors --retry-delay 5 \
     "https://${TAILSCALE_WORKER_FQDN}/health" >/dev/null
   curl -fsS --retry 12 --retry-all-errors --retry-delay 5 \
+    "https://${TAILSCALE_WORKER_FQDN}/agent/health" >/dev/null
+  curl -fsS --retry 12 --retry-all-errors --retry-delay 5 \
     "https://${TAILSCALE_ARGOCD_FQDN}/" >/dev/null
   curl -fsS --retry 12 --retry-all-errors --retry-delay 5 \
     "https://${TAILSCALE_GRAFANA_FQDN}/api/health" >/dev/null
   curl -fsS --retry 12 --retry-all-errors --retry-delay 5 \
     "https://${TAILSCALE_PORTAL_FQDN}/api/healthcheck" >/dev/null
-  ok "Six-node cluster, GitOps platform, Tailnet Worker, and management UIs verified"
+  ok "Six-node cluster, GitOps platform, Tailnet Agent/Worker, and management UIs verified"
 }
 
 verify_gateway_worker_path() {
