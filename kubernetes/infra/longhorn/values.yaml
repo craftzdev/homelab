@@ -60,6 +60,11 @@ defaultSettings:
   # 復旧速度よりワークロードの安定性を優先する。
   concurrentReplicaRebuildPerNodeLimit: 1
 
+  # 単一レプリカの新規ボリュームをmkfsする際、同期I/Oが既定8秒
+  # （最後のレプリカは2倍の16秒）を超えることがある。公式の許容上限まで
+  # 待機し、一時的なI/O遅延で健全なボリュームをfaultedにしない。
+  engineReplicaTimeout: 30
+
   # ディスクの使用率がこれを超えるとスケジュールしない
   storageOverProvisioningPercentage: 150
   storageMinimalAvailablePercentage: 20
