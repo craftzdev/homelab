@@ -116,8 +116,25 @@ spec:
               protocol: TCP
     - toEndpoints:
         - matchLabels:
-            io.kubernetes.pod.namespace: harbor
+            io.kubernetes.pod.namespace: arc-runners
             k8s:app.kubernetes.io/name: harbor-ci-proxy
+      toPorts:
+        - ports:
+            - port: "5000"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: harbor
+            k8s:app: harbor
+            k8s:component: nginx
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: arc-runners
       toPorts:
         - ports:
             - port: "5000"

@@ -29,7 +29,6 @@ template:
           - dockerd
           - --host=unix:///var/run/docker.sock
           - --group=$(DOCKER_GROUP_GID)
-          - --insecure-registry=172.16.40.201:5000
         env:
           - name: DOCKER_GROUP_GID
             value: "123"
@@ -48,6 +47,10 @@ template:
             mountPath: /var/run
           - name: dind-externals
             mountPath: /home/runner/externals
+          - name: harbor-ci-cert
+            mountPath: /etc/docker/certs.d/172.16.40.201:5000/ca.crt
+            subPath: tls.crt
+            readOnly: true
     containers:
       - name: runner
         image: >-
@@ -77,3 +80,6 @@ template:
         emptyDir: {}
       - name: dind-externals
         emptyDir: {}
+      - name: harbor-ci-cert
+        secret:
+          secretName: harbor-ci-proxy-tls

@@ -37,7 +37,7 @@ spec:
             io.kubernetes.pod.namespace: arc-runners
       toPorts:
         - ports:
-            - port: "5000"
+            - port: "8080"
               protocol: TCP
     - fromEntities:
         - host

@@ -2,7 +2,7 @@ apiVersion: cert-manager.io/v1
 kind: Issuer
 metadata:
   name: harbor-ci-selfsigned
-  namespace: harbor
+  namespace: arc-runners
 spec:
   selfSigned: {}
 
@@ -11,12 +11,18 @@ apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
   name: harbor-ci-proxy
-  namespace: harbor
+  namespace: arc-runners
 spec:
   secretName: harbor-ci-proxy-tls
   commonName: 172.16.40.201
   ipAddresses:
     - 172.16.40.201
+  isCA: true
+  usages:
+    - server auth
+    - digital signature
+    - key encipherment
+    - cert sign
   issuerRef:
     name: harbor-ci-selfsigned
     kind: Issuer
@@ -28,7 +34,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: harbor-ci-proxy
-  namespace: harbor
+  namespace: arc-runners
 data:
   default.conf: |
     map $upstream_http_www_authenticate $registry_authenticate {
@@ -66,7 +72,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: harbor-ci-proxy
-  namespace: harbor
+  namespace: arc-runners
 spec:
   replicas: 1
   selector:
@@ -150,7 +156,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: harbor-ci-proxy
-  namespace: harbor
+  namespace: arc-runners
   labels:
     homelab.io/lan-exposed: "true"
   annotations:
