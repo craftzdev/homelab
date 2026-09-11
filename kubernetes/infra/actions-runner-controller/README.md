@@ -6,6 +6,7 @@ daemon. Two repository-scoped scale sets build application images:
 
 - `ai-agent-builder` for `craftzdev/ai-business-agent`
 - `ai-worker-builder` for `craftzdev/ai-business-worker`
+- `ai-control-plane-builder` for `craftzdev/ai-business-control-plane`
 
 The builder Pods use ARC's ephemeral Docker-in-Docker mode and disappear after
 each job. Cilium permits them to reach public HTTPS plus
