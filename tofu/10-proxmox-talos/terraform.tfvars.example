@@ -104,17 +104,17 @@ control_plane_nodes = {
   "k8s-1" = {
     vmid = 1001, pve_node = "sv-proxmox-01"
     ip = "172.16.40.11", mac_k8s = "BC:24:11:40:00:11"
-    cores = 4, memory_mib = 8192, disk_gib = 60
+    cores = 4, memory_mib = 16384, disk_gib = 60
   }
   "k8s-2" = {
     vmid = 1002, pve_node = "sv-proxmox-02"
     ip = "172.16.40.12", mac_k8s = "BC:24:11:40:00:12"
-    cores = 4, memory_mib = 8192, disk_gib = 60
+    cores = 4, memory_mib = 16384, disk_gib = 60
   }
   "k8s-3" = {
     vmid = 1003, pve_node = "sv-proxmox-03"
     ip = "172.16.40.13", mac_k8s = "BC:24:11:40:00:13"
-    cores = 4, memory_mib = 8192, disk_gib = 60
+    cores = 4, memory_mib = 16384, disk_gib = 60
   }
 }
 
