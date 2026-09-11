@@ -54,8 +54,6 @@ spec:
       owner: umami
       secret:
         name: umami-db-owner
-      postInitSQL:
-        - ALTER DATABASE umami SET timezone TO 'UTC'
   affinity:
     enablePodAntiAffinity: true
     podAntiAffinityType: required
