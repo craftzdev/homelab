@@ -5,6 +5,10 @@ metadata:
   namespace: argocd
   annotations:
     argocd.argoproj.io/sync-wave: "6"
+    # CNPG defaults and owns parts of its CR at runtime. Ask Argo CD to use
+    # the API server's dry-run result so the desired/live comparison matches
+    # the ServerSideApply sync strategy below.
+    argocd.argoproj.io/compare-options: ServerSideDiff=true
   finalizers:
     - resources-finalizer.argocd.argoproj.io
 spec:
