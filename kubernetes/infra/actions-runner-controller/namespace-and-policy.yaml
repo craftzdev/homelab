@@ -82,7 +82,8 @@ spec:
 
 ---
 # Job Pods can resolve DNS and use public HTTPS. They cannot reach the
-# Kubernetes API or home networks. Harbor HTTPS is the sole Tailnet exception.
+# Kubernetes API or home networks. Harbor's dedicated CI endpoint is the sole
+# private-network exception.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -113,9 +114,11 @@ spec:
         - ports:
             - port: "443"
               protocol: TCP
-    - toFQDNs:
-        - matchName: harbor.tailb6c7d.ts.net
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: harbor
+            k8s:app.kubernetes.io/name: harbor-ci-proxy
       toPorts:
         - ports:
-            - port: "443"
+            - port: "5000"
               protocol: TCP

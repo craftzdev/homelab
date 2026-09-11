@@ -32,6 +32,13 @@ spec:
         - ports:
             - port: "8001"
               protocol: TCP
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: arc-runners
+      toPorts:
+        - ports:
+            - port: "5000"
+              protocol: TCP
     - fromEntities:
         - host
         - remote-node
