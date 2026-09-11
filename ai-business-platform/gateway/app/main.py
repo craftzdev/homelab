@@ -620,10 +620,13 @@ def request_production_approval(
         ).fetchone()
         if project is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="project not found")
-        if project["state"] != "QA_PASSED":
+        if project["state"] not in {"QA_PASSED", "QA_REVIEW_REQUIRED"}:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail="project must pass QA before production approval",
+                detail=(
+                    "project must pass QA or require an explicit human QA review "
+                    "before production approval"
+                ),
             )
         connection.execute(
             "INSERT INTO approvals (id, project_id, kind, state, requested_at) "
@@ -634,7 +637,12 @@ def request_production_approval(
             "UPDATE projects SET state = 'AWAITING_APPROVAL', updated_at = %s WHERE id = %s",
             (now, project_id),
         )
-        _project_event(connection, project_id, "approval.requested", {"approval_id": str(approval_id)})
+        _project_event(
+            connection,
+            project_id,
+            "approval.requested",
+            {"approval_id": str(approval_id), "qa_state": project["state"]},
+        )
         connection.commit()
     return {"approval_id": str(approval_id), "project_id": project_id, "state": "PENDING"}
 
