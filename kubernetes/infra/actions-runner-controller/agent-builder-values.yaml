@@ -25,10 +25,11 @@ template:
       - name: dind
         image: >-
           docker:29.8.0-dind@sha256:5efed980cba3fc126cf54e21a5a6ff8849d05b6e0623d6e7612f48e9cd6cd17e
+        command: ["/bin/sh", "-c"]
         args:
-          - dockerd
-          - --host=unix:///var/run/docker.sock
-          - --group=$(DOCKER_GROUP_GID)
+          - >-
+            update-ca-certificates &&
+            exec dockerd --host=unix:///var/run/docker.sock --group=${DOCKER_GROUP_GID}
         env:
           - name: DOCKER_GROUP_GID
             value: "123"
@@ -49,6 +50,10 @@ template:
             mountPath: /home/runner/externals
           - name: harbor-ci-cert
             mountPath: /etc/docker/certs.d/172.16.40.201:5000/ca.crt
+            subPath: tls.crt
+            readOnly: true
+          - name: harbor-ci-cert
+            mountPath: /usr/local/share/ca-certificates/harbor-ci.crt
             subPath: tls.crt
             readOnly: true
     containers:
