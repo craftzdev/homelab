@@ -94,7 +94,9 @@ metadata:
     argocd.argoproj.io/sync-wave: "-3"
 spec:
   schedule: "0 30 3 * * *"
-  immediate: true
+  # Avoid racing the initial primary bootstrap. Operators can trigger the
+  # first backup after all three instances are healthy.
+  immediate: false
   backupOwnerReference: self
   target: prefer-standby
   cluster:
