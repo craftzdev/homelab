@@ -1124,6 +1124,11 @@ metadata:
   namespace: argocd
   annotations:
     argocd.argoproj.io/sync-wave: "3"
+    # Gateway API の CRD は parentRefs の group/kind などを API サーバー側で
+    # 既定値補完する。ServerSideApply との組み合わせでは、その補完分が
+    # 差分として残り続けて永久に OutOfSync になる。API サーバーの
+    # dry-run 結果と比較させて、desired/live の判定を実態に合わせる。
+    argocd.argoproj.io/compare-options: ServerSideDiff=true
   finalizers:
     - resources-finalizer.argocd.argoproj.io
 spec:

@@ -244,6 +244,53 @@ configs:
         clusters:
           - "*"
 
+    # -----------------------------------------------------------------------
+    # Gateway の健全性判定
+    #
+    # 既定の判定は Programmed=True を要求する。しかし外部公開用 Gateway は
+    # LoadBalancer の IP を **意図的に** 受け取らない。LAN へ露出させないため
+    # であり（kubernetes/infra/gateway/gateway.yaml を参照）、Cilium は
+    # そのとき Programmed=False / AddressNotAssigned を報告する。
+    #
+    # 既定のままだと、正常な構成の Gateway が永久に Progressing になり、
+    # 「全 Application が Synced かつ Healthy」を前提とする
+    # rebuild-talos-cluster.sh の検証が必ず失敗する。
+    #
+    # AddressNotAssigned だけを Healthy として扱い、それ以外の理由による
+    # Programmed=False と Accepted=False は今までどおり異常として扱う。
+    # 「Healthy にするために健全性検査を全部やめる」ことはしない。
+    # -----------------------------------------------------------------------
+    resource.customizations.health.gateway.networking.k8s.io_Gateway: |
+      local hs = {}
+      hs.status = "Progressing"
+      hs.message = "Waiting for Gateway status"
+      if obj.status ~= nil and obj.status.conditions ~= nil then
+        local accepted, programmed
+        for _, c in ipairs(obj.status.conditions) do
+          if c.type == "Accepted" then accepted = c end
+          if c.type == "Programmed" then programmed = c end
+        end
+        if accepted ~= nil and accepted.status == "False" then
+          hs.status = "Degraded"
+          hs.message = "Gateway not accepted: " .. (accepted.message or accepted.reason or "")
+          return hs
+        end
+        if accepted ~= nil and accepted.status == "True" then
+          if programmed ~= nil and programmed.status == "True" then
+            hs.status = "Healthy"
+            hs.message = "Gateway is programmed"
+          elseif programmed ~= nil and programmed.reason == "AddressNotAssigned" then
+            -- ClusterIP only by design; no LoadBalancer address is expected.
+            hs.status = "Healthy"
+            hs.message = "Gateway accepted; reachable via ClusterIP only (no LoadBalancer address by design)"
+          elseif programmed ~= nil and programmed.status == "False" then
+            hs.status = "Degraded"
+            hs.message = "Gateway not programmed: " .. (programmed.message or programmed.reason or "")
+          end
+        end
+      end
+      return hs
+
   params:
     server.insecure: true
 
