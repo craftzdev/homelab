@@ -107,6 +107,39 @@ resource "cloudflare_zero_trust_access_policy" "allow_saas_worker" {
 }
 
 # ---------------------------------------------------------------------------
+# Service Token — Gatus（外形監視）用の非人間 ID
+#
+# saas_worker のトークンを使い回さない理由:
+#
+#   - 用途が違う。saas_worker は業務 API を呼ぶ。Gatus は health endpoint を
+#     GET するだけである。片方を失効させたいときに、もう片方を巻き込む。
+#   - 監視が「誰のリクエストか」を Access ログ上で区別できなくなる。
+#     監視の定期アクセスと実トラフィックが混ざると、異常検知の役に立たない。
+#   - 監視 Pod が侵害されたとき、漏れるのが業務 API を叩けるトークンで
+#     あってはならない。
+# ---------------------------------------------------------------------------
+resource "cloudflare_zero_trust_access_service_token" "gatus_monitor" {
+  account_id = var.cloudflare_account_id
+  name       = var.gatus_service_token_name
+  duration   = var.gatus_service_token_duration
+  enabled    = true
+
+  client_secret_version = var.gatus_service_token_secret_version
+}
+
+resource "cloudflare_zero_trust_access_policy" "allow_gatus_monitor" {
+  account_id = var.cloudflare_account_id
+  name       = "allow-${var.gatus_service_token_name}"
+  decision   = "non_identity"
+
+  include = [{
+    service_token = {
+      token_id = cloudflare_zero_trust_access_service_token.gatus_monitor.id
+    }
+  }]
+}
+
+# ---------------------------------------------------------------------------
 # Access アプリケーション（公開ホスト名ごと）
 # ---------------------------------------------------------------------------
 resource "cloudflare_zero_trust_access_application" "published" {
@@ -137,10 +170,20 @@ resource "cloudflare_zero_trust_access_application" "published" {
   http_only_cookie_attribute = true
   same_site_cookie_attribute = "strict"
 
-  policies = [{
-    id         = cloudflare_zero_trust_access_policy.allow_saas_worker.id
-    precedence = 1
-  }]
+  # 2 つのポリシーはどちらも decision = "non_identity" であり、OR で評価される。
+  # saas_worker のトークンか Gatus のトークンのどちらかを持つリクエストだけが
+  # 通る。Gatus 用を分けてあるため、監視を止めずに業務トークンだけを失効でき、
+  # その逆もできる。
+  policies = [
+    {
+      id         = cloudflare_zero_trust_access_policy.allow_saas_worker.id
+      precedence = 1
+    },
+    {
+      id         = cloudflare_zero_trust_access_policy.allow_gatus_monitor.id
+      precedence = 2
+    },
+  ]
 }
 
 # ===========================================================================

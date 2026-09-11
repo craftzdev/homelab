@@ -281,6 +281,29 @@ Tailnet障害時のfallbackは
 NetworkPolicyでDROPされた通信を追う手順は
 [5. トラブルシューティング / 通信が落ちている](#通信が落ちている)を参照してください。
 
+### 3.5.2 Gatus（公開経路の外形監視）
+
+クラスタの中から**外の URL** を叩き、利用者と同じ経路
+（DNS → Cloudflare Edge → Access → Tunnel → アプリ）を検査します。
+
+```text
+https://status.tailb6c7d.ts.net
+```
+
+Pod がReadyでもTunnelが切れていれば利用者には落ちて見えます。その差を
+検出するのがGatusの役割です。ただし停電・回線断・クラスタ全停止では
+Gatus自身も止まるため、これは完全な外部監視ではありません。
+
+Cloudflare Access用の専用Service Token（`gatus-monitor`）が必要です。
+`saas-worker`のトークンは共有しません。作成と Keychain への保存は
+[kubernetes/infra/gatus/README.md](../kubernetes/infra/gatus/README.md)
+を参照してください。`scripts/bootstrap-cluster-secrets.sh`がKeychainから
+Kubernetes Secretへ投入します。
+
+監視対象を追加するときは、Gatusの`config.endpoints`とNetworkPolicyの
+`toFQDNs`を**同じPRで**更新してください。片方だけでは監視が無言で
+誤報し続けます。
+
 ### 3.6 Cloudflare の設定
 
 ```bash
@@ -382,6 +405,7 @@ NamespaceとLonghorn PVCはArgo CD管理下にありますが、誤ったGit変�
 | 通信の可視化 | `kubectl -n kube-system exec -it ds/cilium -- hubble observe --follow` |
 | 落ちている通信 | `... hubble observe --verdict DROPPED --last 100` |
 | Hubble UI | https://hubble.tailb6c7d.ts.net/ （fallback: `kubectl -n kube-system port-forward svc/hubble-ui 12000:80`） |
+| 公開経路の外形監視 | https://status.tailb6c7d.ts.net/ |
 | 脆弱性レポート | `kubectl get vulnerabilityreports -A` |
 
 > Talos には SSH がありません。ノードの調査は `talosctl` で行います。

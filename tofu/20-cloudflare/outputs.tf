@@ -46,6 +46,37 @@ output "service_token_expires_at" {
   value       = cloudflare_zero_trust_access_service_token.saas_worker.expires_at
 }
 
+# ---------------------------------------------------------------------------
+# Gatus 用 Service Token
+#
+# 値は Keychain へ保存し、そこから
+# scripts/bootstrap-cluster-secrets.sh が Kubernetes Secret を作る。
+# Git にも tfvars にも平文で置かない。
+# ---------------------------------------------------------------------------
+output "gatus_service_token_client_id" {
+  description = "Gatus に設定する CF-Access-Client-Id の値"
+  value       = cloudflare_zero_trust_access_service_token.gatus_monitor.client_id
+}
+
+output "gatus_service_token_client_secret" {
+  description = <<-EOT
+    Gatus に設定する CF-Access-Client-Secret の値。
+
+    Keychain へ保存する（端末の画面やシェル履歴に残さない）:
+      tofu output -raw gatus_service_token_client_secret \
+        | security add-generic-password -U \
+            -s dev.craftz.homelab.gatus-cloudflare-access-client-secret \
+            -a gatus -w
+  EOT
+  value       = cloudflare_zero_trust_access_service_token.gatus_monitor.client_secret
+  sensitive   = true
+}
+
+output "gatus_service_token_expires_at" {
+  description = "Gatus 用 Service Token の有効期限。期限前にローテーションすること。"
+  value       = cloudflare_zero_trust_access_service_token.gatus_monitor.expires_at
+}
+
 output "credentials_file_path" {
   description = "cloudflared の credentials.json を書き出したパス（機密）"
   value       = local_sensitive_file.cloudflared_credentials.filename

@@ -1,0 +1,160 @@
+# ===========================================================================
+# Gatus — 公開経路の外形監視
+#
+# ---------------------------------------------------------------------------
+# 何を監視しているのか
+# ---------------------------------------------------------------------------
+# Service の生存ではなく、利用者が実際に通る経路そのものを検査する。
+#
+#   DNS → Cloudflare Edge → Access → Tunnel → Gateway → アプリ
+#
+# クラスタ内から「外の URL」へ出ていくため、Tunnel の切断、Access 設定の
+# 事故、証明書の期限切れ、アプリの依存先障害のいずれもここで表面化する。
+# Pod の Ready だけを見ていては、この経路のどこが壊れても気づけない。
+#
+# ⚠️ これは完全な外部監視ではない。停電・回線断・クラスタ全停止では
+#    Gatus 自身も停止するため通知できない。詳細は README を参照。
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# SQLite を RWO の Longhorn ボリュームに置くため Recreate にする。
+# RollingUpdate のままだと新旧 2 つの Pod が同時に同じボリュームを要求し、
+# multi-attach エラーで更新が止まる。
+# ---------------------------------------------------------------------------
+deployment:
+  strategy: Recreate
+
+replicaCount: 1
+
+image:
+  repository: twinproduction/gatus
+  pullPolicy: IfNotPresent
+
+# 監視ツール自身が Kubernetes API を触る理由は無い。
+serviceAccount:
+  create: false
+  autoMount: false
+
+podSecurityContext:
+  fsGroup: 65534
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 65534
+  runAsGroup: 65534
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  seccompProfile:
+    type: RuntimeDefault
+
+service:
+  type: ClusterIP
+  port: 80
+  portName: http
+  targetPort: 8080
+
+# UI の公開は Tailscale Ingress（ingress.yaml）だけで行う。
+# chart 側の Ingress を有効にすると公開経路が二重になる。
+ingress:
+  enabled: false
+
+# control-plane へアプリ負荷を載せない。
+nodeSelector:
+  homelab.craftz.dev/workload-plane: "true"
+
+# 初期値。稼働後の Prometheus 実測で調整する。
+resources:
+  requests:
+    cpu: 25m
+    memory: 64Mi
+  limits:
+    cpu: 250m
+    memory: 256Mi
+
+# ---------------------------------------------------------------------------
+# 監視結果の保存
+#
+# 再起動で履歴が消えると「いつから落ちていたか」を失う。Longhorn の
+# retain クラスを使い、Application を消してもボリュームは残す。
+# ---------------------------------------------------------------------------
+persistence:
+  enabled: true
+  size: 1Gi
+  mountPath: /data
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: longhorn-retain
+
+# ---------------------------------------------------------------------------
+# Cloudflare Access のサービストークン
+#
+# Keychain から scripts/bootstrap-cluster-secrets.sh が作成する Secret を
+# 環境変数として渡し、config 側では ${...} で参照する。値が Git にも
+# ConfigMap にも現れない。
+# ---------------------------------------------------------------------------
+envFrom:
+  - secretRef:
+      name: gatus-cloudflare-access
+
+serviceMonitor:
+  enabled: true
+  interval: 1m
+  path: /metrics
+  scheme: http
+  # kube-prometheus-stack はこのラベルを持つ ServiceMonitor だけを拾う。
+  labels:
+    release: kube-prometheus-stack
+
+# chart の NetworkPolicy は使わない。namespace-and-policy.yaml で
+# 他の namespace と同じ default-deny + CiliumNetworkPolicy の形に揃える。
+networkPolicy:
+  enabled: false
+
+# ===========================================================================
+# Gatus 本体の設定
+# ===========================================================================
+config:
+  metrics: true
+
+  storage:
+    type: sqlite
+    path: /data/data.db
+    # 無制限にすると SQLite が単調増加する。既定値を明示して固定する。
+    maximum-number-of-results: 100
+    maximum-number-of-events: 50
+
+  # ui はインターネットへ公開しない。Tailnet 内の管理者だけが見る。
+  ui:
+    title: "homelab status"
+    description: "Cloudflare 経由の公開経路の健全性"
+
+  endpoints:
+    # -----------------------------------------------------------------------
+    # AI Business Gateway
+    #
+    # `/` や `/health` ではなく `/ready` を見る。`/health` は「プロセスが
+    # 生きている」だけを返すのに対し、`/ready` は PostgreSQL へ実際に
+    # クエリを投げる。DB が落ちた Gateway を healthy と報告しないため。
+    #
+    # 応答 JSON の status フィールドまで検証する。200 が返っても中身が
+    # ready でなければ異常であり、ステータスコードだけでは見逃す。
+    # -----------------------------------------------------------------------
+    - name: ai-business-gateway
+      group: cloudflare-published
+      url: https://gateway.craftz.dev/ready
+      interval: 5m
+      client:
+        timeout: 10s
+      headers:
+        CF-Access-Client-Id: "${CF_ACCESS_CLIENT_ID}"
+        CF-Access-Client-Secret: "${CF_ACCESS_CLIENT_SECRET}"
+      conditions:
+        - "[STATUS] == 200"
+        - "[BODY].status == ready"
+        - "[RESPONSE_TIME] < 3000"
+        # 証明書の期限切れは「ある朝突然すべてが落ちる」典型的な原因。
+        # 7 日前に気づけるようにしておく。
+        - "[CERTIFICATE_EXPIRATION] > 168h"

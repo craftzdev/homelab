@@ -37,6 +37,7 @@ spec:
     - https://piraeus.io/helm-charts/
     - https://pkgs.tailscale.com/helmcharts
     - https://cloudnative-pg.github.io/charts
+    - https://twin.github.io/helm-charts
     - ghcr.io/actions/actions-runner-controller-charts
 
   # -------------------------------------------------------------------------
@@ -81,6 +82,9 @@ spec:
       namespace: cnpg-system
     - server: https://kubernetes.default.svc
       namespace: analytics
+    # Gatus（公開経路の外形監視）
+    - server: https://kubernetes.default.svc
+      namespace: status
     # kubelet-serving-cert-approver は上流マニフェストが専用 namespace を作る
     - server: https://kubernetes.default.svc
       namespace: kubelet-serving-cert-approver

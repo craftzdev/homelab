@@ -35,6 +35,10 @@
         icon: cilium.png
         href: https://hubble.tailb6c7d.ts.net/
         description: Cilium network flows and policy verdicts
+    - Gatus:
+        icon: gatus.png
+        href: https://status.tailb6c7d.ts.net/
+        description: External health of the Cloudflare published routes
     - Umami:
         icon: umami.png
         href: https://umami.tailb6c7d.ts.net/

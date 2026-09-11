@@ -70,6 +70,41 @@ variable "service_token_secret_version" {
   default     = 0
 }
 
+# ---------------------------------------------------------------------------
+# Gatus（外形監視）用 Service Token
+#
+# saas_worker とは独立した変数にしている。片方のローテーションが
+# もう片方を巻き込まないようにするためであり、
+# secret_version を別々にインクリメントできることがその要点である。
+# ---------------------------------------------------------------------------
+variable "gatus_service_token_name" {
+  description = "Gatus（外形監視）用の Access Service Token 名"
+  type        = string
+  default     = "gatus-monitor"
+}
+
+variable "gatus_service_token_duration" {
+  description = <<-EOT
+    Gatus 用 Service Token の有効期間。
+
+    saas_worker と同じ 90 日にしている。監視用だからといって
+    長い有効期限を与えると、「監視は止めたくない」という理由で
+    ローテーションが先送りされ続ける。
+  EOT
+  type        = string
+  default     = "2160h" # 90 日
+}
+
+variable "gatus_service_token_secret_version" {
+  description = <<-EOT
+    この値をインクリメントすると Gatus 用 Service Token のシークレットが
+    ローテーションされる。ローテーション後は Keychain と Kubernetes Secret を
+    scripts/bootstrap-cluster-secrets.sh で更新すること。
+  EOT
+  type        = number
+  default     = 1
+}
+
 variable "published_services" {
   description = <<-EOT
     外部（Cloudflare Workers 上の SaaS）へ公開するサービスの定義。

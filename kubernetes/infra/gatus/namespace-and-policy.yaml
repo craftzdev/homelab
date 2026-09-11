@@ -1,0 +1,107 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: status
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: status
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress", "Egress"]
+
+---
+# ===========================================================================
+# Gatus の通信範囲
+#
+# ---------------------------------------------------------------------------
+# egress をここまで絞る理由
+# ---------------------------------------------------------------------------
+# Gatus は「外部の URL へ出ていくことが仕事」の Pod である。侵害された
+# 場合、外向き通信が正常な挙動と区別しにくい。だからこそ、出ていける先を
+# 監視対象そのものだけに限定しておく価値がある。
+#
+# ⚠️ status namespace は clusterwide-egress-deny の対象から外してある。
+#    あの CCNP は宅内 CIDR を deny する一方で、副作用として
+#    `toEntities: all`（＝それ以外どこへでも許可）を与えてしまう。
+#    対象のままだと、ここに書いた許可リストは公開 IP に対して意味を
+#    持たなくなる。除外したうえで、必要な宛先だけをこのファイルで
+#    明示的に許可する。
+#
+#    その結果、宅内 CIDR への deny という保険もこの namespace には
+#    掛かっていない。ここへ egress ルールを足すときは、その宛先が
+#    宅内やクラスタ内を指していないことを必ず確認すること。
+#
+# 監視対象を増やすときは、Gatus の config と下の toFQDNs を
+# **同じ PR で** 更新する。片方だけでは監視が無言で失敗する。
+# ===========================================================================
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: gatus-rules
+  namespace: status
+spec:
+  endpointSelector: {}
+
+  ingress:
+    # Tailscale Ingress proxy から UI へ
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: tailscale
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+    # Prometheus の /metrics 収集
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: monitoring
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+    # kubelet の liveness / readiness probe はノード側から届く
+    - fromEntities:
+        - host
+        - remote-node
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+
+  egress:
+    # -----------------------------------------------------------------------
+    # CoreDNS
+    #
+    # toFQDNs を使うため、DNS 応答を Cilium の DNS proxy に見せる必要がある。
+    # rules.dns が無いと名前から IP への対応が学習されず、下の toFQDNs が
+    # 一致しなくなる。
+    # -----------------------------------------------------------------------
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+          rules:
+            dns:
+              - matchPattern: "*"
+
+    # 監視対象の公開 FQDN だけへ HTTPS。
+    - toFQDNs:
+        - matchName: gateway.craftz.dev
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP

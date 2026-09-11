@@ -65,10 +65,27 @@ spec:
           - kube-system
           - portal
           - velero
+          # status だけは除外の理由が逆である。宅内へ出たいからではなく、
+          # 下の `egress: toEntities: all` を受け取りたくないために外す。
+          # Gatus には監視対象の FQDN へ出る以外の egress を与えない設計で、
+          # 対象のままだとその制限が公開 IP に対して効かなくなる。許可は
+          # kubernetes/infra/gatus/namespace-and-policy.yaml がすべて明示する。
+          - status
 
   # A deny-only policy also turns on egress enforcement for every selected
   # endpoint. Explicitly allow all non-denied destinations; egressDeny has
   # precedence and remains the hard boundary below.
+  #
+  # ⚠️ この allow の副作用を理解しておくこと。Cilium は全ポリシーの allow を
+  #    合成するため、この 1 行は選択された全 namespace に「宅内 CIDR 以外は
+  #    どこへでも出てよい」を与える。つまり各 namespace の
+  #    CiliumNetworkPolicy に書いた egress 許可リストは、公開 IP や他の
+  #    namespace の Pod に対しては実質的に効いていない（宅内 CIDR への
+  #    deny と、宛先側の ingress ポリシーだけが実際の境界になる）。
+  #
+  #    egress を本当に閉じたい namespace は、上の endpointSelector から
+  #    除外したうえで、その namespace 内で必要な宛先をすべて明示する。
+  #    status namespace がその例である。
   egress:
     - toEntities:
         - all

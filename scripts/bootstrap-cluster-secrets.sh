@@ -34,6 +34,9 @@ HARBOR_PULL_KEYCHAIN_ACCOUNT="${HARBOR_PULL_KEYCHAIN_ACCOUNT:-robot\$ai-business
 HARBOR_CI_CERT_KEYCHAIN_SERVICE="${HARBOR_CI_CERT_KEYCHAIN_SERVICE:-dev.craftz.homelab.harbor-ci-proxy-tls-cert}"
 HARBOR_CI_KEY_KEYCHAIN_SERVICE="${HARBOR_CI_KEY_KEYCHAIN_SERVICE:-dev.craftz.homelab.harbor-ci-proxy-tls-key}"
 HARBOR_CI_TLS_KEYCHAIN_ACCOUNT="${HARBOR_CI_TLS_KEYCHAIN_ACCOUNT:-172.16.40.201}"
+GATUS_CF_ID_KEYCHAIN_SERVICE="${GATUS_CF_ID_KEYCHAIN_SERVICE:-dev.craftz.homelab.gatus-cloudflare-access-client-id}"
+GATUS_CF_SECRET_KEYCHAIN_SERVICE="${GATUS_CF_SECRET_KEYCHAIN_SERVICE:-dev.craftz.homelab.gatus-cloudflare-access-client-secret}"
+GATUS_CF_KEYCHAIN_ACCOUNT="${GATUS_CF_KEYCHAIN_ACCOUNT:-gatus}"
 
 info() { printf '[INFO] %s\n' "$*"; }
 ok() { printf '[OK]   %s\n' "$*"; }
@@ -385,6 +388,44 @@ EOF
   ok "Homepage Proxmox credential is present"
 else
   info "Homepage Proxmox token is absent from Keychain; run reconcile-homepage-proxmox-token.sh"
+fi
+
+# Gatus probes the published Cloudflare hostnames from inside the cluster, so it
+# needs an Access service token of its own. It is deliberately not the
+# saas-worker token: revoking one must never interrupt the other, and the Access
+# log stays able to tell monitoring traffic apart from real traffic.
+#
+# The value reaches Kubernetes through a heredoc on this process's stdin. It is
+# never a command argument and never touches a temporary file.
+if gatus_cf_client_id="$(security find-generic-password \
+    -s "${GATUS_CF_ID_KEYCHAIN_SERVICE}" \
+    -a "${GATUS_CF_KEYCHAIN_ACCOUNT}" -w 2>/dev/null)" \
+  && gatus_cf_client_secret="$(security find-generic-password \
+    -s "${GATUS_CF_SECRET_KEYCHAIN_SERVICE}" \
+    -a "${GATUS_CF_KEYCHAIN_ACCOUNT}" -w 2>/dev/null)"; then
+  [[ -n "${gatus_cf_client_id}" ]] || die "Gatus Access client ID is empty"
+  [[ -n "${gatus_cf_client_secret}" ]] || die "Gatus Access client secret is empty"
+  # Cloudflare service token IDs always carry this suffix. Catching a wrong
+  # Keychain entry here is far cheaper than debugging silent 403s later.
+  [[ "${gatus_cf_client_id}" == *.access ]] \
+    || die "Gatus Access client ID does not look like a Cloudflare service token"
+  kubectl create namespace status --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+  kubectl apply -f - >/dev/null <<EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: gatus-cloudflare-access
+  namespace: status
+type: Opaque
+stringData:
+  CF_ACCESS_CLIENT_ID: "${gatus_cf_client_id}"
+  CF_ACCESS_CLIENT_SECRET: "${gatus_cf_client_secret}"
+EOF
+  unset gatus_cf_client_id gatus_cf_client_secret
+  ok "Gatus Cloudflare Access credential is present"
+else
+  unset gatus_cf_client_id gatus_cf_client_secret 2>/dev/null || true
+  info "Gatus Cloudflare Access token is absent from Keychain; create it with tofu -chdir=tofu/20-cloudflare apply and store the outputs"
 fi
 
 # The private Worker repository uses a repository-scoped, read-only GitHub

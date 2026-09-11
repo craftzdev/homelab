@@ -22,6 +22,7 @@
 #     7  homepage        : Tailnet-only management portal
 #     8  arc-runners     : ephemeral runner scale set
 #     6  umami           : Tailnet-only analytics with HA PostgreSQL
+#     7  gatus           : Cloudflare 公開経路の外形監視
 #
 # Gateway/cloudflared は Business Gateway VM 1200 で稼働するためクラスタには置かない。
 # Velero は外部オブジェクトストレージ設定後に別変更として有効化する。
@@ -976,4 +977,58 @@ spec:
       prune: true
       selfHeal: true
     syncOptions:
+      - ServerSideApply=true
+
+---
+# ---------------------------------------------------------------------------
+# Gatus — 公開経路の外形監視
+#
+# Prometheus は「クラスタの中から見た状態」を測る。Gatus はクラスタの中から
+# **外の URL** を叩き、DNS → Cloudflare Edge → Access → Tunnel → アプリ
+# という利用者と同じ経路を一括で検査する。Pod が Ready でも Tunnel が
+# 切れていれば利用者には落ちて見える。その差を検出するための Application。
+#
+# Cloudflare Access のサービストークンは Keychain から
+# scripts/bootstrap-cluster-secrets.sh が Secret として投入する。
+# Git には平文・暗号文とも置かない。
+# ---------------------------------------------------------------------------
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: gatus
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "7"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: infrastructure
+  sources:
+    - repoURL: https://twin.github.io/helm-charts
+      chart: gatus
+      targetRevision: 1.5.0
+      helm:
+        releaseName: gatus
+        valueFiles:
+          - $values/kubernetes/infra/gatus/values.yaml
+    # namespace / NetworkPolicy / Tailscale Ingress
+    - repoURL: https://github.com/craftzdev/homelab.git
+      targetRevision: main
+      path: kubernetes/infra/gatus
+      directory:
+        include: '{namespace-and-policy.yaml,ingress.yaml}'
+    - repoURL: https://github.com/craftzdev/homelab.git
+      targetRevision: main
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: status
+  syncPolicy:
+    automated:
+      # SQLite の PVC を prune で消さない。監視履歴は消えると復元できない。
+      prune: false
+      selfHeal: true
+    syncOptions:
+      # namespace-and-policy.yaml が Pod Security ラベル付きで作る。
+      - CreateNamespace=false
       - ServerSideApply=true

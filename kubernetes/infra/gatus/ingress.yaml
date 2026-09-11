@@ -1,0 +1,19 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: gatus
+  namespace: status
+  annotations:
+    # 他の管理 UI と同じ管理者専用の Tailnet identity を共有する。
+    tailscale.com/tags: tag:argocd
+    tailscale.com/proxy-class: restricted-userspace
+spec:
+  ingressClassName: tailscale
+  defaultBackend:
+    service:
+      name: gatus
+      port:
+        name: http
+  tls:
+    - hosts:
+        - status
