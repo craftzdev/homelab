@@ -44,6 +44,30 @@ metadata:
     homelab.io/gateway-access: external
 
 ---
+# ===========================================================================
+# Gateway が作る Service の設定
+#
+# allocateLoadBalancerNodePorts: false が本体である。これが無いと
+# Kubernetes は LoadBalancer Service に NodePort を割り当て、全ノードの
+# VLAN40 アドレスで Gateway に到達できてしまう。
+# ===========================================================================
+apiVersion: cilium.io/v2alpha1
+kind: CiliumGatewayClassConfig
+metadata:
+  name: external-no-nodeport
+  namespace: gateway
+  labels:
+    app.kubernetes.io/part-of: external-access
+spec:
+  description: |
+    外部公開用 Gateway の Service 設定。NodePort を割り当てず、
+    LB IPAM の serviceSelector にも一致させないことで、
+    到達経路をクラスタ内の ClusterIP だけに限定する。
+  service:
+    type: LoadBalancer
+    allocateLoadBalancerNodePorts: false
+
+---
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
@@ -51,20 +75,38 @@ metadata:
   namespace: gateway
   labels:
     app.kubernetes.io/part-of: external-access
-  annotations:
-    # -------------------------------------------------------------------------
-    # ⚠️ Service の type を ClusterIP にする
-    #
-    # 既定では Gateway は LoadBalancer Service を作る。しかしそれは
-    # VLAN40 へ L2 公開されることを意味し、**Cloudflare Access を迂回できる
-    # 第 2 の入口**になる（旧 ingress-nginx で実際に作ってしまっていた穴）。
-    #
-    # cloudflared は同じクラスタ内にいるので ClusterIP で十分到達できる。
-    # 「外部公開は Cloudflare Tunnel のみ」を構成そのもので保証する。
-    # -------------------------------------------------------------------------
-    io.cilium/lb-mode: "clusterip"
 spec:
   gatewayClassName: cilium
+
+  # -------------------------------------------------------------------------
+  # ⚠️ LAN 側に第 2 の入口を作らせない
+  #
+  # Cilium の Gateway API は必ず Service を作る。type に選べるのは
+  # LoadBalancer か NodePort だけで、ClusterIP は指定できない
+  # （CiliumGatewayClassConfig の service.type がこの 2 つに限定されている）。
+  # 以前ここに書かれていた `io.cilium/lb-mode: clusterip` という annotation は
+  # Cilium が読まないため、何の効果も無かった。
+  #
+  # 実際の入口は 2 つありうる。
+  #
+  #   1. LoadBalancer の外部 IP
+  #      → vlan40-pool の serviceSelector が
+  #        `homelab.io/lan-exposed: "true"` を要求しており、この Service には
+  #        付いていないため IP は割り当てられない。
+  #
+  #   2. NodePort
+  #      → 既定では割り当てられてしまう。全ノードの VLAN40 アドレスで
+  #        Gateway に到達でき、Cloudflare Access を迂回できる。
+  #        下の parametersRef でこれを無効化する。
+  #
+  # 結果として Service は ClusterIP 経由でしか到達できず、
+  # 「外部公開は Cloudflare Tunnel のみ」が構成として保証される。
+  # -------------------------------------------------------------------------
+  infrastructure:
+    parametersRef:
+      group: cilium.io
+      kind: CiliumGatewayClassConfig
+      name: external-no-nodeport
 
   listeners:
     # -------------------------------------------------------------------------
