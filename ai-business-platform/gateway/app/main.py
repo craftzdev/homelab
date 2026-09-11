@@ -32,6 +32,7 @@ GATEWAY_API_TOKEN = os.environ["GATEWAY_API_TOKEN"]
 WORKER_CALLBACK_TOKEN = os.environ["WORKER_CALLBACK_TOKEN"]
 WORKER_BASE_URL = os.environ.get("WORKER_BASE_URL", "").rstrip("/")
 WORKER_API_TOKEN = os.environ.get("WORKER_API_TOKEN", "")
+HUMAN_APPROVAL_TOKEN = os.environ.get("HUMAN_APPROVAL_TOKEN", "")
 CLOUDFLARE_ACCESS_REQUIRED = os.environ.get(
     "CLOUDFLARE_ACCESS_REQUIRED", "false"
 ).lower() in {"1", "true", "yes"}
@@ -53,7 +54,7 @@ mcp = MCPServer(
     title="AI Business Gateway",
     version="0.1.0",
     instructions=(
-        "Submit bounded jobs to the AI Business Worker and inspect their results. "
+        "Register business ideas, submit bounded Agent jobs, and inspect results. "
         "Production, deployment, publishing, and other irreversible actions are not "
         "available through this MCP server."
     ),
@@ -114,6 +115,42 @@ UPDATE worker_events
    SET dispatch_id = 'legacy:' || event_id
  WHERE dispatch_id IS NULL;
 ALTER TABLE worker_events ALTER COLUMN dispatch_id SET NOT NULL;
+
+CREATE TABLE IF NOT EXISTS projects (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    idea TEXT NOT NULL,
+    state TEXT NOT NULL,
+    prd JSONB,
+    repository_url TEXT,
+    build_job_id UUID,
+    qa_job_id UUID,
+    production_url TEXT,
+    analytics JSONB,
+    growth_plan JSONB,
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS approvals (
+    id UUID PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id),
+    kind TEXT NOT NULL,
+    state TEXT NOT NULL,
+    requested_at TIMESTAMPTZ NOT NULL,
+    resolved_at TIMESTAMPTZ
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS approvals_one_pending_per_kind
+    ON approvals(project_id, kind) WHERE state = 'PENDING';
+
+CREATE TABLE IF NOT EXISTS project_events (
+    id UUID PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id),
+    event_type TEXT NOT NULL,
+    payload JSONB NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL
+);
 """
 
 
@@ -224,8 +261,43 @@ def require_callback_token(authorization: str | None = Header(default=None)) -> 
     _verify_bearer(authorization, WORKER_CALLBACK_TOKEN)
 
 
+def require_human_approval_token(
+    human_approval_token: str | None = Header(default=None, alias="X-Human-Approval-Token"),
+) -> None:
+    if not HUMAN_APPROVAL_TOKEN:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="human approval is not configured",
+        )
+    if not human_approval_token or not hmac.compare_digest(
+        human_approval_token, HUMAN_APPROVAL_TOKEN
+    ):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="unauthorized")
+
+
+class ProjectCreate(BaseModel):
+    project_id: str = Field(min_length=1, max_length=100, pattern=r"^[a-z0-9][a-z0-9-]*$")
+    title: str = Field(min_length=1, max_length=200)
+    idea: str = Field(min_length=20, max_length=8000)
+
+
+class ProjectRepositoryUpdate(BaseModel):
+    repository_url: str = Field(min_length=10, max_length=2000, pattern=r"^https://github\.com/")
+
+
+class ProjectProductionUpdate(BaseModel):
+    production_url: str = Field(min_length=10, max_length=2000, pattern=r"^https://")
+
+
+class ProjectAnalyticsUpdate(BaseModel):
+    analytics: dict[str, Any] = Field(min_length=1, max_length=50)
+
+
 class JobCreate(BaseModel):
     action: Literal[
+        "product.plan",
+        "qa.review",
+        "growth.plan",
         "browser.research",
         "analytics.read",
         "stripe.read",
@@ -245,6 +317,9 @@ class JobCreate(BaseModel):
 
 
 MCPAction = Literal[
+    "product.plan",
+    "qa.review",
+    "growth.plan",
     "browser.research",
     "analytics.read",
     "stripe.read",
@@ -267,6 +342,9 @@ class WorkerEvent(BaseModel):
 
 
 WORKER_ENDPOINTS = {
+    "product.plan": "planning",
+    "qa.review": "qa",
+    "growth.plan": "growth",
     "browser.research": "browser",
     "analytics.read": "data",
     "stripe.read": "data",
@@ -428,6 +506,204 @@ def ready() -> dict[str, str]:
     return {"status": "ready", "surface": API_SURFACE}
 
 
+def _public_project(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "project_id": row["id"],
+        "title": row["title"],
+        "idea": row["idea"],
+        "state": row["state"],
+        "prd": row["prd"],
+        "repository_url": row["repository_url"],
+        "build_job_id": str(row["build_job_id"]) if row["build_job_id"] else None,
+        "qa_job_id": str(row["qa_job_id"]) if row["qa_job_id"] else None,
+        "production_url": row["production_url"],
+        "analytics": row["analytics"],
+        "growth_plan": row["growth_plan"],
+        "created_at": row["created_at"].isoformat(),
+        "updated_at": row["updated_at"].isoformat(),
+    }
+
+
+def _project_event(
+    connection: Any, project_id: str, event_type: str, payload: dict[str, Any]
+) -> None:
+    connection.execute(
+        "INSERT INTO project_events (id, project_id, event_type, payload, created_at) "
+        "VALUES (%s, %s, %s, %s, %s)",
+        (uuid.uuid4(), project_id, event_type, json.dumps(payload), utcnow()),
+    )
+
+
+@app.post("/v1/projects", status_code=status.HTTP_201_CREATED)
+def create_project(
+    request: ProjectCreate, _: None = Depends(require_gateway_token)
+) -> dict[str, Any]:
+    now = utcnow()
+    with pool.connection() as connection:
+        try:
+            row = connection.execute(
+                """
+                INSERT INTO projects (id, title, idea, state, created_at, updated_at)
+                VALUES (%s, %s, %s, 'IDEA_SUBMITTED', %s, %s)
+                RETURNING *
+                """,
+                (request.project_id, request.title, request.idea, now, now),
+            ).fetchone()
+            _project_event(connection, request.project_id, "idea.submitted", request.model_dump())
+            connection.commit()
+        except UniqueViolation as error:
+            connection.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, detail="project already exists"
+            ) from error
+    return _public_project(row)
+
+
+@app.get("/v1/projects/{project_id}")
+def get_project(
+    project_id: str, _: None = Depends(require_gateway_token)
+) -> dict[str, Any]:
+    with pool.connection() as connection:
+        row = connection.execute("SELECT * FROM projects WHERE id = %s", (project_id,)).fetchone()
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="project not found")
+    return _public_project(row)
+
+
+@app.put("/v1/projects/{project_id}/repository")
+def register_project_repository(
+    project_id: str,
+    request: ProjectRepositoryUpdate,
+    _: None = Depends(require_gateway_token),
+    __: None = Depends(require_human_approval_token),
+) -> dict[str, Any]:
+    with pool.connection() as connection:
+        row = connection.execute(
+            """
+            UPDATE projects
+               SET repository_url = %s, state = 'REPOSITORY_READY', updated_at = %s
+             WHERE id = %s AND state IN ('PRD_READY', 'REPOSITORY_READY')
+             RETURNING *
+            """,
+            (request.repository_url, utcnow(), project_id),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="project must have an approved PRD before repository registration",
+            )
+        _project_event(connection, project_id, "repository.registered", request.model_dump())
+        connection.commit()
+    return _public_project(row)
+
+
+@app.post("/v1/projects/{project_id}/approval", status_code=status.HTTP_201_CREATED)
+def request_production_approval(
+    project_id: str, _: None = Depends(require_gateway_token)
+) -> dict[str, Any]:
+    now = utcnow()
+    approval_id = uuid.uuid4()
+    with pool.connection() as connection:
+        project = connection.execute(
+            "SELECT state FROM projects WHERE id = %s FOR UPDATE", (project_id,)
+        ).fetchone()
+        if project is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="project not found")
+        if project["state"] != "QA_PASSED":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="project must pass QA before production approval",
+            )
+        connection.execute(
+            "INSERT INTO approvals (id, project_id, kind, state, requested_at) "
+            "VALUES (%s, %s, 'production.deploy', 'PENDING', %s)",
+            (approval_id, project_id, now),
+        )
+        connection.execute(
+            "UPDATE projects SET state = 'AWAITING_APPROVAL', updated_at = %s WHERE id = %s",
+            (now, project_id),
+        )
+        _project_event(connection, project_id, "approval.requested", {"approval_id": str(approval_id)})
+        connection.commit()
+    return {"approval_id": str(approval_id), "project_id": project_id, "state": "PENDING"}
+
+
+@app.post("/v1/approvals/{approval_id}/approve")
+def approve_production(
+    approval_id: uuid.UUID,
+    _: None = Depends(require_gateway_token),
+    __: None = Depends(require_human_approval_token),
+) -> dict[str, Any]:
+    now = utcnow()
+    with pool.connection() as connection:
+        approval = connection.execute(
+            "UPDATE approvals SET state = 'APPROVED', resolved_at = %s "
+            "WHERE id = %s AND state = 'PENDING' RETURNING project_id",
+            (now, approval_id),
+        ).fetchone()
+        if approval is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, detail="approval is not pending"
+            )
+        connection.execute(
+            "UPDATE projects SET state = 'DEPLOY_APPROVED', updated_at = %s WHERE id = %s",
+            (now, approval["project_id"]),
+        )
+        _project_event(
+            connection,
+            approval["project_id"],
+            "approval.approved",
+            {"approval_id": str(approval_id)},
+        )
+        connection.commit()
+    return {"approval_id": str(approval_id), "project_id": approval["project_id"], "state": "APPROVED"}
+
+
+@app.put("/v1/projects/{project_id}/production")
+def record_production_release(
+    project_id: str,
+    request: ProjectProductionUpdate,
+    _: None = Depends(require_gateway_token),
+    __: None = Depends(require_human_approval_token),
+) -> dict[str, Any]:
+    with pool.connection() as connection:
+        row = connection.execute(
+            "UPDATE projects SET production_url = %s, state = 'LIVE', updated_at = %s "
+            "WHERE id = %s AND state = 'DEPLOY_APPROVED' RETURNING *",
+            (request.production_url, utcnow(), project_id),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="production deployment has not been approved",
+            )
+        _project_event(connection, project_id, "production.released", request.model_dump())
+        connection.commit()
+    return _public_project(row)
+
+
+@app.put("/v1/projects/{project_id}/analytics")
+def record_project_analytics(
+    project_id: str,
+    request: ProjectAnalyticsUpdate,
+    _: None = Depends(require_gateway_token),
+) -> dict[str, Any]:
+    with pool.connection() as connection:
+        row = connection.execute(
+            "UPDATE projects SET analytics = %s, state = 'MEASURING', updated_at = %s "
+            "WHERE id = %s AND production_url IS NOT NULL RETURNING *",
+            (json.dumps(request.analytics), utcnow(), project_id),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="analytics require a recorded production release",
+            )
+        _project_event(connection, project_id, "analytics.recorded", request.model_dump())
+        connection.commit()
+    return _public_project(row)
+
+
 @app.post("/v1/jobs", status_code=status.HTTP_202_ACCEPTED)
 def create_job(
     request: JobCreate,
@@ -487,7 +763,7 @@ def receive_worker_event(
             )
 
         job = connection.execute(
-            "SELECT last_event_sequence FROM jobs WHERE id = %s FOR UPDATE",
+            "SELECT last_event_sequence, action, project_id FROM jobs WHERE id = %s FOR UPDATE",
             (event.gateway_job_id,),
         ).fetchone()
         if job is None:
@@ -539,6 +815,39 @@ def receive_worker_event(
                     event.gateway_job_id,
                 ),
             )
+            if event.event_type == "completed":
+                transition = {
+                    "product.plan": ("PRD_READY", "prd", event.data.get("report")),
+                    "code.build": ("PREVIEW_READY", "build_job_id", event.gateway_job_id),
+                    "code.fix": ("PREVIEW_READY", "build_job_id", event.gateway_job_id),
+                    "qa.review": ("QA_PASSED", "qa_job_id", event.gateway_job_id),
+                    "growth.plan": (
+                        "GROWTH_REVIEW_READY",
+                        "growth_plan",
+                        event.data.get("report"),
+                    ),
+                }.get(job["action"])
+                if transition is not None:
+                    next_state, column, value = transition
+                    if column in {"prd", "growth_plan"}:
+                        value = json.dumps(value or {})
+                    connection.execute(
+                        f"UPDATE projects SET state = %s, {column} = %s, updated_at = %s "
+                        "WHERE id = %s",
+                        (next_state, value, now, job["project_id"]),
+                    )
+                    _project_event(
+                        connection,
+                        job["project_id"],
+                        f"{job['action']}.completed",
+                        {"gateway_job_id": str(event.gateway_job_id)},
+                    )
+            elif event.event_type == "failed":
+                next_state = "QA_FAILED" if job["action"] == "qa.review" else "FAILED"
+                connection.execute(
+                    "UPDATE projects SET state = %s, updated_at = %s WHERE id = %s",
+                    (next_state, now, job["project_id"]),
+                )
             connection.commit()
         except UniqueViolation:
             connection.rollback()
@@ -657,6 +966,40 @@ def mcp_get_review_url(job_id: str) -> dict[str, Any]:
         "available": isinstance(review, dict) and bool(review.get("url")),
         "review": review if isinstance(review, dict) else None,
     }
+
+
+@mcp.tool(
+    name="submit_business_idea",
+    description=(
+        "Register one human-supplied business idea as a durable project. "
+        "This does not approve or deploy anything."
+    ),
+    structured_output=True,
+)
+def mcp_submit_business_idea(project_id: str, title: str, idea: str) -> dict[str, Any]:
+    request = ProjectCreate(project_id=project_id, title=title, idea=idea)
+    return create_project(request, None)
+
+
+@mcp.tool(
+    name="get_project",
+    description="Get the durable business lifecycle state for one project.",
+    structured_output=True,
+)
+def mcp_get_project(project_id: str) -> dict[str, Any]:
+    return get_project(project_id, None)
+
+
+@mcp.tool(
+    name="request_production_approval",
+    description=(
+        "Request human production approval after QA has passed. "
+        "This tool cannot grant the approval."
+    ),
+    structured_output=True,
+)
+def mcp_request_production_approval(project_id: str) -> dict[str, Any]:
+    return request_production_approval(project_id, None)
 
 
 # Keep the MCP mount last so the explicit REST and health routes above retain

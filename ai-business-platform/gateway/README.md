@@ -31,12 +31,20 @@ The MCP surface intentionally exposes only these tools:
 - `get_job`
 - `wait_for_job`
 - `get_review_url`
+- `submit_business_idea`
+- `get_project`
+- `request_production_approval`
 
-`submit_job` accepts only the Worker-backed actions `browser.research`,
-`analytics.read`, `stripe.read`, `code.build`, `code.fix`, and `test.run`.
+`submit_job` accepts only the Agent/Worker-backed actions `product.plan`,
+`code.build`, `code.fix`, `test.run`, `qa.review`, `analytics.read`,
+`growth.plan`, `browser.research`, and `stripe.read`.
 Only `research` and `preview` environments are available. Production,
 deployment, publishing, and other irreversible actions are not exposed through
 MCP.
+
+Production approval is deliberately absent from MCP. It requires the independent
+`X-Human-Approval-Token` header in addition to Cloudflare Access and the Gateway
+Bearer token.
 
 Every MCP request must pass both authentication layers:
 
