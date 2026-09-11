@@ -88,7 +88,9 @@ template:
       - name: dind-sock
         emptyDir: {}
       - name: dind-externals
-        emptyDir: {}
+        emptyDir:
+          medium: Memory
+          sizeLimit: 1Gi
       - name: harbor-ci-cert
         secret:
           secretName: harbor-ci-proxy-tls
