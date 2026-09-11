@@ -22,6 +22,7 @@
 #   TAILSCALE_ARGOCD_FQDN=... canonical Argo CD MagicDNS name
 #   TAILSCALE_GRAFANA_FQDN=... canonical Grafana MagicDNS name
 #   TAILSCALE_PORTAL_FQDN=... canonical Homepage MagicDNS name
+#   TAILSCALE_HUBBLE_FQDN=... canonical Hubble UI MagicDNS name
 #   GATEWAY_SMOKE=0      skip the external Gateway-to-Worker test (default: 1)
 #   CF_ACCESS_*_SERVICE  macOS Keychain service names for the smoke test
 set -euo pipefail
@@ -40,6 +41,7 @@ TAILSCALE_WORKER_FQDN="${TAILSCALE_WORKER_FQDN:-ai-worker-cluster.tailb6c7d.ts.n
 TAILSCALE_ARGOCD_FQDN="${TAILSCALE_ARGOCD_FQDN:-argocd.tailb6c7d.ts.net}"
 TAILSCALE_GRAFANA_FQDN="${TAILSCALE_GRAFANA_FQDN:-grafana.tailb6c7d.ts.net}"
 TAILSCALE_PORTAL_FQDN="${TAILSCALE_PORTAL_FQDN:-portal.tailb6c7d.ts.net}"
+TAILSCALE_HUBBLE_FQDN="${TAILSCALE_HUBBLE_FQDN:-hubble.tailb6c7d.ts.net}"
 CF_ACCESS_CLIENT_ID_SERVICE="${CF_ACCESS_CLIENT_ID_SERVICE:-dev.craftz.ai-business-gateway.cloudflare-access-client-id}"
 CF_ACCESS_CLIENT_SECRET_SERVICE="${CF_ACCESS_CLIENT_SECRET_SERVICE:-dev.craftz.ai-business-gateway.cloudflare-access-client-secret}"
 EXPECTED_VMIDS=(1001 1002 1003 1101 1102 1103)
@@ -276,6 +278,8 @@ backup_cluster_data() {
     "${BACKUP_DIR}/tailscale-grafana-state.secret.json.age"
   backup_tailnet_proxy_state ingress portal homepage \
     "${BACKUP_DIR}/tailscale-portal-state.secret.json.age"
+  backup_tailnet_proxy_state ingress kube-system hubble-ui \
+    "${BACKUP_DIR}/tailscale-hubble-state.secret.json.age"
 
   kubectl --kubeconfig "${KUBECONFIG_PATH}" -n ai-worker get deploy ai-business-worker \
     -o jsonpath='{.spec.template.spec.containers[0].image}' \
@@ -340,15 +344,16 @@ verify_recovery_set() {
     tailscale-gateway-egress-state.secret.json.age \
     tailscale-argocd-state.secret.json.age \
     tailscale-grafana-state.secret.json.age \
-    tailscale-portal-state.secret.json.age; do
+    tailscale-portal-state.secret.json.age \
+    tailscale-hubble-state.secret.json.age; do
     [[ -s "${BACKUP_DIR}/${tailnet_state_file}" ]] && tailnet_state_count=$((tailnet_state_count + 1))
   done
   # Older recovery sets can predate individual management UI ingresses.
   # Current recovery sets contain the Operator, two Worker proxies, and all
-  # three management UIs (six state files in total).
+  # four management UIs (seven state files in total).
   [[ "${tailnet_state_count}" == 0 || "${tailnet_state_count}" == 3 \
       || "${tailnet_state_count}" == 4 || "${tailnet_state_count}" == 5 \
-      || "${tailnet_state_count}" == 6 ]] \
+      || "${tailnet_state_count}" == 6 || "${tailnet_state_count}" == 7 ]] \
     || die "Tailnet state backup is incomplete"
   if [[ "${tailnet_state_count}" == 3 ]]; then
     for tailnet_state_file in \
@@ -370,7 +375,8 @@ remove_stale_tailnet_cluster_devices() {
   if [[ -s "${BACKUP_DIR}/tailscale-worker-state.secret.json.age" \
       && -s "${BACKUP_DIR}/tailscale-argocd-state.secret.json.age" \
       && -s "${BACKUP_DIR}/tailscale-grafana-state.secret.json.age" \
-      && -s "${BACKUP_DIR}/tailscale-portal-state.secret.json.age" ]]; then
+      && -s "${BACKUP_DIR}/tailscale-portal-state.secret.json.age" \
+      && -s "${BACKUP_DIR}/tailscale-hubble-state.secret.json.age" ]]; then
     info "Preserving Tailnet identities and TLS certificate cache for recreation"
     return
   fi
@@ -421,6 +427,10 @@ remove_stale_tailnet_cluster_devices() {
         selector="${selector} or (.name == \$portal_fqdn or .hostname == \"portal\")"
         maximum=$((maximum + 1))
       fi
+      if [[ ! -s "${BACKUP_DIR}/tailscale-hubble-state.secret.json.age" ]]; then
+        selector="${selector} or (.name == \$hubble_fqdn or .hostname == \"hubble\")"
+        maximum=$((maximum + 1))
+      fi
     else
       selector='(.hostname == "tailscale-operator")'
       maximum=1
@@ -429,6 +439,7 @@ remove_stale_tailnet_cluster_devices() {
       --arg argocd_fqdn "${TAILSCALE_ARGOCD_FQDN}" \
       --arg grafana_fqdn "${TAILSCALE_GRAFANA_FQDN}" \
       --arg portal_fqdn "${TAILSCALE_PORTAL_FQDN}" \
+      --arg hubble_fqdn "${TAILSCALE_HUBBLE_FQDN}" \
       --arg tag "${tag}" "[.devices[]
         | select(${selector})
         | select((.tags // []) | index(\$tag))
@@ -726,6 +737,12 @@ restore_platform() {
       ingress portal homepage tag:argocd
     restart_tailnet_proxy ingress portal homepage
   fi
+  if [[ -s "${BACKUP_DIR}/tailscale-hubble-state.secret.json.age" ]]; then
+    restore_tailnet_proxy_state \
+      "${BACKUP_DIR}/tailscale-hubble-state.secret.json.age" \
+      ingress kube-system hubble-ui tag:argocd
+    restart_tailnet_proxy ingress kube-system hubble-ui
+  fi
   kubectl -n argocd wait \
     --for=jsonpath='{.status.loadBalancer.ingress[0].hostname}'="${TAILSCALE_ARGOCD_FQDN}" \
     ingress/argocd --timeout=10m
@@ -735,6 +752,9 @@ restore_platform() {
   kubectl -n portal wait \
     --for=jsonpath='{.status.loadBalancer.ingress[0].hostname}'="${TAILSCALE_PORTAL_FQDN}" \
     ingress/homepage --timeout=10m
+  kubectl -n kube-system wait \
+    --for=jsonpath='{.status.loadBalancer.ingress[0].hostname}'="${TAILSCALE_HUBBLE_FQDN}" \
+    ingress/hubble-ui --timeout=10m
   "${SCRIPT_DIR}/configure-tailscale-dns.sh"
   kubectl -n longhorn-system rollout status daemonset/longhorn-manager --timeout=15m
   "${SCRIPT_DIR}/reconcile-longhorn-worker-plane.sh"
@@ -970,6 +990,8 @@ verify_rebuild() {
     "https://${TAILSCALE_GRAFANA_FQDN}/api/health" >/dev/null
   curl -fsS --retry 12 --retry-all-errors --retry-delay 5 \
     "https://${TAILSCALE_PORTAL_FQDN}/api/healthcheck" >/dev/null
+  curl -fsS --retry 12 --retry-all-errors --retry-delay 5 \
+    "https://${TAILSCALE_HUBBLE_FQDN}/" >/dev/null
   ok "Six-node cluster, GitOps platform, Tailnet Agent/Worker, and management UIs verified"
 }
 

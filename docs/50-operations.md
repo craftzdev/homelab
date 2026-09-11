@@ -264,6 +264,23 @@ https://grafana.tailb6c7d.ts.net
 Grafanaの **Explore** でデータソース **Loki** を選ぶと、クラスタログ、監査ログ、
 Kubernetes Eventを検索できます。
 
+### 3.5.1 Hubble UI
+
+Ciliumが記録するflowとpolicy verdictをTailnet管理者端末から参照します。
+
+```text
+https://hubble.tailb6c7d.ts.net
+```
+
+Argo CD / Grafanaと同じ`tag:argocd`のTailscale Ingressであり、インターネット
+公開・Funnel・LAN LoadBalancerは使用しません。Cilium chartの
+`hubble.ui.ingress`は無効のままとし、公開経路をこのIngressだけに保ちます。
+Tailnet障害時のfallbackは
+`kubectl -n kube-system port-forward svc/hubble-ui 12000:80`です。
+
+NetworkPolicyでDROPされた通信を追う手順は
+[5. トラブルシューティング / 通信が落ちている](#通信が落ちている)を参照してください。
+
 ### 3.6 Cloudflare の設定
 
 ```bash
@@ -364,7 +381,7 @@ NamespaceとLonghorn PVCはArgo CD管理下にありますが、誤ったGit変�
 | ArgoCD の同期状況 | `kubectl -n argocd get applications` |
 | 通信の可視化 | `kubectl -n kube-system exec -it ds/cilium -- hubble observe --follow` |
 | 落ちている通信 | `... hubble observe --verdict DROPPED --last 100` |
-| Hubble UI | `kubectl -n kube-system port-forward svc/hubble-ui 12000:80` |
+| Hubble UI | https://hubble.tailb6c7d.ts.net/ （fallback: `kubectl -n kube-system port-forward svc/hubble-ui 12000:80`） |
 | 脆弱性レポート | `kubectl get vulnerabilityreports -A` |
 
 > Talos には SSH がありません。ノードの調査は `talosctl` で行います。

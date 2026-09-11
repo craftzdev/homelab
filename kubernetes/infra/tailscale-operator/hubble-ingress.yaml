@@ -1,0 +1,30 @@
+# ---------------------------------------------------------------------------
+# Hubble UI — Tailnet-only ingress
+#
+# Hubble UI renders live network flows and policy verdicts for every namespace,
+# so it is an administrative view of cluster traffic and must never be reachable
+# from the internet. The Cilium chart keeps `hubble.ui.ingress.enabled=false`;
+# this Ingress is the single publication path so the exposure surface stays in
+# one place. `kubectl -n kube-system port-forward svc/hubble-ui 12000:80`
+# remains the fallback when the Tailnet or the Operator is unavailable.
+# ---------------------------------------------------------------------------
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: hubble-ui
+  namespace: kube-system
+  annotations:
+    # Hubble UI is a privileged management UI, so it intentionally shares the
+    # existing admin-only Tailnet identity policy with Argo CD and Grafana.
+    tailscale.com/tags: tag:argocd
+    tailscale.com/proxy-class: restricted-userspace
+spec:
+  ingressClassName: tailscale
+  defaultBackend:
+    service:
+      name: hubble-ui
+      port:
+        name: http
+  tls:
+    - hosts:
+        - hubble

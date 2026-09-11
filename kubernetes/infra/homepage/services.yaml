@@ -31,6 +31,10 @@
         icon: harbor.png
         href: https://harbor.tailb6c7d.ts.net/
         description: Private OCI images and vulnerability scans
+    - Hubble:
+        icon: cilium.png
+        href: https://hubble.tailb6c7d.ts.net/
+        description: Cilium network flows and policy verdicts
     - Umami:
         icon: umami.png
         href: https://umami.tailb6c7d.ts.net/
