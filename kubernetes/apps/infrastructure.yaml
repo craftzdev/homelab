@@ -284,6 +284,21 @@ spec:
       namespace: harbor
       jsonPointers:
         - /data
+    # The upstream chart hashes generated Secret manifests into Pod-template
+    # annotations. Argo CD renders Helm without live-cluster lookup, so those
+    # hashes would otherwise change on every refresh even though Secret data is
+    # intentionally preserved above. Credential rotation uses an explicit
+    # rollout after bootstrap-cluster-secrets.sh updates the live Secret.
+    - group: apps
+      kind: Deployment
+      namespace: harbor
+      jsonPointers:
+        - /spec/template/metadata/annotations
+    - group: apps
+      kind: StatefulSet
+      namespace: harbor
+      jsonPointers:
+        - /spec/template/metadata/annotations
   sources:
     - repoURL: https://helm.goharbor.io
       chart: harbor
