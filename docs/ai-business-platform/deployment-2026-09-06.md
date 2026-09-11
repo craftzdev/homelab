@@ -12,7 +12,7 @@ rebuild performed on the same day.
 | Ceph | Decommissioned on all three Proxmox nodes after PBS backup and CephFS archive verification |
 | Proxmox storage | `local-zfs` online on `sv-proxmox-01` through `sv-proxmox-03` |
 | Gateway VM | VM `1200` running from `local-zfs` on `sv-proxmox-01` |
-| Gateway durability | PBS backups at `172.16.10.51`; ZFS replication jobs `1200-0` and `1200-1` to nodes 2 and 3 every five minutes |
+| Gateway durability | PBS backups at `172.16.10.51`; staggered ZFS replication jobs `1200-0` and `1200-1` to nodes 2 and 3 every ten minutes, offset by five minutes |
 | Gateway HA verification | Online migration to node 2 and back completed; both API surfaces remained healthy afterward |
 | Talos | `1.13.9`, three dedicated control-plane nodes plus three dedicated workers, all Ready |
 | Kubernetes | `1.34.3`, API VIP `172.16.40.10` |

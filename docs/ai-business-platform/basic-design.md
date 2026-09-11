@@ -92,7 +92,7 @@ Workerリポジトリから生成するOpenAPIをGateway→Worker API契約の�
 | Ceph | GatewayのPBSバックアップとCephFS archive確認後、3ノードから廃止 | 完了 |
 | `local-zfs` | 3ノードのSATA SSDへ作成 | online |
 | Gateway storage | VM 1200を `local-zfs` へ復元 | 稼働中 |
-| Gateway replication | node 2/3へ5分間隔のZFS replication | 稼働中 |
+| Gateway replication | node 2/3へ10分間隔・5分オフセットのZFS replication | 稼働中 |
 | Kubernetes storage | Longhorn 1.12.1、Worker PVは3レプリカ | healthy |
 | Proxmox HA | 3ノードのCRM/LRM/watchdog active、quorum OK | HA利用可能 |
 | HA設定 | `vm:1200` と Node Affinity Rule `ai-gateway-placement` を登録済み | `started` / `in use` |
@@ -109,7 +109,7 @@ Workerリポジトリから生成するOpenAPIをGateway→Worker API契約の�
 | Gateway IP | `172.16.40.30/24` |
 | Gateway DNS | `172.16.40.1` |
 | Gateway primary node | `sv-proxmox-01` |
-| Gateway disk storage | `local-zfs` + node 2/3への5分間隔ZFS replication |
+| Gateway disk storage | `local-zfs` + node 2/3への10分間隔・5分オフセットZFS replication |
 | Gateway public hostname | `gateway.craftz.dev` |
 | Cloudflare Tunnel | `ai-business-gateway` / `1cb360c1-26be-4f23-b3d3-728689073a04` |
 | Gateway external API backend | `http://127.0.0.1:8080`（cloudflared専用） |
@@ -202,7 +202,7 @@ flowchart TB
 | vCPU | 2 vCPU |
 | Memory | 4 GB 固定 |
 | Disk | 64 GB、SCSI、discard 有効 |
-| Storage | `local-zfs`、node 2/3へ5分間隔でZFS replication |
+| Storage | `local-zfs`、node 2/3へ10分間隔・5分オフセットでZFS replication |
 | NIC | VirtIO 1枚、`vmbr1`、VLAN Tag 40 |
 | IP | `172.16.40.30/24` |
 | Default Gateway | `172.16.40.1` |
@@ -219,7 +219,7 @@ flowchart TB
 - VM `1200` は HA Resource として `max_restart=1`、`max_relocate=1`、`failback=0` で登録する。復旧後の不要な自動戻しを避ける。
 - ホスト障害時は同一 VM を別ノードで再起動する。Phase 1 は単一 Gateway/DB のため、再起動中は Job の新規受付が停止する。
 - Gateway復旧後、Worker APIから実行状態を再取得する。副作用のある Job は自動再実行せず、冪等性が確認できる Job だけを再dispatchする。
-- Gateway diskは各ノードの`local-zfs`へ配置し、node 2/3への5分間隔ZFS replicationでHA再起動先の復旧点を作る。
+- Gateway diskは各ノードの`local-zfs`へ配置し、node 2/3への10分間隔・5分オフセットZFS replicationでHA再起動先の復旧点を作る。同一VMのGuest Agent凍結とZFS snapshotが重ならないよう、2本を同時刻に起動しない。
 - local backupからの隔離restore test、PBS `172.16.10.51`へのbackup、node 2へのonline migration往復は完了した。定期的なPBS restore testは継続運用とする。
 
 HA登録済みの確定パラメータは次のとおりである。
