@@ -3,7 +3,7 @@
 Private OCI registry managed by Argo CD with the upstream Harbor Helm chart.
 
 - Tailnet URL: `https://harbor.tailb6c7d.ts.net`
-- Storage: Longhorn retain volumes; 100 GiB for image layers
+- Storage: Longhorn retain volumes; 50 GiB for image layers, online-expandable
 - Scanner: Trivy
 - Metrics: Prometheus `ServiceMonitor`
 - Credentials: macOS Keychain -> `scripts/bootstrap-cluster-secrets.sh`

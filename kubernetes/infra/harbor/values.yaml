@@ -20,7 +20,7 @@ persistence:
     registry:
       storageClass: longhorn-retain
       accessMode: ReadWriteOnce
-      size: 100Gi
+      size: 50Gi
     jobservice:
       jobLog:
         storageClass: longhorn-retain
