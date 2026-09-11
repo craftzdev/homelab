@@ -59,3 +59,30 @@ published_services = {
   #   origin_service = "http://cilium-gateway-external.gateway.svc.cluster.local:80"
   # }
 }
+
+# ---------------------------------------------------------------------------
+# 匿名公開するサービス
+#
+# ⚠️ published_services とは意味が違う。ここに書いたホスト名には
+#    Cloudflare Access が **一切付かない**。認証なしで世界中から到達できる。
+#    WAF / DDoS 保護 / ボット対策は proxied = true により効くが、
+#    「誰がアクセスしてよいか」の制御は無い。
+#
+#    一般公開の Web サイトだけを書くこと。内部 API を誤ってここへ書くと
+#    無防備に公開される。変数を分けてあるのはその取り違えを防ぐためである。
+#
+# moshitoku.com は point-guide アプリの一般公開サイトである。
+# apex と www の両方を登録する。cloudflared の ingress ルールと
+# DNS レコードはこの定義から生成される。
+# ---------------------------------------------------------------------------
+public_services = {
+  "moshitoku" = {
+    hostname       = "moshitoku.com"
+    origin_service = "http://cilium-gateway-external.gateway.svc.cluster.local:80"
+  }
+
+  "moshitoku-www" = {
+    hostname       = "www.moshitoku.com"
+    origin_service = "http://cilium-gateway-external.gateway.svc.cluster.local:80"
+  }
+}

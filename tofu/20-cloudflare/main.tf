@@ -63,6 +63,28 @@ resource "cloudflare_dns_record" "published" {
   comment = "Managed by OpenTofu (tofu/20-cloudflare) — homelab tunnel"
 }
 
+# ---------------------------------------------------------------------------
+# 匿名公開するホスト名の DNS レコード
+#
+# published_services と同じくトンネルの CNAME を指す。
+# 違いは Access アプリケーションを作らないことだけである。
+#
+# proxied = true のため WAF / DDoS 保護 / ボット対策は引き続き効く。
+# 失われるのは「誰がアクセスしてよいか」の制御のみであり、
+# 一般公開サイトではそれが正しい。
+# ---------------------------------------------------------------------------
+resource "cloudflare_dns_record" "public" {
+  for_each = var.public_services
+
+  zone_id = var.cloudflare_zone_id
+  name    = each.value.hostname
+  type    = "CNAME"
+  content = "${cloudflare_zero_trust_tunnel_cloudflared.this.id}.cfargotunnel.com"
+  proxied = true
+  ttl     = 1
+  comment = "Managed by OpenTofu (tofu/20-cloudflare) — homelab tunnel (public, no Access)"
+}
+
 # ===========================================================================
 # Cloudflare Access
 # ===========================================================================
@@ -263,6 +285,23 @@ locals {
               teamName = var.cloudflare_team_name
               audTag   = [cloudflare_zero_trust_access_application.published[key].aud]
             }
+            connectTimeout         = "10s"
+            noTLSVerify            = false
+            disableChunkedEncoding = false
+          }
+        }
+      ],
+      # -----------------------------------------------------------------
+      # 匿名公開するホスト名
+      #
+      # originRequest.access を付けない。Access アプリケーションが
+      # 存在しないため、JWT 検証を要求すると全リクエストが落ちる。
+      # -----------------------------------------------------------------
+      [
+        for key, svc in var.public_services : {
+          hostname = svc.hostname
+          service  = svc.origin_service
+          originRequest = {
             connectTimeout         = "10s"
             noTLSVerify            = false
             disableChunkedEncoding = false

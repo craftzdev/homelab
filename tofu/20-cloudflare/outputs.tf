@@ -8,6 +8,11 @@ output "tunnel_cname" {
   value       = "${cloudflare_zero_trust_tunnel_cloudflared.this.id}.cfargotunnel.com"
 }
 
+output "public_hostnames" {
+  description = "匿名公開しているホスト名（Access なし）"
+  value       = { for k, v in var.public_services : k => v.hostname }
+}
+
 output "published_hostnames" {
   description = "外部へ公開されているホスト名の一覧"
   value       = { for k, v in var.published_services : k => v.hostname }
@@ -105,9 +110,18 @@ output "next_steps" {
          #   tofu output -raw service_token_client_id
          #   tofu output -raw service_token_client_secret
 
-    4) 疎通確認（Access が正しく効いているかの検証）
+    4) 疎通確認
+
+    %{if length(var.published_services) > 0~}
+       Access が効いていることの確認（published_services）
          # トークン無し → 401 が返ること（200 が返ったら設定ミス）
          curl -s -o /dev/null -w '%%{http_code}\n' https://${values(var.published_services)[0].hostname}/
+    %{endif~}
+    %{if length(var.public_services) > 0~}
+       匿名公開の確認（public_services）
+         # 認証なしで到達できること。Access は意図的に付いていない。
+         curl -s -o /dev/null -w '%%{http_code}\n' https://${values(var.public_services)[0].hostname}/
+    %{endif~}
 
     詳細は docs/40-external-access.md を参照してください。
   EOT

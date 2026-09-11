@@ -1,0 +1,64 @@
+# ===========================================================================
+# point-guide からの計測受け入れ
+#
+# moshitoku.com は Umami の管理画面を公開せずに計測したい。そのため
+# point-guide の HTTPRoute が、計測に必要な 2 つのパスだけを
+# この namespace の umami Service へ転送する。
+#
+#   https://moshitoku.com/_analytics/script.js → umami:3000 /script.js
+#   https://moshitoku.com/_analytics/api/send  → umami:3000 /api/send
+#
+# Umami 自身の公開範囲は変わらない。管理画面は引き続き Tailnet 限定である。
+# ===========================================================================
+---
+# ---------------------------------------------------------------------------
+# ReferenceGrant
+#
+# Gateway API では、別 namespace の Service を backendRef にする場合、
+# **参照される側**が明示的に許可する必要がある。これが無いと
+# HTTPRoute は ResolvedRefs: False となり、該当ルートだけが 500 を返す。
+#
+# 許可の範囲を point-guide namespace の HTTPRoute からの Service 参照に
+# 限定している。to に name を指定して umami Service だけを対象にする。
+# ---------------------------------------------------------------------------
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: point-guide-to-umami
+  namespace: analytics
+spec:
+  from:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      namespace: point-guide
+  to:
+    - group: ""
+      kind: Service
+      name: umami
+
+---
+# ---------------------------------------------------------------------------
+# Gateway からの ingress を許可する
+#
+# Cilium の Gateway API では、Envoy からバックエンドへの通信は
+# 予約 identity "ingress" として現れる。analytics-rules は
+# この identity を許可していないため、追加で開ける。
+#
+# Cilium のポリシーは許可の和集合で評価されるため、
+# 既存の analytics-rules を書き換えずに追加できる。
+# ---------------------------------------------------------------------------
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: umami-gateway-ingress
+  namespace: analytics
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: umami
+  ingress:
+    - fromEntities: [ingress]
+      toPorts:
+        - ports:
+            - port: "3000"
+              protocol: TCP

@@ -151,6 +151,90 @@ variable "published_services" {
   }
 }
 
+variable "public_services" {
+  description = <<-EOT
+    **匿名で** インターネットへ公開するサービスの定義。
+
+    ⚠️ published_services との違いを必ず理解すること。
+
+      published_services … Cloudflare Access のアプリケーションを作り、
+                           サービストークンを必須にする。内部 API 用。
+      public_services    … Access を一切作らない。誰でもアクセスできる。
+                           一般公開の Web サイト用。
+
+    ⚠️ ここに追加したホスト名は、**認証なしで世界中から到達可能**になる。
+       WAF / DDoS 保護 / ボット対策は proxied = true により引き続き効くが、
+       「誰がアクセスしてよいか」の制御は一切無い。
+       公開してよいと明確に判断したものだけを追加すること。
+
+    フラグではなく変数そのものを分けているのは、取り違えたときの影響が
+    大きいためである。既定値の見落としで内部 API が無防備になる事故を
+    構造的に防ぐ。
+
+    フィールド:
+      hostname       : 公開するホスト名（FQDN）
+      origin_service : cloudflared から見た転送先 URL（クラスタ内部）
+  EOT
+  type = map(object({
+    hostname       = string
+    origin_service = string
+  }))
+
+  default = {}
+
+  validation {
+    condition = alltrue([
+      for k, v in var.public_services :
+      !can(regex("(?i)(argocd|argo-cd|kubernetes|k8s-api|talos|proxmox|grafana|harbor|umami|minio|loki)", v.hostname))
+    ])
+    error_message = "管理平面または管理用サービスと思われるホスト名が public_services に含まれています。これらを認証なしで公開することは、この構成の設計方針に反します。"
+  }
+
+  # 転送先をクラスタ内 Gateway に限定する。
+  #
+  # スキームだけを検査していると、たとえば http://127.0.0.1:2000 を指定して
+  # cloudflared 自身のメトリクスエンドポイントを匿名公開できてしまう。
+  # 匿名公開では「どこへでも転送できる」ことがそのまま事故になる。
+  validation {
+    condition = alltrue([
+      for k, v in var.public_services :
+      v.origin_service == "http://cilium-gateway-external.gateway.svc.cluster.local:80"
+    ])
+    error_message = "public_services の origin_service はクラスタ内の Gateway（http://cilium-gateway-external.gateway.svc.cluster.local:80）のみを指定できます。匿名公開の転送先を自由に選べる状態は危険です。"
+  }
+
+  # ワイルドカードと空文字を禁止する。
+  #
+  # ワイルドカードを許すと published_services の個別ホスト名と
+  # 重なりうる。cloudflared は先に一致したルールを使うため、
+  # 匿名公開のつもりが Access 必須になる（またはその逆になる）。
+  validation {
+    condition = alltrue([
+      for k, v in var.public_services :
+      length(trimspace(v.hostname)) > 0 && !can(regex("[*]", v.hostname))
+    ])
+    error_message = "public_services の hostname にワイルドカードや空文字は使えません。FQDN を個別に列挙してください。"
+  }
+
+  # 2 つの変数で同じホスト名を使わせない。
+  # 大文字小文字と前後の空白を正規化してから比較する。
+  validation {
+    condition = length(setintersection(
+      toset([for k, v in var.published_services : lower(trimspace(v.hostname))]),
+      toset([for k, v in var.public_services : lower(trimspace(v.hostname))]),
+    )) == 0
+    error_message = "同じホスト名が published_services と public_services の両方に含まれています。Access が付くのか付かないのかが曖昧になるため、どちらか一方にしてください。"
+  }
+
+  # 同一 map 内での重複も禁止する。
+  validation {
+    condition = length(toset([
+      for k, v in var.public_services : lower(trimspace(v.hostname))
+    ])) == length(var.public_services)
+    error_message = "public_services 内で同じホスト名が複数回指定されています。"
+  }
+}
+
 variable "cloudflared_ingress_output_path" {
   description = <<-EOT
     cloudflared の ingress 設定（ConfigMap）を書き出すパス。
