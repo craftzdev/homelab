@@ -1,0 +1,29 @@
+# The Control Plane is the human-facing portfolio and lifecycle view. The
+# Gateway remains the authoritative policy and execution boundary while this
+# application is introduced incrementally.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: ai-business-control-plane
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "9"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: ai-business
+  source:
+    repoURL: https://github.com/craftzdev/ai-business-control-plane.git
+    targetRevision: main
+    path: deploy/kubernetes
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: ai-control-plane
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false
+      - PruneLast=true
+      - ServerSideApply=true

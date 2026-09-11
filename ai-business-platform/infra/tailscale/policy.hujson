@@ -8,6 +8,7 @@
     "tag:k8s-operator": ["autogroup:admin"],
     "tag:ai-worker-trusted": ["autogroup:admin", "tag:k8s-operator"],
     "tag:ai-worker-sandbox": ["autogroup:admin"],
+    "tag:ai-control-plane": ["autogroup:admin", "tag:k8s-operator"],
     "tag:argocd": ["autogroup:admin", "tag:k8s-operator"],
   },
 
@@ -36,6 +37,13 @@
     {
       "src": ["autogroup:admin"],
       "dst": ["tag:argocd"],
+      "ip": ["tcp:443"],
+    },
+    // The business lifecycle UI is an administrative surface and is never
+    // exposed outside the Tailnet.
+    {
+      "src": ["autogroup:admin"],
+      "dst": ["tag:ai-control-plane"],
       "ip": ["tcp:443"],
     },
 

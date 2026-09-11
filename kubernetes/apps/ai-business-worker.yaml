@@ -1,6 +1,6 @@
-# AI Business Agent and Worker are intentionally isolated from infrastructure
-# components. Their private repositories use independent repository-scoped,
-# read-only GitHub Deploy Keys stored out of band as Argo CD repository Secrets.
+# AI Business Agent, Worker, and Control Plane are intentionally isolated from infrastructure
+# components. Private repository credentials are stored out of band as Argo CD
+# repository Secrets (read-only deploy keys or the repository-scoped GitHub App).
 ---
 apiVersion: argoproj.io/v1alpha1
 kind: AppProject
@@ -10,15 +10,18 @@ metadata:
   finalizers:
     - resources-finalizer.argocd.argoproj.io
 spec:
-  description: AI Business Agent and Worker application boundary
+  description: AI Business Agent, Worker, and Control Plane application boundary
   sourceRepos:
     - git@github.com:craftzdev/ai-business-agent.git
     - git@github.com:craftzdev/ai-business-worker.git
+    - https://github.com/craftzdev/ai-business-control-plane.git
   destinations:
     - server: https://kubernetes.default.svc
       namespace: ai-agent
     - server: https://kubernetes.default.svc
       namespace: ai-worker
+    - server: https://kubernetes.default.svc
+      namespace: ai-control-plane
   clusterResourceWhitelist:
     - group: ""
       kind: Namespace
