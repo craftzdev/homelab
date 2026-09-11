@@ -2,8 +2,9 @@
 set -euo pipefail
 
 # Run on the Proxmox node currently hosting the Gateway VM. The two schedules
-# are deliberately offset so a snapshot timeout cannot make two replication
-# jobs contend for the same guest-agent freeze window.
+# are deliberately offset to reduce contention for the same guest-agent
+# freeze window. Failed jobs may retry between scheduled runs, so source-node
+# ZFS snapshot latency is bounded separately by configure-proxmox-zfs-latency.sh.
 vm_id="${1:-1200}"
 rate_mbps="${REPLICATION_RATE_MBPS:-100}"
 comment="AI Gateway HA replica"
