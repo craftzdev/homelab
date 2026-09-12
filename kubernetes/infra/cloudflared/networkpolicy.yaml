@@ -48,11 +48,21 @@ spec:
               protocol: UDP
             - port: "53"
               protocol: TCP
+          # ⚠️ Cilium の matchPattern の `*` は **1 ラベルだけ** に一致する。
+          #    `*.argotunnel.com` は v2.argotunnel.com には一致するが、
+          #    cloudflared が接続先の探索に使う
+          #    region1.v2.argotunnel.com（SRV）には一致しない。
+          #
+          #    一致しない名前は DNS proxy が REFUSED を返し、cloudflared は
+          #    "Couldn't resolve SRV record ... server misbehaving" で起動に
+          #    失敗する。DNS が原因だと分かりにくいので、階層ごとに明示する。
           rules:
             dns:
               - matchPattern: "*.cloudflare.com"
               - matchPattern: "*.argotunnel.com"
+              - matchPattern: "*.*.argotunnel.com"
               - matchPattern: "*.cftunnel.com"
+              - matchPattern: "*.*.cftunnel.com"
               - matchPattern: "*.svc.cluster.local"
               - matchPattern: "*.cluster.local"
 
