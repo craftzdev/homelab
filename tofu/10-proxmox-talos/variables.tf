@@ -95,6 +95,17 @@ variable "vm_datastore_id" {
   default     = "local-zfs"
 }
 
+variable "controlplane_os_datastore_id" {
+  description = <<-EOT
+    control-plane の OS / etcd ディスクを置く Proxmox ストレージ。
+    SATA SSD の local-zfs では同期書き込みが数秒停止し API timeout を起こしたため、
+    NVMe の local-lvm に分離する。各 Proxmox ノードに同名ストレージが必要。
+    worker の OS と Longhorn データディスクは vm_datastore_id を使用する。
+  EOT
+  type        = string
+  default     = "local-lvm"
+}
+
 variable "longhorn_disk_gib" {
   description = <<-EOT
     Longhorn 用のデータディスクサイズ（GiB）。OS ディスクとは別に付ける。

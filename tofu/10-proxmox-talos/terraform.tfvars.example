@@ -55,9 +55,10 @@ cluster_name = "homelab"
 # ---------------------------------------------------------------------------
 # ストレージ
 # ---------------------------------------------------------------------------
-iso_datastore_id  = "local"     # Talos ISOは各Proxmox nodeへ個別配置
-vm_datastore_id   = "local-zfs" # VM diskは各nodeの単体ZFS
-longhorn_disk_gib = 300
+iso_datastore_id             = "local"     # Talos ISOは各Proxmox nodeへ個別配置
+vm_datastore_id              = "local-zfs" # worker OS / Longhornデータ
+controlplane_os_datastore_id = "local-lvm" # NVMe上にOS / etcdを分離
+longhorn_disk_gib            = 300
 
 # ---------------------------------------------------------------------------
 # ネットワーク

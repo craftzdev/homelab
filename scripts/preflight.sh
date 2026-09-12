@@ -12,6 +12,7 @@
 # 環境変数:
 #   PVE_HOST / PVE_SSH_USER / PVE_NODES
 #   ZFS_POOL_NAME  VM ディスク用の ZFS プール名（既定: local-zfs）
+#   CONTROLPLANE_OS_DATASTORE  control-plane OS / etcd 用（既定: local-lvm）
 #   ISO_DATASTORE  ISO 置き場のストレージ（既定: local）
 #   PROXMOX_POOL   API トークンの ACL 範囲となるリソースプール（既定: k8s）
 # ===========================================================================
@@ -23,6 +24,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 PVE_HOST="${PVE_HOST:-172.16.10.11}"
 PVE_SSH_USER="${PVE_SSH_USER:-root}"
 ZFS_POOL_NAME="${ZFS_POOL_NAME:-local-zfs}"
+CONTROLPLANE_OS_DATASTORE="${CONTROLPLANE_OS_DATASTORE:-local-lvm}"
 ISO_DATASTORE="${ISO_DATASTORE:-local}"
 PROXMOX_POOL="${PROXMOX_POOL:-k8s}"
 PVE_NODES="${PVE_NODES:-sv-proxmox-01 sv-proxmox-02 sv-proxmox-03}"
@@ -55,7 +57,8 @@ done
 # シェルのメタ文字を含む値を弾く（詳細は ceph-create-k8s-user.sh の注記）。
 # ---------------------------------------------------------------------------
 for pair in "PVE_HOST=${PVE_HOST}" "PVE_SSH_USER=${PVE_SSH_USER}" \
-            "ZFS_POOL_NAME=${ZFS_POOL_NAME}" "ISO_DATASTORE=${ISO_DATASTORE}"; do
+            "ZFS_POOL_NAME=${ZFS_POOL_NAME}" "ISO_DATASTORE=${ISO_DATASTORE}" \
+            "CONTROLPLANE_OS_DATASTORE=${CONTROLPLANE_OS_DATASTORE}"; do
   name="${pair%%=*}"; value="${pair#*=}"
   if [[ ! "${value}" =~ ^[A-Za-z0-9.:_-]+$ ]]; then
     printf '%s[ERROR]%s %s に使用できない文字が含まれています: %s\n' \
@@ -155,12 +158,19 @@ else
 fi
 
 # ===========================================================================
-section "4. ストレージ（local-ZFS）"
+section "4. ストレージ（control-plane NVMe / local-ZFS）"
 # ===========================================================================
 # Ceph は廃止済み（docs/adr/0009-drop-ceph-adopt-longhorn.md）。
-# VM ディスクは各ノードのローカル ZFS に置く。
+# control-plane OS / etcd は NVMe、worker OS / Longhorn はローカル ZFS。
 ZFS_MISSING=0
 for node in ${PVE_NODES}; do
+  storage_status="$(pve "ssh -o BatchMode=yes -o ConnectTimeout=8 ${node} 'pvesm status --storage ${CONTROLPLANE_OS_DATASTORE}'" 2>/dev/null || true)"
+  if awk -v storage="${CONTROLPLANE_OS_DATASTORE}" \
+      '$1 == storage && $3 == "active" { found=1 } END { exit !found }' <<<"${storage_status}"; then
+    pass "${node}: control-plane OS ストレージ '${CONTROLPLANE_OS_DATASTORE}' は active"
+  else
+    fail "${node}: control-plane OS ストレージ '${CONTROLPLANE_OS_DATASTORE}' が利用できません"
+  fi
   if pve "ssh -o BatchMode=yes -o ConnectTimeout=8 ${node} 'zpool list -H -o name' 2>/dev/null" \
        | grep -qx "${ZFS_POOL_NAME}"; then
     size="$(pve "ssh -o BatchMode=yes -o ConnectTimeout=8 ${node} 'zpool list -H -o size,free ${ZFS_POOL_NAME}' 2>/dev/null" || echo "?")"

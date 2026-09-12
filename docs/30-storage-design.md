@@ -11,14 +11,15 @@
 ```
 ┌─ Proxmox 物理ノード ×3 ────────────────────────────────┐
 │                                                        │
-│  NVMe 512GB ─── Proxmox VE 本体（システム）             │
+│  NVMe 512GB ─── Proxmox VE 本体 + local-lvm             │
+│                  └─ control-plane OS / etcd (60 GiB)   │
 │                                                        │
 │  SATA SSD 1TB ─ local-zfs                              │
-│                  ├─ k8s-N の OS ディスク    (60 GiB)    │
-│                  └─ k8s-N の Longhorn 用   (300 GiB)   │
+│                  ├─ worker OS              (60 GiB)   │
+│                  └─ Longhorn データ領域                │
 │                                                        │
 └────────────────────────────────────────────────────────┘
-              │ 1 物理ノード = 1 Kubernetes ノード
+              │ 1 物理ノード = control-plane + worker
               ▼
 ┌─ Kubernetes (Talos) ───────────────────────────────────┐
 │  Longhorn: 3 レプリカ / /var/mnt/longhorn              │
@@ -29,11 +30,23 @@
 | 層 | 実装 | 冗長性 |
 | --- | --- | --- |
 | Proxmox 本体 | NVMe 512GB（単体） | なし。壊れたら Proxmox を再インストール |
-| VM ディスク | 各ノードの `local-zfs`（単体 ZFS） | なし。**Talos ノードは作り直せるので不要** |
+| control-plane OS / etcd | 各ノードの NVMe `local-lvm` | etcd の3メンバーでクォーラムを構成 |
+| worker OS / Longhorn データディスク | 各ノードの `local-zfs`（単体 ZFS） | PV は Longhorn で複製 |
 | Kubernetes PV | **Longhorn（3 レプリカ）** | あり。1 ノード障害に耐える |
 | バックアップ | Longhorn → 外部 S3 / Velero / PBS | 別媒体 |
 
 ## 2. なぜ Ceph をやめたのか
+
+### control-plane のディスク分離（2026-09-11）
+
+SATA SSD 上の ZFS で etcd の `fdatasync` が11秒停止し、APIサーバーの
+500/504とリース更新失敗を確認した。control-plane のOSディスク（etcdを含む）を
+NVMeの `local-lvm` に分離する。OpenTofuでは `controlplane_os_datastore_id` を使う。
+暗号化、同期書き込み、APIのアラートしきい値は維持する。
+既存VMは1台ずつオンライン移行し、元ディスクを `unused` として保持する。
+元ディスクは移行完了後の更新を含まないため、単純に差し戻して起動してはいけない。
+etcdの復旧手順または再同期を伴う復旧用として扱う。
+計測値と対応内容は [APIサーバー遅延の対応記録](incidents/2026-09-11-api-server-latency.md) を参照。
 
 ### 実測で分かったこと
 

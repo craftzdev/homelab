@@ -62,15 +62,29 @@ resource "proxmox_virtual_environment_vm" "node" {
   # ---------------------------------------------------------------------------
   # ディスク
   #
-  # 各ノードのローカル ZFS（local-zfs）上に置く。
+  # control-plane の OS / etcd は NVMe（local-lvm）へ分離する。
+  # SATA SSD の ZFS では fsync が秒単位で停止し、API timeout が発生した。
+  # worker の OS と Longhorn データはローカル ZFS（local-zfs）上に置く。
   # Ceph を廃止したため共有ストレージは無く、VM はノードに固定される。
   # Talos ノードはステートレスに近く「壊れたら tofu で作り直す」運用が
   # 成立するため、これで問題ない。作り直せないデータ（PV）は
   # Longhorn が 3 レプリカで保護する。
   # ---------------------------------------------------------------------------
+  #
+  # ⚠️ datastore_id の変更は VM 再作成ではなく move_disk（オンラインの
+  #    ディスク移動）になる。既定の -parallelism=10 では control-plane
+  #    3 台の移動が同時に走り、分離の理由である ZFS プールへ 3 本の
+  #    フルコピーを同時にかけることになる。必ず 1 台ずつ実行する。
+  #
+  #      tofu apply -target='proxmox_virtual_environment_vm.node["k8s-1"]'
+  #      # etcd のメンバー健全性を確認してから次の 1 台へ
+  #
+  #    事前に、移動先データストアに disk_gib 以上の空きがあることを
+  #    各ノードで確認する。
+  # ---------------------------------------------------------------------------
   # --- OS ディスク ---
   disk {
-    datastore_id = var.vm_datastore_id
+    datastore_id = each.value.role == "controlplane" ? var.controlplane_os_datastore_id : var.vm_datastore_id
     interface    = "scsi0"
     size         = each.value.disk_gib
     file_format  = "raw"

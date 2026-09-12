@@ -52,6 +52,7 @@ pveum pool add k8s
 pveum aclmod /pool/k8s              -user tofu@pve -role TofuProvisioner
 pveum aclmod /storage/local         -user tofu@pve -role TofuProvisioner
 pveum aclmod /storage/local-zfs     -user tofu@pve -role TofuProvisioner
+pveum aclmod /storage/local-lvm     -user tofu@pve -role TofuProvisioner
 
 #     VM の作成にはノードへの参照権限も要る（PVEAuditor で十分）
 pveum aclmod /nodes -user tofu@pve -role PVEAuditor
@@ -66,6 +67,7 @@ pveum user token add tofu@pve provider --privsep 1
 pveum aclmod /pool/k8s            -token 'tofu@pve!provider' -role TofuProvisioner
 pveum aclmod /storage/local       -token 'tofu@pve!provider' -role TofuProvisioner
 pveum aclmod /storage/local-zfs   -token 'tofu@pve!provider' -role TofuProvisioner
+pveum aclmod /storage/local-lvm   -token 'tofu@pve!provider' -role TofuProvisioner
 pveum aclmod /nodes               -token 'tofu@pve!provider' -role PVEAuditor
 ```
 
@@ -101,7 +103,7 @@ echo "$TF_VAR_state_encryption_passphrase"   # パスワードマネージャへ
 ./scripts/preflight.sh
 ```
 
-3台すべての`local-zfs`、Proxmox quorum、必要なAPI/ネットワーク到達性を
+3台すべての`local-zfs`とcontrol-plane OS用の`local-lvm`、Proxmox quorum、必要なAPI/ネットワーク到達性を
 検証します。Cephは廃止済みであり、残っている場合は警告します。
 `local-zfs`が無い場合は、PBSバックアップとCeph解除を確認したうえで
 `decommission-ceph.sh`の手順を完了させてください。
