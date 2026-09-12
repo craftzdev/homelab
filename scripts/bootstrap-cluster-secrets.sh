@@ -37,6 +37,12 @@ HARBOR_CI_TLS_KEYCHAIN_ACCOUNT="${HARBOR_CI_TLS_KEYCHAIN_ACCOUNT:-172.16.40.201}
 GATUS_CF_ID_KEYCHAIN_SERVICE="${GATUS_CF_ID_KEYCHAIN_SERVICE:-dev.craftz.homelab.gatus-cloudflare-access-client-id}"
 GATUS_CF_SECRET_KEYCHAIN_SERVICE="${GATUS_CF_SECRET_KEYCHAIN_SERVICE:-dev.craftz.homelab.gatus-cloudflare-access-client-secret}"
 GATUS_CF_KEYCHAIN_ACCOUNT="${GATUS_CF_KEYCHAIN_ACCOUNT:-gatus}"
+MOSHITOKU_REPO_KEYCHAIN_SERVICE="${MOSHITOKU_REPO_KEYCHAIN_SERVICE:-dev.craftz.homelab.argocd-moshitoku-deploy-key}"
+MOSHITOKU_REPO_KEYCHAIN_ACCOUNT="${MOSHITOKU_REPO_KEYCHAIN_ACCOUNT:-craftzdev/moshitoku}"
+MOSHITOKU_REPO_URL="${MOSHITOKU_REPO_URL:-git@github.com:craftzdev/moshitoku.git}"
+MOSHITOKU_SCRAPER_REPO_KEYCHAIN_SERVICE="${MOSHITOKU_SCRAPER_REPO_KEYCHAIN_SERVICE:-dev.craftz.homelab.argocd-moshitoku-scraper-deploy-key}"
+MOSHITOKU_SCRAPER_REPO_KEYCHAIN_ACCOUNT="${MOSHITOKU_SCRAPER_REPO_KEYCHAIN_ACCOUNT:-craftzdev/moshitoku-scraper}"
+MOSHITOKU_SCRAPER_REPO_URL="${MOSHITOKU_SCRAPER_REPO_URL:-git@github.com:craftzdev/moshitoku-scraper.git}"
 
 info() { printf '[INFO] %s\n' "$*"; }
 ok() { printf '[OK]   %s\n' "$*"; }
@@ -488,5 +494,50 @@ EOF
 else
   info "Agent repository Deploy Key is absent from Keychain; recovery restore must provide it"
 fi
+
+# The moshitoku repositories are private and each gets its own read-only
+# Deploy Key, so revoking one never widens or interrupts access to the other.
+# The Keychain value is base64 for the same reason as the Worker key: multiline
+# OpenSSH material must survive an exact round trip through the `security` CLI.
+apply_repository_deploy_key() {
+  local secret_name=$1 keychain_service=$2 keychain_account=$3 repo_url=$4
+  local key_b64 key indented
+
+  if ! key_b64="$(security find-generic-password \
+      -s "${keychain_service}" -a "${keychain_account}" -w 2>/dev/null)"; then
+    info "Deploy Key for ${keychain_account} is absent from Keychain; Argo CD cannot read that repository"
+    info "  create one with: ssh-keygen -t ed25519 -N '' -C ${keychain_account} -f <path>"
+    return
+  fi
+
+  key="$(printf '%s' "${key_b64}" | openssl base64 -d -A)"
+  [[ "${key}" == '-----BEGIN OPENSSH PRIVATE KEY-----'* ]] \
+    || die "Deploy Key for ${keychain_account} in Keychain is invalid"
+  indented="$(printf '%s\n' "${key}" | sed 's/^/    /')"
+  kubectl apply -f - >/dev/null <<EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ${secret_name}
+  namespace: argocd
+  labels:
+    argocd.argoproj.io/secret-type: repository
+type: Opaque
+stringData:
+  type: git
+  url: ${repo_url}
+  sshPrivateKey: |
+${indented}
+EOF
+  unset key_b64 key indented
+  ok "Argo CD repository credential for ${keychain_account} is present"
+}
+
+apply_repository_deploy_key moshitoku-repository \
+  "${MOSHITOKU_REPO_KEYCHAIN_SERVICE}" "${MOSHITOKU_REPO_KEYCHAIN_ACCOUNT}" \
+  "${MOSHITOKU_REPO_URL}"
+apply_repository_deploy_key moshitoku-scraper-repository \
+  "${MOSHITOKU_SCRAPER_REPO_KEYCHAIN_SERVICE}" "${MOSHITOKU_SCRAPER_REPO_KEYCHAIN_ACCOUNT}" \
+  "${MOSHITOKU_SCRAPER_REPO_URL}"
 
 ok "Cluster bootstrap secrets are present"
