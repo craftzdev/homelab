@@ -1,0 +1,53 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: tracing
+  namespace: logging
+  labels:
+    release: kube-prometheus-stack
+spec:
+  groups:
+    - name: homelab.tracing
+      rules:
+        - alert: TracingReceiverRejectingSpans
+          expr: |
+            sum(increase(otelcol_receiver_failed_spans_total{namespace="logging",service="alloy-otel"}[5m]))
+            + sum(increase(otelcol_receiver_refused_spans_total{namespace="logging",service="alloy-otel"}[5m])) > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Alloy is rejecting incoming spans"
+        - alert: TracingTargetDown
+          expr: up{namespace="logging",service=~"tempo|alloy-otel"} == 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Tracing target {{ $labels.service }} is unavailable"
+        - alert: TempoBlockStorageErrors
+          expr: |
+            sum(increase(tempo_live_store_local_failed_flushes_total{namespace="logging"}[5m]))
+            + sum(increase(tempo_backend_scheduler_work_flushes_failed_total{namespace="logging"}[5m])) > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Tempo cannot flush trace blocks or scheduler state"
+        - alert: TempoVolumeAlmostFull
+          expr: |
+            kubelet_volume_stats_available_bytes{namespace="logging",persistentvolumeclaim="storage-tempo-0"}
+            / kubelet_volume_stats_capacity_bytes{namespace="logging",persistentvolumeclaim="storage-tempo-0"} < 0.2
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Tempo WAL volume has less than 20% free space"
+        - alert: TracingContainerOOM
+          expr: |
+            kube_pod_container_status_last_terminated_reason{namespace="logging",pod=~"tempo-.*|alloy-otel-.*",reason="OOMKilled"} == 1
+          for: 1m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Tracing container {{ $labels.pod }} was OOM killed"

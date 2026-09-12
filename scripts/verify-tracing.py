@@ -15,6 +15,8 @@ import uuid
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--kubeconfig", default=os.environ.get("KUBECONFIG", "_out/kubeconfig"))
+    parser.add_argument("--image", default="python:3.12.12-alpine3.22",
+                        help="Pinned Python image; a cached Harbor image can avoid public pulls")
     args = parser.parse_args()
     base = ["kubectl", "--kubeconfig", args.kubeconfig, "--request-timeout=20s"]
 
@@ -30,7 +32,19 @@ def main():
     # Only fabricated values are transmitted. The forbidden attribute tests
     # receiver-side redaction; this is not an actual secret.
     program = """
-import json,time,urllib.request
+import json,time,urllib.request,socket
+for host,port in [
+ ("tempo.logging.svc.cluster.local",3200),
+ ("tempo.logging.svc.cluster.local",4317),
+ ("alloy-otel.logging.svc.cluster.local",12345),
+]:
+ try:
+  connection=socket.create_connection((host,port),timeout=2)
+ except OSError:
+  continue
+ connection.close()
+ raise RuntimeError("Unexpected direct access to "+host+":"+str(port))
+print(json.dumps({"network_isolation":"passed"}),flush=True)
 now=time.time_ns()
 payload={"resourceSpans":[{"resource":{"attributes":[
  {"key":"service.name","value":{"stringValue":"tracing-smoke"}},
@@ -53,10 +67,11 @@ with urllib.request.urlopen(req,timeout=15) as response:
 """.replace("TRACE_ID", trace_id)
     pod_spec = {
         "restartPolicy": "Never", "automountServiceAccountToken": False,
+        "imagePullSecrets": [{"name": "harbor-pull"}],
         "securityContext": {"runAsNonRoot": True, "runAsUser": 1000,
                             "seccompProfile": {"type": "RuntimeDefault"}},
         "containers": [{
-            "name": "verify", "image": "python:3.12.12-alpine3.22",
+            "name": "verify", "image": args.image,
             "command": ["python3", "-c", program],
             "resources": {"requests": {"cpu": "10m", "memory": "32Mi"},
                           "limits": {"cpu": "100m", "memory": "128Mi"}},
@@ -68,7 +83,7 @@ with urllib.request.urlopen(req,timeout=15) as response:
     manifest = {
         "apiVersion": "batch/v1", "kind": "Job",
         "metadata": {"name": job_name, "namespace": "moshitoku-scraper"},
-        "spec": {"backoffLimit": 0, "activeDeadlineSeconds": 180,
+        "spec": {"backoffLimit": 0, "activeDeadlineSeconds": 300,
                  "ttlSecondsAfterFinished": 600,
                  "template": {"metadata": {"labels": {
                      "homelab.craftz.dev/otel-client": "true",
@@ -77,7 +92,7 @@ with urllib.request.urlopen(req,timeout=15) as response:
     }
     try:
         kube("apply", "-f", "-", data=json.dumps(manifest))
-        deadline = time.monotonic() + 190
+        deadline = time.monotonic() + 310
         while time.monotonic() < deadline:
             job = json.loads(kube("-n", "moshitoku-scraper", "get", "job", job_name, "-o", "json"))
             status = job.get("status", {})
