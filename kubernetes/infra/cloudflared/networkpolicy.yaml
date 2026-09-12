@@ -63,6 +63,11 @@ spec:
               - matchPattern: "*.*.argotunnel.com"
               - matchPattern: "*.cftunnel.com"
               - matchPattern: "*.*.cftunnel.com"
+              # Service の FQDN は <service>.<namespace>.svc.cluster.local で
+              # svc.cluster.local の前に 2 ラベルある。`*.svc.cluster.local`
+              # だけでは一致せず、origin の名前解決が REFUSED になり
+              # cloudflared が 502 を返す。
+              - matchPattern: "*.*.svc.cluster.local"
               - matchPattern: "*.svc.cluster.local"
               - matchPattern: "*.cluster.local"
 
