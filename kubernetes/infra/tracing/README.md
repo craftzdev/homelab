@@ -55,6 +55,8 @@ KUBECONFIG="$PWD/_out/kubeconfig" bash scripts/bootstrap-tracing-secret.sh
 
 tracingの同期ではpolicy/ConfigMapがwave -2、MinIO bootstrap Jobがwave -1、
 Tempo/Alloyがwave 0で適用される。Sync hookがbucket/user/policyを冪等に構成する。
+Hookの実行上限は起動待ちを含め15分。containerdの遅延で超過した場合は、
+ノードの状態を確認してから再同期する。既存データやPVCは削除しない。
 MinIOとloggingがHealthyになってからtracingを待つ処理を再構築reconcilerへ追加済み。
 既存MinIOビルドはAbortIncompleteMultipartUpload lifecycleを拒否するため未設定。
 オブジェクト保持はTempoが管理する。MinIOの独立バックアップを新設する変更ではない。

@@ -36,7 +36,8 @@ metadata:
     argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
 spec:
   backoffLimit: 3
-  activeDeadlineSeconds: 300
+  # Includes scheduling/image/runtime startup, which can exceed five minutes.
+  activeDeadlineSeconds: 900
   template:
     metadata:
       labels:
