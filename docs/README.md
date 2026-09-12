@@ -41,6 +41,7 @@
 | [kubernetes/infra/velero/README.md](../kubernetes/infra/velero/README.md) | バックアップ先（外部オブジェクトストレージ）の設定 |
 | [kubernetes/infra/cloudflared/generated/README.md](../kubernetes/infra/cloudflared/generated/README.md) | OpenTofu が生成する ingress 設定の扱い |
 | [workers/example-origin-api/README.md](../workers/example-origin-api/README.md) | Workers から Access 経由で呼び出す実装 |
+| [cluster-operations-tools-handoff.md](cluster-operations-tools-handoff.md) | Hubble UI・Renovate・Gatusの導入設計とClaude Code引き継ぎ |
 
 ## この構成で「やっていないこと」
 
