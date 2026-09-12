@@ -54,6 +54,9 @@ spec:
             io.kubernetes.pod.namespace: logging
             app.kubernetes.io/name: minio-umami-bootstrap
         - matchLabels:
+            io.kubernetes.pod.namespace: logging
+            app.kubernetes.io/name: minio-moshitoku-bootstrap
+        - matchLabels:
             io.kubernetes.pod.namespace: analytics
         - matchLabels:
             io.kubernetes.pod.namespace: monitoring
@@ -98,6 +101,33 @@ spec:
   endpointSelector:
     matchLabels:
       app.kubernetes.io/name: minio-umami-bootstrap
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: logging
+            app.kubernetes.io/name: minio
+      toPorts:
+        - ports:
+            - port: "9000"
+              protocol: TCP
+
+---
+# ===========================================================================
+# moshitoku の bucket 作成 Job から MinIO への egress
+#
+# ⚠️ bootstrap Job ごとにラベルが違うため、Job を増やすたびにここと
+#    minio-access の ingress の両方へ追記が必要である。片方だけだと
+#    `mc` が i/o timeout で失敗し、原因が NetworkPolicy だと分かりにくい。
+# ===========================================================================
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: minio-moshitoku-bootstrap-egress
+  namespace: logging
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: minio-moshitoku-bootstrap
   egress:
     - toEndpoints:
         - matchLabels:
