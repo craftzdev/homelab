@@ -47,8 +47,12 @@ ensure_generated_keychain_secret() {
   printf '%s' "${value}"
 }
 
+# namespace はアプリ側リポジトリが Pod Security ラベル付きで所有する。ここでは
+# 「まだ無いときだけ」作る。既存へ apply すると last-applied-configuration を
+# 後付けして所有権が曖昧になり、Argo CD と差分を取り合う下地になる。
 ensure_namespace() {
-  kubectl create namespace "$1" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+  kubectl get namespace "$1" >/dev/null 2>&1 && return
+  kubectl create namespace "$1" >/dev/null
 }
 
 ensure_namespace "${APP_NAMESPACE}"
