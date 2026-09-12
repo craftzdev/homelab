@@ -2,11 +2,16 @@ variable "cloudflare_api_token" {
   description = <<-EOT
     Cloudflare API トークン。
 
-    必要な権限（これ以上は付けないこと）:
-      Account | Cloudflare Tunnel        | Edit
-      Account | Access: Apps and Policies| Edit
-      Account | Access: Service Tokens   | Edit
-      Zone    | DNS                      | Edit
+    必要な権限（これ以上は付けないこと）。published_services が空なら
+    Access 関連リソースは作られないため、上 2 つだけでよい:
+
+      Account | Cloudflare Tunnel        | Edit   ← 常に必要
+      Zone    | DNS                      | Edit   ← 常に必要
+      Account | Access: Apps and Policies| Edit   ← published_services を使う場合
+      Account | Access: Service Tokens   | Edit   ← published_services を使う場合
+
+    Access 系はいずれも Account スコープであり、ドロップダウンの 1 つ目を
+    Zone にしていると候補に出てこない。
 
     Global API Key は絶対に使わないこと（全権限を持つため）。
 

@@ -29,7 +29,7 @@ output "service_token_client_id" {
     これ単体では認可を通せないため sensitive にはしていないが、
     公開の場に貼らないこと。
   EOT
-  value       = cloudflare_zero_trust_access_service_token.saas_worker.client_id
+  value       = one(cloudflare_zero_trust_access_service_token.saas_worker[*].client_id)
 }
 
 output "service_token_client_secret" {
@@ -42,13 +42,13 @@ output "service_token_client_secret" {
     Workers への登録（平文で wrangler.toml に書かないこと）:
       wrangler secret put CF_ACCESS_CLIENT_SECRET
   EOT
-  value       = cloudflare_zero_trust_access_service_token.saas_worker.client_secret
+  value       = one(cloudflare_zero_trust_access_service_token.saas_worker[*].client_secret)
   sensitive   = true
 }
 
 output "service_token_expires_at" {
   description = "Service Token の有効期限。期限前にローテーションすること。"
-  value       = cloudflare_zero_trust_access_service_token.saas_worker.expires_at
+  value       = one(cloudflare_zero_trust_access_service_token.saas_worker[*].expires_at)
 }
 
 # ---------------------------------------------------------------------------
@@ -60,7 +60,7 @@ output "service_token_expires_at" {
 # ---------------------------------------------------------------------------
 output "gatus_service_token_client_id" {
   description = "Gatus に設定する CF-Access-Client-Id の値"
-  value       = cloudflare_zero_trust_access_service_token.gatus_monitor.client_id
+  value       = one(cloudflare_zero_trust_access_service_token.gatus_monitor[*].client_id)
 }
 
 output "gatus_service_token_client_secret" {
@@ -76,13 +76,13 @@ output "gatus_service_token_client_secret" {
         -a gatus -w "$s"
       unset s
   EOT
-  value       = cloudflare_zero_trust_access_service_token.gatus_monitor.client_secret
+  value       = one(cloudflare_zero_trust_access_service_token.gatus_monitor[*].client_secret)
   sensitive   = true
 }
 
 output "gatus_service_token_expires_at" {
   description = "Gatus 用 Service Token の有効期限。期限前にローテーションすること。"
-  value       = cloudflare_zero_trust_access_service_token.gatus_monitor.expires_at
+  value       = one(cloudflare_zero_trust_access_service_token.gatus_monitor[*].expires_at)
 }
 
 output "credentials_file_path" {

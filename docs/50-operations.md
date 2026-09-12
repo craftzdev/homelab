@@ -323,17 +323,27 @@ revokeしてください。**
 | クラスタ全再構築 | 不要（`rebuild-talos-cluster.sh`は`10-proxmox-talos`のみ） |
 | 日常運用・Gatusによる監視 | 不要 |
 
-必要な権限は次の4つです。
+必要な権限は**何を公開するかで変わります**。`published_services` が空なら
+Access 関連のリソースは作られないため、2つで足ります。
+
+匿名公開だけの場合（`published_services = {}`）:
 
 | スコープ | 権限 | 用途 |
 | --- | --- | --- |
-| Zone | DNS:Edit | 公開ホスト名の CNAME |
-| Account | Cloudflare Tunnel:Edit | Tunnel の作成 |
-| Account | Access: Apps and Policies:Edit | Access アプリケーションとポリシー |
-| Account | Access: Service Tokens:Edit | サービストークンの発行 |
+| Account | Cloudflare Tunnel | Edit | Tunnel の作成 |
+| Zone | DNS | Edit | 公開ホスト名の CNAME |
 
-⚠️ Service Tokens は Apps and Policies とは**別の権限グループ**です。3つだけで
-作ると `cloudflare_zero_trust_access_service_token` の作成で失敗します。
+`published_services` に1件でも書く場合は、次の2つを追加します。
+
+| スコープ | 権限 | 用途 |
+| --- | --- | --- |
+| Account | Access: Apps and Policies | Edit | Access アプリケーションとポリシー |
+| Account | Access: Service Tokens | Edit | サービストークンの発行 |
+
+⚠️ `Access: Service Tokens` は `Apps and Policies` とは**別の権限グループ**です。
+
+⚠️ ドロップダウンの1つ目を `Account` にしないと、Access 系の項目は出てきません
+（Zone スコープには存在しません）。
 
 #### 手順
 

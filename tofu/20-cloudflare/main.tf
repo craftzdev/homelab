@@ -97,6 +97,12 @@ resource "cloudflare_dns_record" "public" {
 # 自前で認証機構を実装するより遥かに安全である。
 # ---------------------------------------------------------------------------
 resource "cloudflare_zero_trust_access_service_token" "saas_worker" {
+  # published_services が空なら Access アプリケーションも作られないため、
+  # トークンを発行しても紐づけ先が無い。使われないトークンを作らないことで、
+  # apply に必要な API トークンの権限も 2 つ減る
+  # （Access: Service Tokens / Access: Apps and Policies が不要になる）。
+  count = local.access_enabled ? 1 : 0
+
   account_id = var.cloudflare_account_id
   name       = var.service_token_name
   duration   = var.service_token_duration
@@ -117,13 +123,15 @@ resource "cloudflare_zero_trust_access_service_token" "saas_worker" {
 # ことになるため、認可を緩めたくない限り Service Token 以外を追加しないこと。
 # ---------------------------------------------------------------------------
 resource "cloudflare_zero_trust_access_policy" "allow_saas_worker" {
+  count = local.access_enabled ? 1 : 0
+
   account_id = var.cloudflare_account_id
   name       = "allow-${var.service_token_name}"
   decision   = "non_identity"
 
   include = [{
     service_token = {
-      token_id = cloudflare_zero_trust_access_service_token.saas_worker.id
+      token_id = cloudflare_zero_trust_access_service_token.saas_worker[0].id
     }
   }]
 }
@@ -141,6 +149,8 @@ resource "cloudflare_zero_trust_access_policy" "allow_saas_worker" {
 #     あってはならない。
 # ---------------------------------------------------------------------------
 resource "cloudflare_zero_trust_access_service_token" "gatus_monitor" {
+  count = local.access_enabled ? 1 : 0
+
   account_id = var.cloudflare_account_id
   name       = var.gatus_service_token_name
   duration   = var.gatus_service_token_duration
@@ -150,13 +160,15 @@ resource "cloudflare_zero_trust_access_service_token" "gatus_monitor" {
 }
 
 resource "cloudflare_zero_trust_access_policy" "allow_gatus_monitor" {
+  count = local.access_enabled ? 1 : 0
+
   account_id = var.cloudflare_account_id
   name       = "allow-${var.gatus_service_token_name}"
   decision   = "non_identity"
 
   include = [{
     service_token = {
-      token_id = cloudflare_zero_trust_access_service_token.gatus_monitor.id
+      token_id = cloudflare_zero_trust_access_service_token.gatus_monitor[0].id
     }
   }]
 }
@@ -198,7 +210,7 @@ resource "cloudflare_zero_trust_access_application" "published" {
   #    1 パスだけである。Gatus 用は下の gatus_health アプリケーションで、
   #    health_path だけを対象に分離している。
   policies = [{
-    id         = cloudflare_zero_trust_access_policy.allow_saas_worker.id
+    id         = cloudflare_zero_trust_access_policy.allow_saas_worker[0].id
     precedence = 1
   }]
 }
@@ -237,7 +249,7 @@ resource "cloudflare_zero_trust_access_application" "gatus_health" {
   same_site_cookie_attribute = "strict"
 
   policies = [{
-    id         = cloudflare_zero_trust_access_policy.allow_gatus_monitor.id
+    id         = cloudflare_zero_trust_access_policy.allow_gatus_monitor[0].id
     precedence = 1
   }]
 }
@@ -279,6 +291,10 @@ resource "local_sensitive_file" "cloudflared_credentials" {
 # 重要（多層防御）。詳細は docs/40-external-access.md §5 を参照。
 # ---------------------------------------------------------------------------
 locals {
+  # Access 関連リソースを作るかどうか。published_services が空なら、
+  # Access アプリケーションもサービストークンも意味を持たない。
+  access_enabled = length(var.published_services) > 0
+
   cloudflared_config = {
     # -------------------------------------------------------------------------
     # どのトンネルを、どの認証情報で張るか
