@@ -188,13 +188,24 @@ encrypt_secret() {
 }
 
 backup_tailnet_proxy_state() {
-  local parent_type=$1 parent_namespace=$2 parent_name=$3 output=$4
+  # optional=1 skips the component instead of failing when its proxy does not
+  # exist yet. A management UI that was added after the running cluster was
+  # built has no state Secret, and an observability tool must never be the
+  # reason the Worker and registry data cannot be backed up at all.
+  local parent_type=$1 parent_namespace=$2 parent_name=$3 output=$4 optional=${5:-0}
   local secrets_json count
   secrets_json="$(kubectl --kubeconfig "${KUBECONFIG_PATH}" -n tailscale \
     get secrets \
     -l "tailscale.com/managed=true,tailscale.com/parent-resource-type=${parent_type},tailscale.com/parent-resource-ns=${parent_namespace},tailscale.com/parent-resource=${parent_name}" \
     -o json)"
   count="$(jq '.items | length' <<<"${secrets_json}")"
+  if [[ "${count}" == 0 && "${optional}" == 1 ]]; then
+    info "No Tailnet state Secret for ${parent_type}/${parent_namespace}/${parent_name}; a new identity will be issued on restore"
+    rm -f "${output}"
+    return
+  fi
+  # Two or more is ambiguous even for an optional component: picking the wrong
+  # one would restore an identity onto the wrong proxy.
   [[ "${count}" == 1 ]] \
     || die "expected one Tailnet state Secret for ${parent_type}/${parent_namespace}/${parent_name}, found ${count}"
 
@@ -281,9 +292,9 @@ backup_cluster_data() {
   backup_tailnet_proxy_state ingress portal homepage \
     "${BACKUP_DIR}/tailscale-portal-state.secret.json.age"
   backup_tailnet_proxy_state ingress kube-system hubble-ui \
-    "${BACKUP_DIR}/tailscale-hubble-state.secret.json.age"
+    "${BACKUP_DIR}/tailscale-hubble-state.secret.json.age" 1
   backup_tailnet_proxy_state ingress status gatus \
-    "${BACKUP_DIR}/tailscale-status-state.secret.json.age"
+    "${BACKUP_DIR}/tailscale-status-state.secret.json.age" 1
 
   kubectl --kubeconfig "${KUBECONFIG_PATH}" -n ai-worker get deploy ai-business-worker \
     -o jsonpath='{.spec.template.spec.containers[0].image}' \

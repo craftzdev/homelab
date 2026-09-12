@@ -323,8 +323,17 @@ revokeしてください。**
 | クラスタ全再構築 | 不要（`rebuild-talos-cluster.sh`は`10-proxmox-talos`のみ） |
 | 日常運用・Gatusによる監視 | 不要 |
 
-必要な権限は Zone:DNS:Edit、Account:Cloudflare Tunnel:Edit、
-Account:Access: Apps and Policies:Edit です。
+必要な権限は次の4つです。
+
+| スコープ | 権限 | 用途 |
+| --- | --- | --- |
+| Zone | DNS:Edit | 公開ホスト名の CNAME |
+| Account | Cloudflare Tunnel:Edit | Tunnel の作成 |
+| Account | Access: Apps and Policies:Edit | Access アプリケーションとポリシー |
+| Account | Access: Service Tokens:Edit | サービストークンの発行 |
+
+⚠️ Service Tokens は Apps and Policies とは**別の権限グループ**です。3つだけで
+作ると `cloudflare_zero_trust_access_service_token` の作成で失敗します。
 
 #### 手順
 

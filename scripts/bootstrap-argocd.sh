@@ -116,7 +116,11 @@ kubectl apply -f "${REPO_ROOT}/kubernetes/apps/project.yaml"
 # 旧構成の Application は app-of-apps の対象外にしただけでは feature branch
 # 検証時に残り続ける。finalizer による配下リソースの削除まで待ち、未設定の
 # Velero と Gateway VM に移行済みの cloudflared を確実に退役させる。
-for retired_app in gateway cloudflared velero; do
+#
+# ⚠️ ここは finalizer 付きの削除である。現役の Application を書くと、その
+#    配下のリソースがすべて消える。gateway は現役に戻したため外してある
+#    （reconcile-cluster-platform.sh の同名リストも同様）。
+for retired_app in cloudflared velero; do
   kubectl -n argocd delete application "${retired_app}" \
     --ignore-not-found --wait=true --timeout=5m
 done

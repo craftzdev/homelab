@@ -93,16 +93,20 @@ cloudflared がそこだけ弾き、「エッジは通ったのに監視だけ�
 | Client ID | `dev.craftz.homelab.gatus-cloudflare-access-client-id` | `gatus` |
 | Client Secret | `dev.craftz.homelab.gatus-cloudflare-access-client-secret` | `gatus` |
 
+⚠️ `security add-generic-password` はパスワードを標準入力から読まない。`-w` に
+値を渡さないと対話プロンプトになり、パイプで渡しても
+`passwords don't match` で失敗する。値は引数で渡す。
+
 ```bash
 cd tofu/20-cloudflare
-tofu apply
 
-tofu output -raw gatus_service_token_client_id \
-  | security add-generic-password -U \
-      -s dev.craftz.homelab.gatus-cloudflare-access-client-id -a gatus -w
-tofu output -raw gatus_service_token_client_secret \
-  | security add-generic-password -U \
-      -s dev.craftz.homelab.gatus-cloudflare-access-client-secret -a gatus -w
+cf_id="$(tofu output -raw gatus_service_token_client_id)"
+cf_secret="$(tofu output -raw gatus_service_token_client_secret)"
+security add-generic-password -U \
+  -s dev.craftz.homelab.gatus-cloudflare-access-client-id -a gatus -w "${cf_id}"
+security add-generic-password -U \
+  -s dev.craftz.homelab.gatus-cloudflare-access-client-secret -a gatus -w "${cf_secret}"
+unset cf_id cf_secret
 ```
 
 `scripts/bootstrap-cluster-secrets.sh` が Keychain から

@@ -95,9 +95,21 @@ persistence:
 # 環境変数として渡し、config 側では ${...} で参照する。値が Git にも
 # ConfigMap にも現れない。
 # ---------------------------------------------------------------------------
+# optional: true にしている理由。
+#
+# この Secret は Keychain から bootstrap-cluster-secrets.sh が作る。必須に
+# すると、Keychain にトークンが無い端末での再構築が数時間走ったあと
+# 「Gatus の Pod が CreateContainerConfigError → Application が Healthy に
+# ならない → 最終検証で失敗」という形で終わる。監視ツールが災害復旧の
+# 単一障害点になってはいけない。
+#
+# Secret が無いときは Gatus は起動し、認証ヘッダが空のまま監視対象へ
+# リクエストして 403 を受ける。UI 上で赤く見えることが「トークンが未設定」
+# のシグナルになる。黙って緑にはならない。
 envFrom:
   - secretRef:
       name: gatus-cloudflare-access
+      optional: true
 
 serviceMonitor:
   enabled: true

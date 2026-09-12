@@ -67,11 +67,14 @@ output "gatus_service_token_client_secret" {
   description = <<-EOT
     Gatus に設定する CF-Access-Client-Secret の値。
 
-    Keychain へ保存する（端末の画面やシェル履歴に残さない）:
-      tofu output -raw gatus_service_token_client_secret \
-        | security add-generic-password -U \
-            -s dev.craftz.homelab.gatus-cloudflare-access-client-secret \
-            -a gatus -w
+    Keychain へ保存する。security はパスワードを標準入力から読まないため、
+    パイプではなく引数で渡すこと（パイプすると対話プロンプトに落ちて失敗する）:
+
+      s="$(tofu output -raw gatus_service_token_client_secret)"
+      security add-generic-password -U \
+        -s dev.craftz.homelab.gatus-cloudflare-access-client-secret \
+        -a gatus -w "$s"
+      unset s
   EOT
   value       = cloudflare_zero_trust_access_service_token.gatus_monitor.client_secret
   sensitive   = true

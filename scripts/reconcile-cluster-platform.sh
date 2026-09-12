@@ -163,7 +163,7 @@ wait_for_longhorn_csi
 
 # Monitoring installs the ServiceMonitor CRD required by cert-manager and Trivy,
 # so those applications are deliberately checked later.
-for app in image-registry tailscale-operator security-config monitoring; do
+for app in image-registry tailscale-operator security-config monitoring gateway; do
   resume_application "${app}"
   wait_for_application "${app}"
 done
@@ -193,6 +193,11 @@ for app in arc-controller arc-runners; do
   wait_for_application "${app}"
 done
 
+# Gatus depends on the ServiceMonitor CRD, a Longhorn volume, and the
+# Cloudflare Access Secret created in the Harbor block above.
+resume_application gatus
+wait_for_application gatus
+
 # Application workloads are reconciled only after their storage, networking,
 # private repository credential, and runtime dependencies are available. A
 # disaster restore defers this gate until its out-of-band Secrets and PVC data
@@ -204,7 +209,14 @@ else
   info "AI Business Worker reconciliation deferred for data restore"
 fi
 
-for retired_app in gateway cloudflared velero; do
+# ⚠️ 稼働中の Application をここへ書かないこと。die するだけでなく、
+#    bootstrap-argocd.sh の同名リストが finalizer 付きで削除するため、
+#    その Application の配下リソースごと消える。
+#
+#    gateway は kubernetes/infra/gateway/ を管理する現役の Application に
+#    なったのでこのリストから外した。cloudflared を Kubernetes へ戻す際も、
+#    Application を追加する変更と同じ PR で両方のリストから外すこと。
+for retired_app in cloudflared velero; do
   if kubectl --request-timeout=15s -n argocd \
       get application "${retired_app}" >/dev/null 2>&1; then
     die "retired Application still exists: ${retired_app}"

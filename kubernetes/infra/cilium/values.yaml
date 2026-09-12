@@ -199,8 +199,11 @@ hubble:
   ui:
     enabled: true
     rollOutPods: true
-    # ⚠️ Hubble UI は通信内容を閲覧できる管理ツールである。
-    #    Ingress で外部公開してはならない。参照は port-forward で行う:
+    # ⚠️ Hubble UI は通信内容を閲覧できる管理ツールである。インターネットへ
+    #    公開してはならない。chart 側の Ingress は無効のままにし、公開経路は
+    #    kubernetes/infra/tailscale-operator/hubble-ingress.yaml の
+    #    Tailscale Ingress だけに保つ（経路を二重化しないため）。
+    #    Tailnet 障害時の代替は port-forward:
     #      kubectl -n kube-system port-forward svc/hubble-ui 12000:80
     ingress:
       enabled: false

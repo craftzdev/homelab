@@ -25,7 +25,9 @@
 #     3  gateway         : Cilium Gateway API の外部公開入口
 #     7  gatus           : Cloudflare 公開経路の外形監視
 #
-# Gateway/cloudflared は Business Gateway VM 1200 で稼働するためクラスタには置かない。
+# cloudflared は現状 Business Gateway VM 1200 で稼働しており、クラスタには置かない。
+# gateway.craftz.dev はその VM 上の専用 Tunnel が終端する。
+# 一方 Cilium の Gateway API（gateway）はクラスタ内の公開入口としてここで管理する。
 # Velero は外部オブジェクトストレージ設定後に別変更として有効化する。
 #
 # ---------------------------------------------------------------------------
@@ -1109,9 +1111,10 @@ spec:
 # Gateway 本体は cilium-agent 内の Envoy として動くため、この Application が
 # 作るのは namespace と Gateway / HTTPRoute リソースだけである。
 #
-# Service は `io.cilium/lb-mode: clusterip` により ClusterIP に固定する。
-# LoadBalancer にすると VLAN40 へ L2 公開され、Cloudflare Access を迂回できる
-# 第 2 の入口ができてしまう。外部からの到達は cloudflared 経由だけに保つ。
+# Service は type: LoadBalancer のままだが、LAN からは到達できない。
+# NodePort は CiliumGatewayClassConfig で無効化し、LB IPAM の serviceSelector
+# にも一致させていないため外部 IP も付かない。詳細は
+# kubernetes/infra/gateway/gateway.yaml のコメントを参照。
 #
 # HTTPRoute を受け付ける namespace は `homelab.io/gateway-access: external`
 # ラベルで明示的に絞る。これが無いと、namespace を作れる者が誰でも
