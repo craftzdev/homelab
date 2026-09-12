@@ -342,11 +342,23 @@ cd tofu/20-cloudflare
 cp terraform.tfvars.example terraform.tfvars
 $EDITOR terraform.tfvars   # ⚠️ APIトークンはここに書かない
 
-# 履歴に残さずに読み込む
-read -rs -p 'Cloudflare API token: ' TF_VAR_cloudflare_api_token
+# 履歴に残さずに読み込む。
+#
+# ⚠️ これはzshの構文である（macOSの既定シェル）。bashの
+#    `read -rs -p 'prompt' VAR` をzshで実行すると、zshは-pを
+#    「コプロセスから読む」と解釈して `-p: no coprocess` で失敗し、
+#    変数が未設定のままtofuが対話プロンプトに落ちる。
+#
+# ⚠️ そこでトークンを入力してはいけない。OpenTofuは変数プロンプトの入力を
+#    `sensitive = true` であってもマスクしないため、画面とターミナル履歴に
+#    平文で残る。Ctrl-Cして環境変数を設定し直すこと。
+read -rs "TF_VAR_cloudflare_api_token?Cloudflare API token: "; echo
 export TF_VAR_cloudflare_api_token
 export TF_VAR_state_encryption_passphrase="$(security find-generic-password \
   -s dev.craftz.homelab.tofu-state -a talos-k8s -w)"
+
+# 値を表示せずに渡っているか確認する。0ならtofuは再び対話プロンプトに落ちる。
+echo "token length: ${#TF_VAR_cloudflare_api_token}"
 
 tofu init && tofu apply
 unset TF_VAR_cloudflare_api_token   # この後Cloudflare側でrevokeする
