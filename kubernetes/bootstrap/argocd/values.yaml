@@ -14,6 +14,25 @@ global:
   # ノードが 1 台落ちても GitOps が止まらないようにする
   priorityClassName: system-cluster-critical
 
+  # ---------------------------------------------------------------------------
+  # Pod レベルの securityContext
+  #
+  # fsGroup が本体である。kubelet は fsGroup を指定された volume の group
+  # 所有者に設定する。これが無いと repo-server にマウントする sops-age は
+  # root:root のままで、uid 999 で動く repo-server は読めない。KSOPS の復号が
+  # "Error getting data key: 0 successful groups required, got 0" で失敗し、
+  # 鍵は正しいのに復号できないという分かりにくい形で表面化する。
+  #
+  # ⚠️ この chart に repoServer.podSecurityContext というキーは無い。そこへ
+  #    書いても黙って無視されるため、Pod レベルの設定は必ずここへ書く。
+  #
+  # 999 は argocd イメージの uid/gid である（Pod 内の `id` で確認）。
+  # ---------------------------------------------------------------------------
+  securityContext:
+    runAsUser: 999
+    runAsGroup: 999
+    fsGroup: 999
+
 # ---------------------------------------------------------------------------
 # CRD は Helm に管理させる
 # ---------------------------------------------------------------------------
@@ -92,10 +111,22 @@ repoServer:
       emptyDir: {}
     # age 秘密鍵。scripts/bootstrap-argocd.sh が Secret として作成する。
     # ⚠️ この鍵を持つ者は、リポジトリ内の全ての暗号化済み秘密を復号できる。
+    #
+    # ⚠️ defaultMode を 0400 にしてはならない。
+    #
+    #    Secret volume のファイルは既定で root:root 所有になる。repo-server は
+    #    uid 999 で動くため、0400（所有者のみ読み取り可）だと
+    #    `Permission denied` になり、KSOPS の復号が
+    #    "Error getting data key: 0 successful groups required, got 0" で
+    #    失敗する。鍵が正しくても復号できないため原因が分かりにくい。
+    #
+    #    下の podSecurityContext.fsGroup で volume の group を 999 にし、
+    #    0440（所有者と group のみ）で repo-server から読めるようにする。
+    #    0444 にすれば動くが、Pod 内の他の uid からも読めるため採らない。
     - name: sops-age
       secret:
         secretName: sops-age
-        defaultMode: 0400
+        defaultMode: 0440
 
   volumeMounts:
     - name: custom-tools
