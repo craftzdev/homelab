@@ -6,3 +6,43 @@ namespace: monitoring
 resources:
   - namespace-and-policy.yaml
   - alerts.yaml
+  - ai-gateway.yaml
+  - pbs.yaml
+
+# Grafana sidecar が JSON を読み込み、同じ UID で更新する。
+configMapGenerator:
+  - name: homelab-dashboard-pbs
+    files:
+      - homelab-pbs.json=dashboards/pbs.json
+    options:
+      disableNameSuffixHash: true
+      labels:
+        grafana_dashboard: "1"
+  - name: homelab-dashboard-ai-platform
+    files:
+      - homelab-ai-platform.json=dashboards/ai-platform.json
+    options:
+      disableNameSuffixHash: true
+      labels:
+        grafana_dashboard: "1"
+  - name: homelab-dashboard-overview
+    files:
+      - homelab-overview.json=dashboards/overview.json
+    options:
+      disableNameSuffixHash: true
+      labels:
+        grafana_dashboard: "1"
+  - name: homelab-dashboard-workloads
+    files:
+      - homelab-workloads.json=dashboards/workloads.json
+    options:
+      disableNameSuffixHash: true
+      labels:
+        grafana_dashboard: "1"
+  - name: homelab-dashboard-logs
+    files:
+      - homelab-logs.json=dashboards/logs.json
+    options:
+      disableNameSuffixHash: true
+      labels:
+        grafana_dashboard: "1"

@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh AI Gateway health every 30 seconds
+
+[Timer]
+OnBootSec=15s
+OnUnitActiveSec=30s
+AccuracySec=1s
+Unit=ai-gateway-metrics.service
+
+[Install]
+WantedBy=timers.target

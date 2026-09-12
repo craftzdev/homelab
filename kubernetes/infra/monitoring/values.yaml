@@ -160,6 +160,8 @@ grafana:
     enabled: false
 
   grafana.ini:
+    dashboards:
+      default_home_dashboard_path: /tmp/dashboards/homelab-overview.json
     server:
       root_url: "https://grafana.tailb6c7d.ts.net/"
     security:

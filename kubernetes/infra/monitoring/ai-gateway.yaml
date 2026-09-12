@@ -1,0 +1,53 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: ai-gateway-metrics
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: ai-gateway-metrics
+spec:
+  ports:
+    - name: metrics
+      port: 9100
+      targetPort: 9100
+---
+# External VM: selectorless Service, fixed VLAN 40 endpoint.
+apiVersion: discovery.k8s.io/v1
+kind: EndpointSlice
+metadata:
+  name: ai-gateway-metrics
+  namespace: monitoring
+  labels:
+    kubernetes.io/service-name: ai-gateway-metrics
+    endpointslice.kubernetes.io/managed-by: homelab
+addressType: IPv4
+ports:
+  - name: metrics
+    protocol: TCP
+    port: 9100
+endpoints:
+  - addresses: ["172.16.40.30"]
+    conditions:
+      ready: true
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: ai-gateway
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack
+spec:
+  serviceDiscoveryRole: EndpointSlice
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ai-gateway-metrics
+  endpoints:
+    - port: metrics
+      interval: 30s
+      scrapeTimeout: 10s
+      relabelings:
+        - targetLabel: job
+          replacement: ai-gateway
+        - targetLabel: host
+          replacement: ai-gateway-01

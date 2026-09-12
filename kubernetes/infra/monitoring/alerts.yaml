@@ -87,3 +87,47 @@ spec:
             severity: info
           annotations:
             summary: "ノードの /var メトリクスが取得できません"
+
+    # -----------------------------------------------------------------------
+    # 監視自体の健全性
+    #
+    # 外部ターゲット（Gateway VM / PBS observer）は ServiceMonitor の設定変更や
+    # CRD のバージョン差で「エラーを出さずにターゲットごと消える」ことがある。
+    # 消えたことを検知できないと、グラフが空のまま「正常」に見えてしまう。
+    # -----------------------------------------------------------------------
+    - name: homelab.monitoring
+      rules:
+        - alert: AIGatewayTargetMissing
+          expr: |
+            absent(up{job="ai-gateway"})
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "ai-gateway のスクレイプ対象が存在しません"
+            description: |
+              ServiceMonitor / EndpointSlice、または Gateway 側の node exporter を確認。
+              確認: kubectl -n monitoring get servicemonitor ai-gateway endpointslice ai-gateway-metrics
+
+        - alert: PBSObserverTargetMissing
+          expr: |
+            absent(up{job="pbs-observer"})
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "pbs-observer のスクレイプ対象が存在しません"
+            description: |
+              確認: kubectl -n portal get deploy,svc -l app.kubernetes.io/name=pbs-observer
+
+        - alert: BackupTelemetryCollectionFailing
+          # 収集が失敗している間は、バックアップ関連のグラフを信用しない。
+          expr: |
+            min_over_time(pbs_observer_collection_success[15m]) == 0
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: "PBS observer の収集が 30 分以上失敗しています"
+            description: |
+              どの取得元が落ちているかは pbs_observer_source_success で確認する。

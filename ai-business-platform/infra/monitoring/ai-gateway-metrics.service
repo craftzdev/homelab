@@ -1,0 +1,20 @@
+[Unit]
+Description=Collect AI Gateway health for Prometheus
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/lib/ai-gateway-monitoring/collect-gateway-metrics.py
+TimeoutStartSec=25
+UMask=0022
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/prometheus/node-exporter
+# ProtectSystem=strict mounts the whole hierarchy read-only, and connecting to
+# an AF_UNIX socket requires write permission on it. Without this the docker CLI
+# cannot reach the daemon and every container metric stays 0. The leading '-'
+# keeps the unit startable before docker has created the socket; the docker
+# section then reports docker_collection_success 0, as designed.
+ReadWritePaths=-/run/docker.sock
