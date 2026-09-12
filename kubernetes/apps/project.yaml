@@ -88,6 +88,9 @@ spec:
     # Cilium Gateway API の外部公開入口
     - server: https://kubernetes.default.svc
       namespace: gateway
+    # cloudflared（Cloudflare Tunnel の接続元）
+    - server: https://kubernetes.default.svc
+      namespace: cloudflared
     # kubelet-serving-cert-approver は上流マニフェストが専用 namespace を作る
     - server: https://kubernetes.default.svc
       namespace: kubelet-serving-cert-approver

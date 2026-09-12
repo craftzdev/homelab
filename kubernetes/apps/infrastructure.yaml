@@ -23,11 +23,12 @@
 #     8  arc-runners     : ephemeral runner scale set
 #     6  umami           : Tailnet-only analytics with HA PostgreSQL
 #     3  gateway         : Cilium Gateway API の外部公開入口
+#     4  cloudflared     : Cloudflare Tunnel の接続元（moshitoku.com）
 #     7  gatus           : Cloudflare 公開経路の外形監視
 #
-# cloudflared は現状 Business Gateway VM 1200 で稼働しており、クラスタには置かない。
-# gateway.craftz.dev はその VM 上の専用 Tunnel が終端する。
-# 一方 Cilium の Gateway API（gateway）はクラスタ内の公開入口としてここで管理する。
+# Tunnel は 2 系統ある。gateway.craftz.dev は Business Gateway VM 1200 上の
+# 専用 Tunnel が終端し、クラスタを経由しない。moshitoku.com はクラスタ内の
+# cloudflared Pod が張る Tunnel を通り、Cilium の Gateway API へ入る。
 # Velero は外部オブジェクトストレージ設定後に別変更として有効化する。
 #
 # ---------------------------------------------------------------------------
@@ -1150,5 +1151,51 @@ spec:
       selfHeal: true
     syncOptions:
       # namespace は gateway.yaml が Pod Security ラベル付きで作る。
+      - CreateNamespace=false
+      - ServerSideApply=true
+
+---
+# ---------------------------------------------------------------------------
+# cloudflared — Cloudflare Tunnel の接続元
+#
+# 自宅にインバウンドのポートを開けずに moshitoku.com を公開するための出口。
+# Pod から Cloudflare エッジへ outbound の接続を張り、その上に受信を載せる。
+#
+# config.yaml（ingress ルール）と credentials.json は tofu/20-cloudflare が
+# 生成する。ingress ConfigMap は generated/ 配下のコミット済みファイル、
+# 認証情報は KSOPS が復号する credentials.sops.yaml である。どちらも
+# 手で編集しない。変更は tofu 側の public_services / published_services を
+# 直して apply する。
+#
+# ⚠️ cloudflared は config.yaml のホットリロードに対応しない。ingress を
+#    変更したら Deployment を再起動する必要がある。
+# ---------------------------------------------------------------------------
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cloudflared
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: infrastructure
+  source:
+    repoURL: https://github.com/craftzdev/homelab.git
+    targetRevision: main
+    # KSOPS を動かすため kustomization.yaml をそのまま使う。
+    # directory.include を指定すると kustomize として扱われなくなる。
+    path: kubernetes/infra/cloudflared
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cloudflared
+  syncPolicy:
+    automated:
+      # Tunnel を prune で落とすと公開経路が全断する。削除は手動で行う。
+      prune: false
+      selfHeal: true
+    syncOptions:
+      # namespace は namespace.yaml が Pod Security ラベル付きで作る。
       - CreateNamespace=false
       - ServerSideApply=true

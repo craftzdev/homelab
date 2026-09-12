@@ -118,9 +118,12 @@ kubectl apply -f "${REPO_ROOT}/kubernetes/apps/project.yaml"
 # Velero と Gateway VM に移行済みの cloudflared を確実に退役させる。
 #
 # ⚠️ ここは finalizer 付きの削除である。現役の Application を書くと、その
-#    配下のリソースがすべて消える。gateway は現役に戻したため外してある
-#    （reconcile-cluster-platform.sh の同名リストも同様）。
-for retired_app in cloudflared velero; do
+#    配下のリソースがすべて消える。gateway と cloudflared は現役に戻したため
+#    外してある（reconcile-cluster-platform.sh の同名リストも同様）。
+# 配列にしているのは、要素が 1 つでも shellcheck の SC2043 を踏まないため、
+# かつ将来の増減を 1 行の編集で済ませるため。
+retired_apps=(velero)
+for retired_app in "${retired_apps[@]}"; do
   kubectl -n argocd delete application "${retired_app}" \
     --ignore-not-found --wait=true --timeout=5m
 done

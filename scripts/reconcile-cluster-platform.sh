@@ -163,7 +163,8 @@ wait_for_longhorn_csi
 
 # Monitoring installs the ServiceMonitor CRD required by cert-manager and Trivy,
 # so those applications are deliberately checked later.
-for app in image-registry tailscale-operator security-config monitoring gateway; do
+for app in image-registry tailscale-operator security-config monitoring gateway \
+  cloudflared; do
   resume_application "${app}"
   wait_for_application "${app}"
 done
@@ -213,10 +214,12 @@ fi
 #    bootstrap-argocd.sh の同名リストが finalizer 付きで削除するため、
 #    その Application の配下リソースごと消える。
 #
-#    gateway は kubernetes/infra/gateway/ を管理する現役の Application に
-#    なったのでこのリストから外した。cloudflared を Kubernetes へ戻す際も、
-#    Application を追加する変更と同じ PR で両方のリストから外すこと。
-for retired_app in cloudflared velero; do
+#    gateway と cloudflared はどちらも現役の Application に戻ったため、
+#    このリストから外してある。残っているのは velero だけである。
+# 配列にしているのは、要素が 1 つでも shellcheck の SC2043 を踏まないため、
+# かつ将来の増減を 1 行の編集で済ませるため。
+retired_apps=(velero)
+for retired_app in "${retired_apps[@]}"; do
   if kubectl --request-timeout=15s -n argocd \
       get application "${retired_app}" >/dev/null 2>&1; then
     die "retired Application still exists: ${retired_app}"

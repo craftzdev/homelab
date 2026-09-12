@@ -91,7 +91,20 @@ chmod 600 "${ENC_TMP}"
 cleanup() { rm -f "${TMP_FILE}" "${ENC_TMP}"; }
 trap cleanup EXIT INT TERM
 
-if ! sops --encrypt --config "${REPO_ROOT}/.sops.yaml" "${TMP_FILE}" > "${ENC_TMP}"; then
+# ⚠️ --filename-override は必須である。
+#
+#    sops は creation_rules の path_regex を「引数で渡したファイルのパス」に
+#    対して評価する。ここで渡しているのは mktemp が作った
+#    /tmp/cloudflared-secret.XXXXXX.yaml であり、.sops.yaml のどの
+#    path_regex にも一致しない（`.*\.sops\.ya?ml$` にすら一致しない）。
+#    その結果 "no matching creation rules found" で失敗する。
+#
+#    --filename-override で最終的な配置先を渡すと、kubernetes/ 用のルールが
+#    選ばれ、encrypted_regex により data/stringData だけが暗号化される。
+#    これが無いと、仮に一致したとしても apiVersion/kind/metadata まで
+#    暗号化され、Argo CD と kustomize がリソースを解釈できなくなる。
+if ! sops --encrypt --config "${REPO_ROOT}/.sops.yaml" \
+    --filename-override "${OUTPUT_FILE}" "${TMP_FILE}" > "${ENC_TMP}"; then
   die "sops による暗号化に失敗しました。既存の ${OUTPUT_FILE} は変更していません。"
 fi
 
