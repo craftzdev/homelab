@@ -302,6 +302,40 @@ locals {
     "grace-period" = "30s"
 
     "ingress" = concat(
+      # -----------------------------------------------------------------------
+      # health endpoint 用のルール（monitoring トークンだけを通す）
+      #
+      # cloudflared は ingress を **先頭から順に評価し、最初に一致した
+      # ルールを使う**（ingress.FindMatchingRule）。したがって health 用の
+      # ルールをホスト名全体のルールより前に置く必要がある。
+      #
+      # audTag を分けることが目的である。1 本のルールに両方の aud を並べると、
+      # cloudflared は監視トークンの JWT をそのホスト名の **全パス** で受理して
+      # しまい、パスを分けた意味が Access エッジ側にしか残らない。ここを分けて
+      # おけば、監視トークンで /v1 を叩いても origin 手前で落ちる。
+      #
+      # path は正規表現で、完全一致に固定する。前方一致にすると
+      # `/ready/../v1/...` のようなパス混同で business API 側のルールを
+      # 迂回されうる。生のパスが `^/ready$` に一致しなければ下の
+      # ホスト名ルールへ落ち、監視トークンの aud では弾かれる。
+      # -----------------------------------------------------------------------
+      [
+        for key, svc in var.published_services : {
+          hostname = svc.hostname
+          path     = "^${replace(svc.health_path, ".", "\\.")}$"
+          service  = svc.origin_service
+          originRequest = {
+            access = {
+              required = true
+              teamName = var.cloudflare_team_name
+              audTag   = [cloudflare_zero_trust_access_application.gatus_health[key].aud]
+            }
+            connectTimeout         = "10s"
+            noTLSVerify            = false
+            disableChunkedEncoding = false
+          }
+        } if svc.health_path != null
+      ],
       [
         for key, svc in var.published_services : {
           hostname = svc.hostname
@@ -313,19 +347,14 @@ locals {
             # これは多層防御である。Access アプリケーションの設定を誤って
             # 削除・変更してしまった場合でも、有効な JWT を持たない
             # リクエストは Origin へ到達する前にここで落ちる。
+            #
+            # ここには業務用アプリケーションの aud だけを入れる。監視用は
+            # 上の health ルールが持つ。
             # -------------------------------------------------------------
-            # ⚠️ health_path を設定したホスト名では aud が 2 種類ありうる。
-            #    health endpoint へのリクエストは gatus_health
-            #    アプリケーションが発行した JWT を持つため、その aud を
-            #    許可リストへ入れないと cloudflared がそこだけ弾き、
-            #    「エッジは通ったのに監視だけ失敗する」状態になる。
             access = {
               required = true
               teamName = var.cloudflare_team_name
-              audTag = compact([
-                cloudflare_zero_trust_access_application.published[key].aud,
-                try(cloudflare_zero_trust_access_application.gatus_health[key].aud, ""),
-              ])
+              audTag   = [cloudflare_zero_trust_access_application.published[key].aud]
             }
             connectTimeout         = "10s"
             noTLSVerify            = false

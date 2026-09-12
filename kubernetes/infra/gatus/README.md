@@ -158,16 +158,39 @@ healthy と報告してしまっては監視の意味が無い。
 | Ingress | `tailscale` namespace の proxy から TCP 8080 |
 | Ingress | `monitoring` namespace の Prometheus から TCP 8080 |
 | Ingress | host / remote-node から liveness/readiness TCP 8080 |
-| Egress | kube-system CoreDNS TCP/UDP 53（DNS proxy 経由） |
+| Egress | kube-system CoreDNS への DNS（監視対象の名前のみ） |
 | Egress | 監視対象の公開 FQDN へ TCP 443 |
+| EgressDeny | 宅内 CIDR・Tailnet・リンクローカル |
+
+### ⚠️ `toFQDNs` は CDN の背後では境界にならない
+
+`toFQDNs` は DNS 応答から学習した **IP** を許可する L3/L4 の仕組みであり、
+TLS の SNI を見ていない。`gateway.craftz.dev` は Cloudflare の共有 anycast
+（`172.64.0.0/13` 等）に解決するため、許可される IP は「Cloudflare の背後に
+ある全サイト」と同じである。侵害された Pod は同じ IP へ別ドメインの SNI で
+接続でき、C2 や持ち出しの経路になりうる。
+
+つまり **監視対象が CDN の背後にある限り、この許可は「任意の Cloudflare 配下
+サイトへの 443」と大差ない。** 実際に硬い境界は `egressDeny`（宅内 CIDR・
+Tailnet・リンクローカル）と、DNS を監視対象の名前だけに絞っていることである。
+
+本当に絞りたい場合の選択肢:
+
+- CDN を経由しない health 用ホスト名を用意して監視対象にする
+- SNI を固定できる egress proxy を挟む
+
+いずれも今回の範囲外とし、限界を明示して運用する。
 
 ⚠️ `status` は `clusterwide-egress-deny.yaml` の `endpointSelector` から
 **除外してある**。あの CCNP は宅内 CIDR を deny する一方、副作用として
 `toEntities: all`（それ以外どこへでも許可）を全対象 namespace に与える。
 対象のままだと、上の egress 許可リストは公開 IP に対して意味を持たない。
-除外した結果、宅内 CIDR への deny という保険もこの namespace には無いので、
-egress ルールを足すときは宛先が宅内やクラスタ内を指していないことを
-必ず確認すること。
+
+除外すると宅内 CIDR の deny も失われるため、同じ deny を `gatus-rules` の
+`egressDeny` へ書き直してある。deny は allow と合成され、かつ allow より
+優先されるので、blanket allow を受け取らずに保険だけを取り戻せる。
+`10.0.0.0/8` を deny に足してはならない（Pod / Service ネットワークであり、
+CoreDNS への問い合わせごと落ちる）。
 
 `toFQDNs` は Cilium の DNS proxy が DNS 応答を観測して初めて機能する。
 CoreDNS への許可に `rules.dns` が付いているのはそのためで、これを外すと

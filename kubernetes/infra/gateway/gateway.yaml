@@ -133,9 +133,28 @@ spec:
     # ここで TLS を終端すると証明書の管理が増えるだけで、
     # 守られる範囲は変わらない。
     # -------------------------------------------------------------------------
-    - name: http
+    # -------------------------------------------------------------------------
+    # ⚠️ listener ごとに hostname を固定する
+    #
+    # hostname を書かない listener は「任意のホスト名を受け付ける」という
+    # 意味になる。その状態では、下の allowedRoutes ラベルを持つ namespace の
+    # 所有者が、自分のものではないホスト名を主張する HTTPRoute を作れる。
+    # Gateway API はより具体的なパスを優先するため、既存の公開サービス宛の
+    # トラフィックを横取りできてしまう。アプリ側のリポジトリは基盤より
+    # レビューが緩いことが多く、そこが基盤の入口を左右してはならない。
+    #
+    # ホスト名は基盤側（このファイル）が決め、パスとバックエンドだけを
+    # アプリ側の HTTPRoute に任せる。Gateway API が Ingress と分けている
+    # 責務境界そのものである。
+    #
+    # ⚠️ 公開ホスト名を増やすときは、ここと tofu/20-cloudflare の
+    #    public_services / published_services を同じ PR で更新する。
+    #    listener が無いホスト名は Envoy に届いた時点で 404 になる。
+    # -------------------------------------------------------------------------
+    - name: moshitoku
       protocol: HTTP
       port: 80
+      hostname: moshitoku.com
 
       # -----------------------------------------------------------------------
       # ⚠️ どの namespace から HTTPRoute を受け付けるかを制限する
@@ -147,7 +166,7 @@ spec:
       # 公開したい namespace には次のラベルを付ける:
       #   kubectl label namespace <ns> homelab.io/gateway-access=external
       # -----------------------------------------------------------------------
-      allowedRoutes:
+      allowedRoutes: &external-routes
         namespaces:
           from: Selector
           selector:
@@ -155,6 +174,12 @@ spec:
               homelab.io/gateway-access: external
         kinds:
           - kind: HTTPRoute
+
+    - name: moshitoku-www
+      protocol: HTTP
+      port: 80
+      hostname: www.moshitoku.com
+      allowedRoutes: *external-routes
 
 ---
 # ===========================================================================
