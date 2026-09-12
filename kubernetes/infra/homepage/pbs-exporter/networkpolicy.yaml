@@ -1,0 +1,33 @@
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: pbs-observer
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: pbs-observer
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: monitoring
+            app.kubernetes.io/name: prometheus
+      toPorts:
+        - ports:
+            - port: "9099"
+              protocol: TCP
+    - fromEntities: ["host", "remote-node"]
+      toPorts:
+        - ports:
+            - port: "9099"
+              protocol: TCP
+  egress:
+    - toCIDR: ["172.16.10.51/32"]
+      toPorts:
+        - ports:
+            - port: "8007"
+              protocol: TCP
+    - toCIDR: ["172.16.10.11/32"]
+      toPorts:
+        - ports:
+            - port: "8006"
+              protocol: TCP

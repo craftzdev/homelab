@@ -8,6 +8,7 @@ resources:
   - workload.yaml
   - networkpolicy.yaml
   - ingress.yaml
+  - pbs-exporter
 
 configMapGenerator:
   - name: homepage-config

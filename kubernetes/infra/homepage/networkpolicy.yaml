@@ -1,4 +1,5 @@
-# Homepage is the only workload allowed to query the Proxmox management API.
+# Homepage uses the Proxmox management API; the PBS observer has a separate
+# equally narrow policy in pbs-exporter/networkpolicy.yaml.
 # The token has PVEAuditor only, and this policy restricts the destination to
 # one cluster API endpoint and TCP 8006.
 apiVersion: networking.k8s.io/v1

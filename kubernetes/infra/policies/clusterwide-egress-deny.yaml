@@ -48,9 +48,10 @@ spec:
   #   velero     : PBS / 外部 S3 へのバックアップ転送で必要になる場合がある。
   #                （バックアップ先を宅内に置く構成の場合のみ）
   #
-  #   portal     : Homepage が監査専用 API token で Proxmox API を参照する。
-  #                portal 側の CiliumNetworkPolicy で 172.16.10.11:8006
-  #                だけに限定し、PBS や他の宅内機器への接続は許可しない。
+  #   portal     : Homepage / PBS observer が監査専用 API token で Proxmox API を参照する。
+  #                portal 側の CiliumNetworkPolicy で 172.16.10.11:8006 に限定。
+  #                PBS observer だけは専用 Audit token で 172.16.10.51:8007 も参照する。
+  #                他の宅内機器への接続は許可しない。
   #
   # ⚠️ ここに namespace を追加することは、その namespace の Pod に
   #    宅内ネットワークへの到達を許すことを意味する。追加時は必ず
