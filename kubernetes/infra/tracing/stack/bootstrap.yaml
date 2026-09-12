@@ -6,9 +6,6 @@ metadata:
   annotations:
     argocd.argoproj.io/sync-wave: "-2"
 data:
-  lifecycle.json: |
-    {"Rules":[{"ID":"tempo-incomplete","Status":"Enabled","Filter":{"Prefix":""},
-      "AbortIncompleteMultipartUpload":{"DaysAfterInitiation":1}}]}
   policy.json: |
     {
       "Version": "2012-10-17",
@@ -66,8 +63,8 @@ spec:
               mc admin user add local "$AWS_ACCESS_KEY_ID" "$AWS_SECRET_ACCESS_KEY" >/dev/null
               mc admin policy create local tempo-readwrite /etc/minio/policy.json >/dev/null
               mc admin policy attach local tempo-readwrite --user "$AWS_ACCESS_KEY_ID" >/dev/null
-              # Fixed lifecycle ID makes repeated synchronization idempotent.
-              mc ilm import local/tempo-traces < /etc/minio/lifecycle.json >/dev/null
+              # Trace retention is owned by Tempo. This MinIO build rejects
+              # AbortIncompleteMultipartUpload lifecycle rules.
               echo "Tempo bucket and least-privilege credentials reconciled"
           envFrom:
             - secretRef:
