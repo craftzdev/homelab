@@ -195,6 +195,14 @@ config:
       interval: 5m
       client:
         timeout: 10s
+        # ⚠️ リダイレクトを追跡しない。
+        #
+        #    監視は「監視対象そのものの応答」を見るべきである。追跡すると
+        #    現在の catch-all（302 → cloudflare.com）の先を評価してしまい、
+        #    [CERTIFICATE_EXPIRATION] は moshitoku.com ではなく転送先の値に
+        #    なる（http:// なので 0s）。さらに転送先への DNS と egress まで
+        #    必要になり、監視のためにポリシーを緩めることになる。
+        ignore-redirect: true
       conditions:
         - "[STATUS] < 400"
         - "[RESPONSE_TIME] < 3000"
@@ -207,6 +215,7 @@ config:
       interval: 5m
       client:
         timeout: 10s
+        ignore-redirect: true
       conditions:
         - "[STATUS] < 400"
         - "[RESPONSE_TIME] < 3000"
