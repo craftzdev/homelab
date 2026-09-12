@@ -255,7 +255,7 @@ harbor_pull_config="$(jq -cn --arg auth "${harbor_pull_auth}" \
   }}')"
 harbor_pull_config_b64="$(printf '%s' "${harbor_pull_config}" | openssl base64 -A)"
 
-for namespace in ai-agent ai-worker; do
+for namespace in ai-agent ai-worker moshitoku moshitoku-scraper; do
   kubectl apply -f - >/dev/null <<EOF
 apiVersion: v1
 kind: Secret

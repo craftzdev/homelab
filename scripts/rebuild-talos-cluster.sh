@@ -718,6 +718,10 @@ restore_platform() {
   done
 
   "${SCRIPT_DIR}/bootstrap-cluster-secrets.sh"
+  # moshitoku の DB / runtime / バックアップ資格情報。namespace ごと作るため
+  # Argo CD の同期前でも実行できる。PostgreSQL の CA だけは CloudNativePG が
+  # クラスタを作った後でないと存在しないので、後段でもう一度実行する。
+  "${SCRIPT_DIR}/bootstrap-moshitoku-secrets.sh"
   restore_secret "${BACKUP_DIR}/registry-tls.secret.json.age"
   restore_secret "${BACKUP_DIR}/tailscale-oauth.secret.json.age"
   restore_secret "${BACKUP_DIR}/arc-github-app.secret.json.age"
@@ -1001,6 +1005,9 @@ verify_rebuild() {
     die "a Longhorn replica is scheduled on the control plane"
   fi
   wait_for_all_pods
+  # CloudNativePG がクラスタを作った後に再実行し、PostgreSQL の CA を
+  # moshitoku-scraper へ複製する。冪等なので他の Secret は変化しない。
+  "${SCRIPT_DIR}/bootstrap-moshitoku-secrets.sh"
   # An early API interruption can leave a stale Progressing health value even
   # after all workloads recover. Force one final dependency-aware comparison
   # only after every Pod is ready, then enforce the fail-closed invariant.
@@ -1026,7 +1033,36 @@ verify_rebuild() {
     "https://${TAILSCALE_HUBBLE_FQDN}/" >/dev/null
   curl -fsS --retry 12 --retry-all-errors --retry-delay 5 \
     "https://${TAILSCALE_STATUS_FQDN}/health" >/dev/null
+  verify_replicated_postgres_ca
   ok "Six-node cluster, GitOps platform, Tailnet Agent/Worker, and management UIs verified"
+}
+
+# ---------------------------------------------------------------------------
+# moshitoku-scraper へ複製した PostgreSQL CA が現行と一致することを確認する。
+#
+# Secret は namespace をまたげないため、CloudNativePG が moshitoku namespace に
+# 作る CA を bootstrap-moshitoku-secrets.sh が複製している。複製である以上、
+# CNPG が CA を作り直すと古いままになる。スクレイパーは
+# DB_SSLMODE=verify-full で接続するので、ずれると「CronJob だけが静かに失敗し
+# 続ける」形で壊れる。次の実行まで気づけないため、ここで突き合わせる。
+#
+# どちらかの Secret がまだ無い場合は、その namespace を導入していないだけの
+# こともあるので通過させる。存在して食い違うときだけ失敗させる。
+# ---------------------------------------------------------------------------
+verify_replicated_postgres_ca() {
+  local source_ca replica_ca
+  source_ca="$(kubectl -n moshitoku get secret moshitoku-postgres-ca \
+    -o jsonpath='{.data.ca\.crt}' 2>/dev/null || true)"
+  replica_ca="$(kubectl -n moshitoku-scraper get secret moshitoku-postgres-ca \
+    -o jsonpath='{.data.ca\.crt}' 2>/dev/null || true)"
+
+  if [[ -z "${source_ca}" || -z "${replica_ca}" ]]; then
+    info "Replicated PostgreSQL CA check skipped; one of the Secrets is absent"
+    return
+  fi
+  [[ "${source_ca}" == "${replica_ca}" ]] \
+    || die "moshitoku-scraper holds a stale PostgreSQL CA; re-run scripts/bootstrap-moshitoku-secrets.sh"
+  ok "Replicated PostgreSQL CA matches the CloudNativePG cluster"
 }
 
 verify_gateway_worker_path() {

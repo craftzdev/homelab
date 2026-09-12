@@ -57,6 +57,12 @@ spec:
             io.kubernetes.pod.namespace: analytics
         - matchLabels:
             io.kubernetes.pod.namespace: monitoring
+        # moshitoku の CloudNativePG が Barman で WAL とベースバックアップを
+        # ここへ送る。許可しないとアーカイブが失敗し、転送できない WAL が
+        # 蓄積して DB のディスクを埋める。
+        - matchLabels:
+            io.kubernetes.pod.namespace: moshitoku
+            cnpg.io/cluster: moshitoku-postgres
       toPorts:
         - ports:
             - port: "9000"

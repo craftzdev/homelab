@@ -1,0 +1,86 @@
+# ===========================================================================
+# moshitoku-scraper — ポイントサイトを巡回してデータを収集するスクレイパー
+#
+# マニフェスト本体は moshitoku-scraper リポジトリの deploy/kubernetes にある。
+# ここには Application と AppProject だけを置く（moshitoku と同じ規約）。
+#
+# ⚠️ このクラスタで唯一、外部サイトへ能動的に出ていくアプリケーションである。
+#    egress は default-deny のうえ WebShare のプロキシと Discord の FQDN に
+#    限定してある（moshitoku-scraper 側の deploy/kubernetes/networkpolicy.yaml）。
+#    スクレイピングの通信は例外なく WebShare を経由するため、インターネットへ
+#    広く開ける必要がない。
+#
+# ⚠️ DB は moshitoku 名前空間の CloudNativePG を共用する。
+#    moshitoku 側の moshitoku-postgres CiliumNetworkPolicy に、
+#    この名前空間からの 5432 を許可する ingress が必要である。
+# ===========================================================================
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: moshitoku-scraper
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  description: ポイントサイトを巡回してデータを収集するスクレイパーの境界
+
+  # ⚠️ "*" にしない。このリポジトリ以外からマニフェストを取り込めると、
+  #    Application を作れる者が任意のワークロードをデプロイできてしまう。
+  sourceRepos:
+    - git@github.com:craftzdev/moshitoku-scraper.git
+
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: moshitoku-scraper
+
+  # Namespace 以外のクラスタスコープのリソースは作らせない。
+  clusterResourceWhitelist:
+    - group: ''
+      kind: Namespace
+
+  # 作ってよいリソース種別を列挙する。
+  # DB は moshitoku 側が所有するため、CloudNativePG のリソースは含めない。
+  namespaceResourceWhitelist:
+    - group: ''
+      kind: ConfigMap
+    - group: batch
+      kind: CronJob
+    - group: batch
+      kind: Job
+    - group: networking.k8s.io
+      kind: NetworkPolicy
+    - group: cilium.io
+      kind: CiliumNetworkPolicy
+
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: moshitoku-scraper
+  namespace: argocd
+  annotations:
+    # moshitoku（wave 9）より後に同期する。
+    # スクレイパーは moshitoku 側の PostgreSQL へ書き込むため、
+    # DB が先に立っている必要がある。
+    argocd.argoproj.io/sync-wave: '10'
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: moshitoku-scraper
+  source:
+    repoURL: git@github.com:craftzdev/moshitoku-scraper.git
+    targetRevision: main
+    path: deploy/kubernetes
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: moshitoku-scraper
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      # Namespace は deploy/kubernetes/namespace.yaml で明示的に作る。
+      - CreateNamespace=false
+      - PruneLast=true
+      - ServerSideApply=true

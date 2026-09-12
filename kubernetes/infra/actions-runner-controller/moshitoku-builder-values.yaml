@@ -1,5 +1,5 @@
 # ===========================================================================
-# point-guide のイメージビルド用セルフホストランナー
+# moshitoku のイメージビルド用セルフホストランナー
 #
 # GitHub ホストランナーからは Harbor（172.16.40.201:5000）へ到達できないため、
 # クラスタ内でビルドして push する。
@@ -7,12 +7,16 @@
 # 既存の ai-agent-builder と同じ構成であり、差分は
 # githubConfigUrl と runnerScaleSetName のみ。
 # ===========================================================================
-githubConfigUrl: https://github.com/craftzdev/point-guide
+githubConfigUrl: https://github.com/craftzdev/moshitoku
 githubConfigSecret: arc-github-app
 
-runnerScaleSetName: point-guide-builder
+runnerScaleSetName: moshitoku-builder
 minRunners: 0
-maxRunners: 1
+# CI は lint / test / security / manifests / build の 5 ジョブに分かれている。
+# 1 本しか起動できないと直列実行になり、待ち時間が積み上がる。
+# requests は 1 本あたり CPU 500m / メモリ 1Gi であり、
+# 4 本同時でも 2 CPU / 4Gi の予約で収まる。
+maxRunners: 4
 
 controllerServiceAccount:
   namespace: arc-systems

@@ -1,0 +1,96 @@
+# ===========================================================================
+# モシトク（moshitoku） — 申込経路比較サービス
+#
+# マニフェスト本体は moshitoku リポジトリの deploy/kubernetes にある。
+# ここには Application と AppProject だけを置く（ai-business-* と同じ規約）。
+#
+# ⚠️ moshitoku はこのクラスタで唯一の **匿名公開** アプリケーションである。
+#    公開経路は tofu/20-cloudflare の public_services で定義し、
+#    Cloudflare Access を適用しない。
+# ===========================================================================
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: moshitoku
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  description: ポイントサイト横断比較サービス moshitoku の境界
+
+  # ⚠️ "*" にしない。このリポジトリ以外からマニフェストを取り込めると、
+  #    Application を作れる者が任意のワークロードをデプロイできてしまう。
+  sourceRepos:
+    - git@github.com:craftzdev/moshitoku.git
+
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: moshitoku
+
+  # Namespace 以外のクラスタスコープのリソースは作らせない。
+  clusterResourceWhitelist:
+    - group: ""
+      kind: Namespace
+
+  # 作ってよいリソース種別を列挙する。
+  namespaceResourceWhitelist:
+    - group: ""
+      kind: ConfigMap
+    - group: ""
+      kind: Service
+    - group: apps
+      kind: Deployment
+    - group: batch
+      kind: Job
+    - group: policy
+      kind: PodDisruptionBudget
+    - group: networking.k8s.io
+      kind: NetworkPolicy
+    - group: cilium.io
+      kind: CiliumNetworkPolicy
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+    # CloudNativePG。PVC はオペレータが作るため許可しない。
+    - group: postgresql.cnpg.io
+      kind: Cluster
+    - group: postgresql.cnpg.io
+      kind: ScheduledBackup
+    - group: barmancloud.cnpg.io
+      kind: ObjectStore
+
+  roles:
+    - name: readonly
+      description: 参照のみ
+      policies:
+        - p, proj:moshitoku:readonly, applications, get, moshitoku/*, allow
+
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: moshitoku
+  namespace: argocd
+  annotations:
+    # Longhorn と Gateway が収束してから同期する。
+    argocd.argoproj.io/sync-wave: "9"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: moshitoku
+  source:
+    repoURL: git@github.com:craftzdev/moshitoku.git
+    targetRevision: main
+    path: deploy/kubernetes
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: moshitoku
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      # Namespace はマニフェストに含めている。
+      - CreateNamespace=false
+      - PruneLast=true
+      - ServerSideApply=true

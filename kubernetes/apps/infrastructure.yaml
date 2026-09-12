@@ -507,7 +507,7 @@ spec:
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: arc-point-guide-builder
+  name: arc-moshitoku-builder
   namespace: argocd
   annotations:
     argocd.argoproj.io/sync-wave: "8"
@@ -520,9 +520,9 @@ spec:
       chart: gha-runner-scale-set
       targetRevision: 0.14.2
       helm:
-        releaseName: point-guide-builder
+        releaseName: moshitoku-builder
         valueFiles:
-          - $values/kubernetes/infra/actions-runner-controller/point-guide-builder-values.yaml
+          - $values/kubernetes/infra/actions-runner-controller/moshitoku-builder-values.yaml
     - repoURL: https://github.com/craftzdev/homelab.git
       targetRevision: main
       ref: values
@@ -1075,7 +1075,7 @@ spec:
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: arc-point-guide-scraper-builder
+  name: arc-moshitoku-scraper-builder
   namespace: argocd
   annotations:
     argocd.argoproj.io/sync-wave: '8'
@@ -1088,9 +1088,9 @@ spec:
       chart: gha-runner-scale-set
       targetRevision: 0.14.2
       helm:
-        releaseName: point-guide-scraper-builder
+        releaseName: moshitoku-scraper-builder
         valueFiles:
-          - $values/kubernetes/infra/actions-runner-controller/point-guide-scraper-builder-values.yaml
+          - $values/kubernetes/infra/actions-runner-controller/moshitoku-scraper-builder-values.yaml
     - repoURL: https://github.com/craftzdev/homelab.git
       targetRevision: main
       ref: values
@@ -1152,6 +1152,40 @@ spec:
     syncOptions:
       # namespace は gateway.yaml が Pod Security ラベル付きで作る。
       - CreateNamespace=false
+      - ServerSideApply=true
+
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: arc-moshitoku-scraper-ci
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "8"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: infrastructure
+  sources:
+    - repoURL: ghcr.io/actions/actions-runner-controller-charts
+      chart: gha-runner-scale-set
+      targetRevision: 0.14.2
+      helm:
+        releaseName: moshitoku-scraper-ci
+        valueFiles:
+          - $values/kubernetes/infra/actions-runner-controller/moshitoku-scraper-ci-values.yaml
+    - repoURL: https://github.com/craftzdev/homelab.git
+      targetRevision: main
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: arc-runners
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
       - ServerSideApply=true
 
 ---
