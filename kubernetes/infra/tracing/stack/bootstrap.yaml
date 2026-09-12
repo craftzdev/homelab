@@ -44,6 +44,18 @@ spec:
     spec:
       restartPolicy: Never
       automountServiceAccountToken: false
+      nodeSelector:
+        homelab.craftz.dev/workload-plane: "true"
+      # Prefer a different node from the S3 server during storage I/O pressure.
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: minio
+                topologyKey: kubernetes.io/hostname
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
