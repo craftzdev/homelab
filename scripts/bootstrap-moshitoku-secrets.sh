@@ -91,38 +91,17 @@ done
 ok "moshitoku database, runtime, and backup credentials are present"
 
 # ---------------------------------------------------------------------------
-# moshitoku-scraper namespace
+# moshitoku-scraper の外部発行シークレットはここで作らない
 #
-# webshare-api-key はプロキシ取得に必須で、無いと CronJob は起動直後に落ちる。
-# 自動生成できる種類の値ではない（外部サービスが発行する）ので、Keychain に
-# 無ければ作らずに警告する。黙って空の Secret を作ると、原因が分かりにくい
-# 起動失敗になる。
+# webshare-api-key と discord-webhook-url は外部サービスが発行する静的な値で
+# あり、SOPS で Git 管理して Argo CD に配送させている
+# （kubernetes/infra/moshitoku-secrets/）。理由は暗号強度ではなく配送で、
+# このスクリプトの実行を人が忘れても CronJob が動くようにするためである。
 #
-# discord-webhook-url は通知先であり、マニフェスト側で optional: true に
-# なっている。無ければ通知しないだけで動作する。
+# ⚠️ ここで moshitoku-scraper-runtime を作ってはならない。同じ Secret を
+#    スクリプトと Argo CD の両方が書くと、selfHeal と取り合って値が
+#    往復する。生成値（DB パスワード等）と複製値だけがこのスクリプトの担当。
 # ---------------------------------------------------------------------------
-scraper_args=()
-webshare_key="$(read_keychain dev.craftz.moshitoku-scraper.webshare-api-key || true)"
-if [[ -n "${webshare_key}" ]]; then
-  scraper_args+=(--from-literal=webshare-api-key="${webshare_key}")
-else
-  info "webshare API key is absent from Keychain; scraper CronJobs will fail to start"
-  info "  security add-generic-password -U -a craftz -s dev.craftz.moshitoku-scraper.webshare-api-key -w '<key>'"
-fi
-
-discord_url="$(read_keychain dev.craftz.moshitoku-scraper.discord-webhook-url || true)"
-if [[ -n "${discord_url}" ]]; then
-  scraper_args+=(--from-literal=discord-webhook-url="${discord_url}")
-else
-  info "Discord webhook is absent from Keychain; scraper runs without notifications"
-fi
-
-if [[ "${#scraper_args[@]}" -gt 0 ]]; then
-  kubectl -n "${SCRAPER_NAMESPACE}" create secret generic moshitoku-scraper-runtime \
-    "${scraper_args[@]}" \
-    --dry-run=client -o yaml | kubectl apply -f - >/dev/null
-  ok "moshitoku-scraper runtime credentials are present"
-fi
 
 # ---------------------------------------------------------------------------
 # namespace をまたぐ複製

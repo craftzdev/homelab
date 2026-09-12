@@ -1,0 +1,28 @@
+# このファイルは SOPS で暗号化されている。編集は次で行うこと:
+#   sops kubernetes/infra/moshitoku-secrets/scraper-runtime.sops.yaml
+#
+# 値は外部サービスが発行するものであり、生成し直せない。失った場合は
+# webshare / Discord 側で再発行する。
+apiVersion: v1
+kind: Secret
+metadata:
+    name: moshitoku-scraper-runtime
+    namespace: moshitoku-scraper
+type: Opaque
+stringData:
+    webshare-api-key: ENC[AES256_GCM,data:5Cx+PgB/1Zk2YDvVx1RLlWCxHB7zxwSS8lkbDL9/b6cyBj1UX+eD8A==,iv:eBdkk2px6nA1PMLbW+Rgw79KxnYDRRlQDDN8Mj90XCo=,tag:QNrkO57jEdpWxlyWXBYbCw==,type:str]
+sops:
+    age:
+        - enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSAreVRmaGo4R1F2NndEaUxX
+            S1VRYkdDc1V0ajZPQlR5NUQxYXpsWUtDQlcwCnFsUno0b1lDcHBpL1lNcEhISlpw
+            M2M5TDQ5RXFlRXQzaWlkVzR5enJwcG8KLS0tIHgwT3I1elRKU0NrcHdWUXlQdUQr
+            ZnZ2aW0vL252NjZMQ01EREh3SjJIMkkKHA7XV2NhLdsq84BbVq1st+am8ZRbXHrM
+            +Fvj1z7+RP//oXXY1Odj6YCDcm1dhS5Pe0pBx1xhFOvsKUz8slhPMw==
+            -----END AGE ENCRYPTED FILE-----
+          recipient: age1mzq6plpzuyrzsp3l2gl6fnjxqztgmrk26ex923uxkj4khkzfdcuqjqjhcg
+    encrypted_regex: ^(data|stringData)$
+    lastmodified: "2026-09-12T03:04:06Z"
+    mac: ENC[AES256_GCM,data:arHxZH0husFdqFfKuR7aWvaghX15MlDuPwt6CK1Ni80gQKrgEAPHGwrOFjPCvs1xnAmPrrHwF47QNSUFgQ7P/G/n6cnLLDW10yMXwPtiNiTtPSXGPHUQIT9rIySNYyERYacZB80BTbiX15Zc+fR4Y8Dw+E/xyEC+8QcVAI3+WJE=,iv:P5Z81wZFLxp/i7wE2Q8GIAW2fzPja9o6Na3RWySf8h4=,tag:4tGXbEoKUlGEQLhkRfQihw==,type:str]
+    version: 3.13.3

@@ -91,6 +91,9 @@ spec:
     # cloudflared（Cloudflare Tunnel の接続元）
     - server: https://kubernetes.default.svc
       namespace: cloudflared
+    # moshitoku 系の外部発行シークレット（アプリ本体は別 Project が所有）
+    - server: https://kubernetes.default.svc
+      namespace: moshitoku-scraper
     # kubelet-serving-cert-approver は上流マニフェストが専用 namespace を作る
     - server: https://kubernetes.default.svc
       namespace: kubelet-serving-cert-approver

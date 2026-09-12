@@ -24,6 +24,7 @@
 #     6  umami           : Tailnet-only analytics with HA PostgreSQL
 #     3  gateway         : Cilium Gateway API の外部公開入口
 #     4  cloudflared     : Cloudflare Tunnel の接続元（moshitoku.com）
+#    11  moshitoku-secrets : moshitoku 系の外部発行シークレット（SOPS）
 #     7  gatus           : Cloudflare 公開経路の外形監視
 #
 # Tunnel は 2 系統ある。gateway.craftz.dev は Business Gateway VM 1200 上の
@@ -1231,5 +1232,50 @@ spec:
       selfHeal: true
     syncOptions:
       # namespace は namespace.yaml が Pod Security ラベル付きで作る。
+      - CreateNamespace=false
+      - ServerSideApply=true
+
+---
+# ---------------------------------------------------------------------------
+# moshitoku / moshitoku-scraper の外部発行シークレット
+#
+# アプリのマニフェストは各アプリのリポジトリが所有し、資格情報はクラスタ側が
+# 持つ。その分界点を保ったまま、外部サービスが発行する静的な値だけを SOPS で
+# Git 管理し、Argo CD に配送させる。
+#
+# 自前生成の値（DB パスワード等）と CloudNativePG 由来の複製は
+# scripts/bootstrap-moshitoku-secrets.sh の担当である。分けている理由は
+# kubernetes/infra/moshitoku-secrets/README.md に書いてある。
+#
+# ⚠️ sync-wave はアプリ本体（moshitoku 9 / moshitoku-scraper 10）より後。
+#    namespace はアプリ側が Pod Security ラベル付きで作るため、ここでは
+#    作らない。両方が同じ Namespace を持つと drift を取り合う。
+# ---------------------------------------------------------------------------
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: moshitoku-secrets
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "11"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: infrastructure
+  source:
+    repoURL: https://github.com/craftzdev/homelab.git
+    targetRevision: main
+    # KSOPS を動かすため kustomization.yaml をそのまま使う。
+    # directory.include を指定すると kustomize として扱われなくなる。
+    path: kubernetes/infra/moshitoku-secrets
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: moshitoku-scraper
+  syncPolicy:
+    automated:
+      # 外部発行の値を prune で消すと再発行しか手が無い。
+      prune: false
+      selfHeal: true
+    syncOptions:
       - CreateNamespace=false
       - ServerSideApply=true
