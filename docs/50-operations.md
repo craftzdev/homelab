@@ -342,23 +342,40 @@ cd tofu/20-cloudflare
 cp terraform.tfvars.example terraform.tfvars
 $EDITOR terraform.tfvars   # ⚠️ APIトークンはここに書かない
 
-# 履歴に残さずに読み込む。
+# ⚠️ この read の行だけを単独で実行すること。他の行と一緒に貼り付けないこと。
 #
-# ⚠️ これはzshの構文である（macOSの既定シェル）。bashの
+#    複数行をまとめて貼り付けると、read は端末の入力バッファに残っている
+#    **次の行** をトークンとして読み込む。プロンプトは一瞬で通過し、入力する
+#    隙が無いまま `export TF_VAR_cloudflare_api_token` という34文字が
+#    トークンとして入る。「プロンプトが出ない／何も入力できない」はこれ。
+#
+# ⚠️ zshの構文である（macOSの既定シェル）。bashの
 #    `read -rs -p 'prompt' VAR` をzshで実行すると、zshは-pを
-#    「コプロセスから読む」と解釈して `-p: no coprocess` で失敗し、
-#    変数が未設定のままtofuが対話プロンプトに落ちる。
-#
-# ⚠️ そこでトークンを入力してはいけない。OpenTofuは変数プロンプトの入力を
-#    `sensitive = true` であってもマスクしないため、画面とターミナル履歴に
-#    平文で残る。Ctrl-Cして環境変数を設定し直すこと。
-read -rs "TF_VAR_cloudflare_api_token?Cloudflare API token: "; echo
+#    「コプロセスから読む」と解釈して `-p: no coprocess` で失敗する。
+read -rs "TF_VAR_cloudflare_api_token?Cloudflare API token: "
+```
+
+プロンプトが出たらトークンを貼り付けてEnterを押します。`-s`のため画面には
+何も表示されませんが、それが正常です。入ったことを値を出さずに確認します。
+
+```bash
+echo "length: ${#TF_VAR_cloudflare_api_token}"
+```
+
+40前後なら成功です。`34`なら上のreadを他の行と一緒に貼り付けています。
+`0`ならreadが失敗しており、この状態でapplyするとtofuが変数の対話プロンプト
+（`Enter a value:`）に落ちます。
+
+⚠️ **そのプロンプトにトークンを入力してはいけません。** OpenTofuは変数
+プロンプトの入力を`sensitive = true`であってもマスクせず、画面とターミナル
+履歴に平文で残ります。Ctrl-Cして環境変数を設定し直してください。
+
+残りはまとめて実行して構いません。
+
+```bash
 export TF_VAR_cloudflare_api_token
 export TF_VAR_state_encryption_passphrase="$(security find-generic-password \
   -s dev.craftz.homelab.tofu-state -a talos-k8s -w)"
-
-# 値を表示せずに渡っているか確認する。0ならtofuは再び対話プロンプトに落ちる。
-echo "token length: ${#TF_VAR_cloudflare_api_token}"
 
 tofu init && tofu apply
 unset TF_VAR_cloudflare_api_token   # この後Cloudflare側でrevokeする
