@@ -1,8 +1,8 @@
 # ===========================================================================
-# point-guide からの計測受け入れ
+# moshitoku からの計測受け入れ
 #
 # moshitoku.com は Umami の管理画面を公開せずに計測したい。そのため
-# point-guide の HTTPRoute が、計測に必要な 2 つのパスだけを
+# moshitoku の HTTPRoute が、計測に必要な 2 つのパスだけを
 # この namespace の umami Service へ転送する。
 #
 #   https://moshitoku.com/_analytics/script.js → umami:3000 /script.js
@@ -18,19 +18,19 @@
 # **参照される側**が明示的に許可する必要がある。これが無いと
 # HTTPRoute は ResolvedRefs: False となり、該当ルートだけが 500 を返す。
 #
-# 許可の範囲を point-guide namespace の HTTPRoute からの Service 参照に
+# 許可の範囲を moshitoku namespace の HTTPRoute からの Service 参照に
 # 限定している。to に name を指定して umami Service だけを対象にする。
 # ---------------------------------------------------------------------------
 apiVersion: gateway.networking.k8s.io/v1beta1
 kind: ReferenceGrant
 metadata:
-  name: point-guide-to-umami
+  name: moshitoku-to-umami
   namespace: analytics
 spec:
   from:
     - group: gateway.networking.k8s.io
       kind: HTTPRoute
-      namespace: point-guide
+      namespace: moshitoku
   to:
     - group: ""
       kind: Service

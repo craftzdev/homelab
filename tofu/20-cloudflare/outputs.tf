@@ -105,6 +105,7 @@ output "next_steps" {
          git add ${var.cloudflared_ingress_output_path}
          git commit -m "chore(cloudflared): ingress ルールを更新"
 
+    %{if local.access_enabled~}
     3) Workers 側に Service Token を登録する
          cd ../../workers/example-origin-api
          wrangler secret put CF_ACCESS_CLIENT_ID
@@ -112,8 +113,14 @@ output "next_steps" {
          # 値は以下で取得:
          #   tofu output -raw service_token_client_id
          #   tofu output -raw service_token_client_secret
+    %{endif~}
 
-    4) 疎通確認
+    ${local.access_enabled ? "4" : "3"}) Gateway の listener にホスト名があることを確認する
+         kubernetes/infra/gateway/gateway.yaml の listeners に、上の
+         公開ホスト名がすべて載っていること。載っていないホスト名は
+         Envoy に届いた時点で 404 になる。
+
+    ${local.access_enabled ? "5" : "4"}) 疎通確認
 
     %{if length(var.published_services) > 0~}
        Access が効いていることの確認（published_services）
