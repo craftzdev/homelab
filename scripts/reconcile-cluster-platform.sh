@@ -189,6 +189,11 @@ for app in cert-manager trivy-operator network-policies; do
   wait_for_application "${app}"
 done
 
+for app in logging-storage logging tracing; do
+  resume_application "${app}"
+  wait_for_application "${app}"
+done
+
 for app in arc-controller arc-runners; do
   resume_application "${app}"
   wait_for_application "${app}"

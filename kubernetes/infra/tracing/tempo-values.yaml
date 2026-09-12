@@ -1,0 +1,124 @@
+fullnameOverride: tempo
+replicas: 1
+# The chart's service template needs a jaeger.protocols map even when disabled.
+# Render only OTLP in the actual process configuration.
+config: |
+  stream_over_http_enabled: true
+  multitenancy_enabled: false
+  usage_report:
+    reporting_enabled: false
+  server:
+    http_listen_port: 3200
+  distributor:
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+  backend_scheduler:
+    provider:
+      compaction:
+        compaction:
+          block_retention: 336h
+  backend_worker:
+    compaction:
+      block_retention: 336h
+  querier:
+    max_concurrent_queries: 4
+  query_frontend:
+    search:
+      concurrent_jobs: 50
+  storage:
+    trace:
+      backend: s3
+      s3:
+        endpoint: minio.logging.svc.cluster.local:9000
+        bucket: tempo-traces
+        access_key: ${AWS_ACCESS_KEY_ID}
+        secret_key: ${AWS_SECRET_ACCESS_KEY}
+        insecure: true
+        forcepathstyle: true
+      wal:
+        path: /var/tempo/wal
+tempo:
+  tag: "3.0.3"
+  reportingEnabled: false
+  streamOverHttpEnabled: true
+  retention: 336h
+  metricsGenerator:
+    enabled: false
+  backendWorker:
+    compaction:
+      block_retention: 336h
+  receivers:
+    jaeger:
+      protocols:
+        grpc: null
+        thrift_binary: null
+        thrift_compact: null
+        thrift_http: null
+    otlp:
+      protocols:
+        grpc:
+          endpoint: "0.0.0.0:4317"
+        http: null
+  resources:
+    requests:
+      cpu: 250m
+      memory: 1Gi
+    limits:
+      cpu: "2"
+      memory: 4Gi
+  querier:
+    max_concurrent_queries: 4
+  queryFrontend:
+    search:
+      concurrent_jobs: 50
+  storage:
+    trace:
+      backend: s3
+      local: null
+      s3:
+        endpoint: minio.logging.svc.cluster.local:9000
+        bucket: tempo-traces
+        access_key: ${AWS_ACCESS_KEY_ID}
+        secret_key: ${AWS_SECRET_ACCESS_KEY}
+        insecure: true
+        forcepathstyle: true
+      wal:
+        path: /var/tempo/wal
+  extraArgs:
+    config.expand-env: "true"
+  extraEnvFrom:
+    - secretRef:
+        name: tempo-s3-credentials
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: ["ALL"]
+    seccompProfile:
+      type: RuntimeDefault
+securityContext:
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+serviceAccount:
+  automountServiceAccountToken: false
+service:
+  type: ClusterIP
+persistence:
+  enabled: true
+  storageClassName: longhorn-logging-retain
+  size: 10Gi
+  enableStatefulSetAutoDeletePVC: false
+nodeSelector:
+  homelab.craftz.dev/workload-plane: "true"
+serviceMonitor:
+  enabled: true
+  interval: 30s
+  additionalLabels:
+    release: kube-prometheus-stack

@@ -200,6 +200,12 @@ grafana:
       jsonData:
         timeout: 60
         maxLines: 1000
+        derivedFields:
+          - name: TraceID
+            matcherRegex: '"trace_id"\s*:\s*"([0-9a-f]{32})"'
+            datasourceUid: tempo
+            url: '$${__value.raw}'
+            urlDisplayLabel: View trace
 
 # ---------------------------------------------------------------------------
 # node-exporter

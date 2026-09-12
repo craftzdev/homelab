@@ -1,0 +1,133 @@
+fullnameOverride: alloy-otel
+nameOverride: alloy-otel
+crds:
+  create: false
+rbac:
+  create: false
+serviceAccount:
+  automountServiceAccountToken: false
+alloy:
+  enableReporting: false
+  extraPorts:
+    - name: otlp-http
+      port: 4318
+      targetPort: 4318
+      protocol: TCP
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 473
+    runAsGroup: 473
+    readOnlyRootFilesystem: true
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop: ["ALL"]
+    seccompProfile:
+      type: RuntimeDefault
+  mounts:
+    extra:
+      - name: storage
+        mountPath: /tmp/alloy
+  configMap:
+    content: |-
+      logging {
+        level = "info"
+      }
+      otelcol.receiver.otlp "ingest" {
+        http {
+          endpoint = "0.0.0.0:4318"
+        }
+        output {
+          traces = [otelcol.processor.memory_limiter.bounded.input]
+        }
+      }
+      otelcol.processor.memory_limiter "bounded" {
+        check_interval = "1s"
+        limit = "384MiB"
+        spike_limit = "96MiB"
+        output {
+          traces = [otelcol.processor.transform.safe.input]
+        }
+      }
+      // Attribute allowlists: no request body, full URL, SQL or credentials.
+      otelcol.processor.transform "safe" {
+        error_mode = "propagate"
+        trace_statements {
+          context = "resource"
+          statements = [
+            `keep_keys(attributes, ["service.name", "service.version", "deployment.environment.name", "k8s.namespace.name", "k8s.pod.name", "k8s.pod.uid", "k8s.node.name", "k8s.cronjob.name"])`,
+          ]
+        }
+        trace_statements {
+          context = "span"
+          statements = [
+            `keep_keys(attributes, ["scraper.run.id", "scraper.site", "scraper.trigger", "scraper.attempt", "scraper.result", "scraper.duration_ms", "scraper.category", "scraper.category.id", "scraper.page.number", "scraper.items.found", "scraper.items.valid", "scraper.items.rejected", "scraper.items.written", "scraper.retry.count", "scraper.proxy.used", "server.address", "http.response.status_code", "db.system.name", "db.operation.name", "error.type", "test.id"])`,
+            `set(status.message, "")`,
+          ]
+        }
+        trace_statements {
+          context = "spanevent"
+          statements = [
+            `keep_keys(attributes, ["exception.type"])`,
+          ]
+        }
+        output {
+          traces = [otelcol.processor.batch.export.input]
+        }
+      }
+      otelcol.processor.batch "export" {
+        timeout = "2s"
+        send_batch_size = 256
+        send_batch_max_size = 512
+        output {
+          traces = [otelcol.exporter.otlp.tempo.input]
+        }
+      }
+      otelcol.exporter.otlp "tempo" {
+        client {
+          endpoint = "tempo.logging.svc.cluster.local:4317"
+          tls {
+            insecure = true
+          }
+        }
+        sending_queue {
+          enabled = true
+          queue_size = 256
+          num_consumers = 2
+        }
+        retry_on_failure {
+          enabled = true
+          max_elapsed_time = "60s"
+        }
+      }
+global:
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 473
+    runAsGroup: 473
+    fsGroup: 473
+    seccompProfile:
+      type: RuntimeDefault
+controller:
+  type: deployment
+  replicas: 1
+  nodeSelector:
+    homelab.craftz.dev/workload-plane: "true"
+  volumes:
+    extra:
+      - name: storage
+        emptyDir:
+          sizeLimit: 128Mi
+serviceMonitor:
+  enabled: true
+  additionalLabels:
+    release: kube-prometheus-stack
+  interval: 30s
+networkPolicy:
+  enabled: false

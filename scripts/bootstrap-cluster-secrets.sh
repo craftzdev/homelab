@@ -372,6 +372,8 @@ EOF
 
 unset minio_root_password loki_s3_secret
 
+bash "${SCRIPT_DIR}/bootstrap-tracing-secret.sh"
+
 # Homepage gets a Proxmox API token with PVEAuditor only. Token creation and
 # ACL reconciliation are handled by reconcile-homepage-proxmox-token.sh; this
 # bootstrap step only copies the existing secret from Keychain into Kubernetes.
