@@ -105,6 +105,8 @@ spec:
           rules:
             dns:
               - matchName: gateway.craftz.dev
+              - matchName: moshitoku.com
+              - matchName: www.moshitoku.com
 
     # -----------------------------------------------------------------------
     # 監視対象の公開 FQDN へ HTTPS
@@ -123,6 +125,8 @@ spec:
     # -----------------------------------------------------------------------
     - toFQDNs:
         - matchName: gateway.craftz.dev
+        - matchName: moshitoku.com
+        - matchName: www.moshitoku.com
       toPorts:
         - ports:
             - port: "443"

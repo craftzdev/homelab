@@ -170,3 +170,44 @@ config:
         # 証明書の期限切れは「ある朝突然すべてが落ちる」典型的な原因。
         # 7 日前に気づけるようにしておく。
         - "[CERTIFICATE_EXPIRATION] > 168h"
+
+    # -----------------------------------------------------------------------
+    # moshitoku.com（匿名公開サイト）
+    #
+    # 検査対象は「公開経路が生きているか」である。経路は
+    #   DNS → Cloudflare Edge → Tunnel → cloudflared → Cilium Gateway → アプリ
+    # であり、壊れ方は Cloudflare 側のコードに現れる。
+    #   530 … Tunnel が切れている（cloudflared が繋がっていない）
+    #   502 … Tunnel は生きているが origin へ届かない（Gateway 側の問題）
+    #
+    # ⚠️ `[STATUS] == 200` にしていないのは、アプリ本体が未デプロイの現在は
+    #    Gateway の catch-all が 302 を返すためである。200 に固定すると、
+    #    今は赤、アプリ配置後に緑という「監視のほうを直し続ける」状態になる。
+    #    `< 400` にしておけば、経路の故障（5xx・530・502）は検出しつつ、
+    #    アプリが載っても監視を書き換えずに済む。
+    #
+    #    アプリ配置後は `[STATUS] == 200` と本文の検証へ絞ること。
+    #    catch-all の 302 とアプリの 200 を区別できるようになるためである。
+    # -----------------------------------------------------------------------
+    - name: moshitoku
+      group: cloudflare-public
+      url: https://moshitoku.com/
+      interval: 5m
+      client:
+        timeout: 10s
+      conditions:
+        - "[STATUS] < 400"
+        - "[RESPONSE_TIME] < 3000"
+        - "[CERTIFICATE_EXPIRATION] > 168h"
+
+    # www は apex とは別の DNS レコードであり、片方だけ壊れることがある。
+    - name: moshitoku-www
+      group: cloudflare-public
+      url: https://www.moshitoku.com/
+      interval: 5m
+      client:
+        timeout: 10s
+      conditions:
+        - "[STATUS] < 400"
+        - "[RESPONSE_TIME] < 3000"
+        - "[CERTIFICATE_EXPIRATION] > 168h"
