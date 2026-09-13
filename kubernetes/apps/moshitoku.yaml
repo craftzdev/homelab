@@ -51,6 +51,13 @@ spec:
       kind: CiliumNetworkPolicy
     - group: gateway.networking.k8s.io
       kind: HTTPRoute
+    # Prometheus Operator。収集対象と警報の定義はアプリ側が持つ。
+    # どちらも moshitoku namespace に限られ（destinations 参照）、
+    # 共有の監視基盤そのものには触れない。
+    - group: monitoring.coreos.com
+      kind: ServiceMonitor
+    - group: monitoring.coreos.com
+      kind: PrometheusRule
     # CloudNativePG。PVC はオペレータが作るため許可しない。
     - group: postgresql.cnpg.io
       kind: Cluster
