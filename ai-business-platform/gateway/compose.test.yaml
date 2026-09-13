@@ -1,0 +1,30 @@
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: gateway_test
+      POSTGRES_USER: gateway_test
+      POSTGRES_HOST_AUTH_METHOD: trust
+    # Isolated disposable test DB: no host ports and no persistent volumes.
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gateway_test -d gateway_test"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+  tests:
+    image: python:3.12-slim
+    working_dir: /src
+    volumes:
+      - .:/src:ro
+    environment:
+      TEST_DATABASE_URL: postgresql://gateway_test@db:5432/gateway_test
+      PYTHONDONTWRITEBYTECODE: "1"
+    depends_on:
+      db:
+        condition: service_healthy
+    command:
+      - /bin/sh
+      - -ec
+      - pip install --quiet --no-cache-dir -r requirements-dev.txt && python -m pytest -q -p no:cacheprovider tests

@@ -9,7 +9,7 @@ import urllib.error
 import urllib.request
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from typing import Any, Literal
 
@@ -18,13 +18,12 @@ from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, st
 from jwt import PyJWKClient
 from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
-from pydantic import BaseModel, Field
 from psycopg.errors import UniqueViolation
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from starlette.requests import Request
 from starlette.responses import JSONResponse
-
 
 API_SURFACE = os.environ.get("API_SURFACE", "public")
 DATABASE_URL = os.environ["DATABASE_URL"]
@@ -33,12 +32,15 @@ WORKER_CALLBACK_TOKEN = os.environ["WORKER_CALLBACK_TOKEN"]
 WORKER_BASE_URL = os.environ.get("WORKER_BASE_URL", "").rstrip("/")
 WORKER_API_TOKEN = os.environ.get("WORKER_API_TOKEN", "")
 HUMAN_APPROVAL_TOKEN = os.environ.get("HUMAN_APPROVAL_TOKEN", "")
+HUMAN_APPROVAL_ACTOR = os.environ.get("HUMAN_APPROVAL_ACTOR", "").strip()
 CLOUDFLARE_ACCESS_REQUIRED = os.environ.get(
     "CLOUDFLARE_ACCESS_REQUIRED", "false"
 ).lower() in {"1", "true", "yes"}
-CLOUDFLARE_ACCESS_TEAM_DOMAIN = os.environ.get(
-    "CLOUDFLARE_ACCESS_TEAM_DOMAIN", ""
-).removeprefix("https://").rstrip("/")
+CLOUDFLARE_ACCESS_TEAM_DOMAIN = (
+    os.environ.get("CLOUDFLARE_ACCESS_TEAM_DOMAIN", "")
+    .removeprefix("https://")
+    .rstrip("/")
+)
 CLOUDFLARE_ACCESS_AUD = os.environ.get("CLOUDFLARE_ACCESS_AUD", "")
 
 pool = ConnectionPool(
@@ -79,6 +81,7 @@ mcp_http_app = mcp.streamable_http_app(
 
 
 SCHEMA_SQL = """
+SELECT pg_advisory_xact_lock(734859201);
 CREATE TABLE IF NOT EXISTS jobs (
     id UUID PRIMARY KEY,
     idempotency_key TEXT NOT NULL UNIQUE,
@@ -151,6 +154,29 @@ CREATE TABLE IF NOT EXISTS project_events (
     payload JSONB NOT NULL,
     created_at TIMESTAMPTZ NOT NULL
 );
+
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS release_candidate JSONB;
+ALTER TABLE approvals ADD COLUMN IF NOT EXISTS target JSONB;
+ALTER TABLE approvals ADD COLUMN IF NOT EXISTS target_sha256 TEXT;
+ALTER TABLE approvals ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;
+ALTER TABLE approvals ADD COLUMN IF NOT EXISTS approved_by TEXT;
+ALTER TABLE approvals ADD COLUMN IF NOT EXISTS consumed_at TIMESTAMPTZ;
+
+-- Legacy approvals cannot authorize a release without an immutable target.
+UPDATE projects SET state = 'QA_REVIEW_REQUIRED', updated_at = NOW()
+WHERE state IN ('AWAITING_APPROVAL', 'DEPLOY_APPROVED') AND id IN (
+    SELECT project_id FROM approvals
+    WHERE state IN ('PENDING', 'APPROVED') AND (target IS NULL OR expires_at IS NULL)
+);
+WITH invalidated AS (
+    UPDATE approvals SET state = 'INVALIDATED', resolved_at = NOW()
+    WHERE state IN ('PENDING', 'APPROVED') AND (target IS NULL OR expires_at IS NULL)
+    RETURNING id, project_id
+)
+INSERT INTO project_events (id, project_id, event_type, payload, created_at)
+SELECT gen_random_uuid(), project_id, 'approval.invalidated',
+       jsonb_build_object('approval_id', id, 'reason', 'legacy_unbound_approval'), NOW()
+FROM invalidated;
 """
 
 
@@ -187,7 +213,9 @@ async def authenticate_mcp(request: Request, call_next):
             _verify_access_jwt(request.headers.get("Cf-Access-Jwt-Assertion"))
             _verify_bearer(request.headers.get("Authorization"), GATEWAY_API_TOKEN)
         except HTTPException as error:
-            headers = {"WWW-Authenticate": "Bearer"} if error.status_code == 401 else None
+            headers = (
+                {"WWW-Authenticate": "Bearer"} if error.status_code == 401 else None
+            )
             return JSONResponse(
                 status_code=error.status_code,
                 content={"detail": error.detail},
@@ -203,10 +231,14 @@ def require_surface(expected: str) -> None:
 
 def _verify_bearer(authorization: str | None, expected: str) -> None:
     if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="unauthorized")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="unauthorized"
+        )
     supplied = authorization.removeprefix("Bearer ")
     if not hmac.compare_digest(supplied, expected):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="unauthorized")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="unauthorized"
+        )
 
 
 @lru_cache(maxsize=1)
@@ -227,7 +259,9 @@ def _verify_access_jwt(assertion: str | None) -> None:
             detail="Cloudflare Access verification is not configured",
         )
     if not assertion:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="unauthorized")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="unauthorized"
+        )
 
     try:
         signing_key = _access_jwk_client().get_signing_key_from_jwt(assertion)
@@ -262,7 +296,9 @@ def require_callback_token(authorization: str | None = Header(default=None)) -> 
 
 
 def require_human_approval_token(
-    human_approval_token: str | None = Header(default=None, alias="X-Human-Approval-Token"),
+    human_approval_token: str | None = Header(
+        default=None, alias="X-Human-Approval-Token"
+    ),
 ) -> None:
     if not HUMAN_APPROVAL_TOKEN:
         raise HTTPException(
@@ -272,20 +308,67 @@ def require_human_approval_token(
     if not human_approval_token or not hmac.compare_digest(
         human_approval_token, HUMAN_APPROVAL_TOKEN
     ):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="unauthorized")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="unauthorized"
+        )
+
+
+def require_approval_actor(_: None = Depends(require_human_approval_token)) -> str:
+    """Identity is bound to the authenticated human token, never a caller header."""
+    if not HUMAN_APPROVAL_ACTOR or len(HUMAN_APPROVAL_ACTOR) > 200:
+        raise HTTPException(
+            status_code=503, detail="human approval actor is not configured"
+        )
+    return HUMAN_APPROVAL_ACTOR
 
 
 class ProjectCreate(BaseModel):
-    project_id: str = Field(min_length=1, max_length=100, pattern=r"^[a-z0-9][a-z0-9-]*$")
+    project_id: str = Field(
+        min_length=1, max_length=100, pattern=r"^[a-z0-9][a-z0-9-]*$"
+    )
     title: str = Field(min_length=1, max_length=200)
     idea: str = Field(min_length=20, max_length=8000)
 
 
 class ProjectRepositoryUpdate(BaseModel):
-    repository_url: str = Field(min_length=10, max_length=2000, pattern=r"^https://github\.com/")
+    repository_url: str = Field(
+        min_length=10, max_length=2000, pattern=r"^https://github\.com/"
+    )
 
 
-class ProjectProductionUpdate(BaseModel):
+class ReleaseTarget(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    commit_sha: str | None = Field(
+        default=None, pattern=r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+    )
+    image_digest: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
+    environment: Literal["production"] = "production"
+
+    @model_validator(mode="after")
+    def immutable_reference_required(self):
+        if self.commit_sha is None and self.image_digest is None:
+            raise ValueError("a full commit SHA or immutable image digest is required")
+        return self
+
+
+class ReleaseCandidateCreate(ReleaseTarget):
+    build_job_id: uuid.UUID
+    qa_job_id: uuid.UUID
+
+
+class ApprovalRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    ttl_seconds: int = Field(default=3600, ge=60, le=86400)
+
+
+class ApprovalDecision(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    target_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    accept_inconclusive_qa: bool = False
+
+
+class ProjectProductionUpdate(ReleaseTarget):
+    approval_id: uuid.UUID
     production_url: str = Field(min_length=10, max_length=2000, pattern=r"^https://")
 
 
@@ -428,7 +511,13 @@ def dispatch_job(job_id: uuid.UUID, request: JobCreate) -> None:
                 )
                 connection.commit()
             return
-        except (urllib.error.URLError, TimeoutError, RuntimeError, KeyError, ValueError):
+        except (
+            urllib.error.URLError,
+            TimeoutError,
+            RuntimeError,
+            KeyError,
+            ValueError,
+        ):
             error = "worker dispatch failed"
 
     with pool.connection() as connection:
@@ -458,13 +547,24 @@ def _persist_job(
     request: JobCreate, idempotency_key: str
 ) -> tuple[dict[str, Any], bool]:
     """Persist a job once and return the existing row on an idempotent replay."""
+    if request.environment == "production" or request.action not in WORKER_ENDPOINTS:
+        raise HTTPException(
+            status_code=403, detail="production/irreversible execution is disabled"
+        )
     now = utcnow()
     job_id = uuid.uuid7() if hasattr(uuid, "uuid7") else uuid.uuid4()
     payload = request.model_dump(mode="json")
-    payload_hash = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+    payload_hash = hashlib.sha256(
+        json.dumps(payload, sort_keys=True).encode()
+    ).hexdigest()
 
     with pool.connection() as connection:
         try:
+            # All workflow writers lock project before jobs/approvals.
+            connection.execute(
+                "SELECT id FROM projects WHERE id = %s FOR UPDATE",
+                (request.project_id,),
+            ).fetchone()
             row = connection.execute(
                 """
                 INSERT INTO jobs (
@@ -484,6 +584,8 @@ def _persist_job(
                     now,
                 ),
             ).fetchone()
+            if request.action in {"code.build", "code.fix", "qa.review"}:
+                _invalidate_approvals(connection, request.project_id, "new_build_or_qa")
             connection.commit()
             return row, True
         except UniqueViolation:
@@ -530,6 +632,7 @@ def _public_project(row: dict[str, Any]) -> dict[str, Any]:
         "production_url": row["production_url"],
         "analytics": row["analytics"],
         "growth_plan": row["growth_plan"],
+        "release_candidate": row.get("release_candidate"),
         "created_at": row["created_at"].isoformat(),
         "updated_at": row["updated_at"].isoformat(),
     }
@@ -543,6 +646,218 @@ def _project_event(
         "VALUES (%s, %s, %s, %s, %s)",
         (uuid.uuid4(), project_id, event_type, json.dumps(payload), utcnow()),
     )
+
+
+def _locked_project(connection: Any, project_id: str) -> dict[str, Any]:
+    project = connection.execute(
+        "SELECT * FROM projects WHERE id = %s FOR UPDATE", (project_id,)
+    ).fetchone()
+    if project is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    return project
+
+
+def _invalidate_approvals(connection: Any, project_id: str, reason: str) -> None:
+    rows = connection.execute(
+        "UPDATE approvals SET state = 'INVALIDATED', resolved_at = %s "
+        "WHERE project_id = %s AND state IN ('PENDING', 'APPROVED') RETURNING id",
+        (utcnow(), project_id),
+    ).fetchall()
+    for row in rows:
+        _project_event(
+            connection,
+            project_id,
+            "approval.invalidated",
+            {"approval_id": str(row["id"]), "reason": reason},
+        )
+    connection.execute(
+        "UPDATE projects SET release_candidate = NULL, updated_at = %s, "
+        "state = CASE WHEN state IN ('AWAITING_APPROVAL', 'DEPLOY_APPROVED') "
+        "THEN 'QA_REVIEW_REQUIRED' ELSE state END WHERE id = %s",
+        (utcnow(), project_id),
+    )
+
+
+def _validate_candidate_jobs(
+    connection: Any, project: dict[str, Any], target: dict[str, Any]
+) -> str:
+    if any(
+        str(project[key]) != str(target[key]) for key in ("build_job_id", "qa_job_id")
+    ):
+        raise HTTPException(
+            status_code=409, detail="candidate does not match current build/QA"
+        )
+    active = connection.execute(
+        "SELECT id FROM jobs WHERE project_id = %s AND action IN ('code.build','code.fix','qa.review') "
+        "AND state IN ('QUEUED','DISPATCHED','ACCEPTED','RUNNING') LIMIT 1",
+        (project["id"],),
+    ).fetchone()
+    if active:
+        raise HTTPException(status_code=409, detail="build or QA is still running")
+    build = connection.execute(
+        "SELECT * FROM jobs WHERE id = %s", (target["build_job_id"],)
+    ).fetchone()
+    qa = connection.execute(
+        "SELECT * FROM jobs WHERE id = %s", (target["qa_job_id"],)
+    ).fetchone()
+    if (
+        not build
+        or not qa
+        or build["project_id"] != project["id"]
+        or qa["project_id"] != project["id"]
+        or build["state"] != "SUCCEEDED"
+        or qa["state"] != "SUCCEEDED"
+        or build["action"] not in {"code.build", "code.fix"}
+        or qa["action"] != "qa.review"
+    ):
+        raise HTTPException(
+            status_code=409, detail="successful build and QA evidence are required"
+        )
+    source = (
+        qa["input"].get("payload", {}).get("parameters", {}).get("source_worker_job_id")
+    )
+    if not source or source != build["worker_job_id"]:
+        raise HTTPException(status_code=409, detail="QA did not review this build")
+    qa_state = qa_project_state(qa["result"] or {})
+    if qa_state == "QA_FAILED":
+        raise HTTPException(status_code=409, detail="QA failed")
+    return qa_state
+
+
+def _current_candidate(connection: Any, project: dict[str, Any]) -> dict[str, Any]:
+    target = project.get("release_candidate")
+    if not target:
+        raise HTTPException(
+            status_code=409, detail="register an immutable release candidate first"
+        )
+    if target["repository_url"] != project["repository_url"]:
+        raise HTTPException(status_code=409, detail="candidate repository changed")
+    if _validate_candidate_jobs(connection, project, target) != target["qa_state"]:
+        raise HTTPException(status_code=409, detail="candidate QA evidence changed")
+    return target
+
+
+def _target_hash(target: dict[str, Any]) -> str:
+    return hashlib.sha256(
+        json.dumps(target, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+def _public_approval(row: dict[str, Any]) -> dict[str, Any]:
+    result = dict(row)
+    for key, value in result.items():
+        if isinstance(value, (uuid.UUID, datetime)):
+            result[key] = (
+                value.isoformat() if isinstance(value, datetime) else str(value)
+            )
+    result["effective_state"] = (
+        "EXPIRED"
+        if row["state"] in {"PENDING", "APPROVED"}
+        and row.get("expires_at")
+        and row["expires_at"] <= utcnow()
+        else row["state"]
+    )
+    return result
+
+
+def _locked_approval(
+    connection: Any, approval_id: uuid.UUID
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    locator = connection.execute(
+        "SELECT project_id FROM approvals WHERE id = %s", (approval_id,)
+    ).fetchone()
+    if locator is None:
+        raise HTTPException(status_code=404, detail="approval not found")
+    project = _locked_project(connection, locator["project_id"])
+    approval = connection.execute(
+        "SELECT * FROM approvals WHERE id = %s FOR UPDATE", (approval_id,)
+    ).fetchone()
+    return project, approval
+
+
+def _check_approval(
+    connection: Any, project: dict[str, Any], approval: dict[str, Any], state: str
+) -> None:
+    if approval["kind"] != "production.deploy":
+        raise HTTPException(
+            status_code=409, detail="approval does not authorize production deployment"
+        )
+    if approval["state"] != state:
+        raise HTTPException(status_code=409, detail=f"approval is not {state.lower()}")
+    if not approval.get("expires_at") or approval["expires_at"] <= utcnow():
+        raise HTTPException(
+            status_code=409, detail="approval expired; request a new approval"
+        )
+    target = _current_candidate(connection, project)
+    if approval["target"] != target or approval["target_sha256"] != _target_hash(
+        target
+    ):
+        raise HTTPException(status_code=409, detail="approval target changed")
+
+
+@app.put("/v1/projects/{project_id}/release-candidate")
+def register_release_candidate(
+    project_id: str,
+    request: ReleaseCandidateCreate,
+    _: None = Depends(require_gateway_token),
+    actor: str = Depends(require_approval_actor),
+) -> dict[str, Any]:
+    with pool.connection() as connection:
+        project = _locked_project(connection, project_id)
+        if not project["repository_url"]:
+            raise HTTPException(
+                status_code=409, detail="project repository is required"
+            )
+        target = request.model_dump(mode="json")
+        qa_state = _validate_candidate_jobs(connection, project, target)
+        target.update(
+            candidate_id=str(uuid.uuid4()),
+            repository_url=project["repository_url"],
+            qa_state=qa_state,
+            binding_source="human_attested",
+        )
+        _invalidate_approvals(connection, project_id, "release_candidate_registered")
+        connection.execute(
+            "UPDATE projects SET release_candidate = %s, state = %s, updated_at = %s WHERE id = %s",
+            (json.dumps(target), qa_state, utcnow(), project_id),
+        )
+        _project_event(
+            connection,
+            project_id,
+            "release_candidate.registered",
+            {"actor": actor, "target": target, "target_sha256": _target_hash(target)},
+        )
+        connection.commit()
+    return {
+        "project_id": project_id,
+        "target": target,
+        "target_sha256": _target_hash(target),
+    }
+
+
+@app.get("/v1/projects/{project_id}/approvals")
+def list_project_approvals(
+    project_id: str, _: None = Depends(require_gateway_token)
+) -> dict[str, Any]:
+    with pool.connection() as connection:
+        rows = connection.execute(
+            "SELECT * FROM approvals WHERE project_id = %s ORDER BY requested_at DESC",
+            (project_id,),
+        ).fetchall()
+    return {"approvals": [_public_approval(row) for row in rows]}
+
+
+@app.get("/v1/approvals/{approval_id}")
+def get_approval(
+    approval_id: uuid.UUID, _: None = Depends(require_gateway_token)
+) -> dict[str, Any]:
+    with pool.connection() as connection:
+        row = connection.execute(
+            "SELECT * FROM approvals WHERE id = %s", (approval_id,)
+        ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="approval not found")
+    return _public_approval(row)
 
 
 @app.post("/v1/projects", status_code=status.HTTP_201_CREATED)
@@ -560,7 +875,9 @@ def create_project(
                 """,
                 (request.project_id, request.title, request.idea, now, now),
             ).fetchone()
-            _project_event(connection, request.project_id, "idea.submitted", request.model_dump())
+            _project_event(
+                connection, request.project_id, "idea.submitted", request.model_dump()
+            )
             connection.commit()
         except UniqueViolation as error:
             connection.rollback()
@@ -575,9 +892,13 @@ def get_project(
     project_id: str, _: None = Depends(require_gateway_token)
 ) -> dict[str, Any]:
     with pool.connection() as connection:
-        row = connection.execute("SELECT * FROM projects WHERE id = %s", (project_id,)).fetchone()
+        row = connection.execute(
+            "SELECT * FROM projects WHERE id = %s", (project_id,)
+        ).fetchone()
     if row is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="project not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="project not found"
+        )
     return _public_project(row)
 
 
@@ -603,23 +924,39 @@ def register_project_repository(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="project must have an approved PRD before repository registration",
             )
-        _project_event(connection, project_id, "repository.registered", request.model_dump())
+        _project_event(
+            connection, project_id, "repository.registered", request.model_dump()
+        )
         connection.commit()
     return _public_project(row)
 
 
 @app.post("/v1/projects/{project_id}/approval", status_code=status.HTTP_201_CREATED)
 def request_production_approval(
-    project_id: str, _: None = Depends(require_gateway_token)
+    project_id: str,
+    request: ApprovalRequest | None = None,
+    _: None = Depends(require_gateway_token),
 ) -> dict[str, Any]:
+    request = request or ApprovalRequest()
     now = utcnow()
     approval_id = uuid.uuid4()
     with pool.connection() as connection:
-        project = connection.execute(
-            "SELECT state FROM projects WHERE id = %s FOR UPDATE", (project_id,)
-        ).fetchone()
-        if project is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="project not found")
+        project = _locked_project(connection, project_id)
+        target = _current_candidate(connection, project)
+        expired = connection.execute(
+            "UPDATE approvals SET state = 'EXPIRED' WHERE project_id = %s "
+            "AND state IN ('PENDING','APPROVED') AND expires_at <= %s RETURNING id",
+            (project_id, now),
+        ).fetchall()
+        for row in expired:
+            _project_event(
+                connection,
+                project_id,
+                "approval.expired",
+                {"approval_id": str(row["id"])},
+            )
+        if expired and project["state"] in {"AWAITING_APPROVAL", "DEPLOY_APPROVED"}:
+            project["state"] = target["qa_state"]
         if project["state"] not in {"QA_PASSED", "QA_REVIEW_REQUIRED"}:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -628,11 +965,18 @@ def request_production_approval(
                     "before production approval"
                 ),
             )
-        connection.execute(
-            "INSERT INTO approvals (id, project_id, kind, state, requested_at) "
-            "VALUES (%s, %s, 'production.deploy', 'PENDING', %s)",
-            (approval_id, project_id, now),
-        )
+        approval = connection.execute(
+            "INSERT INTO approvals (id, project_id, kind, state, requested_at, target, target_sha256, expires_at) "
+            "VALUES (%s, %s, 'production.deploy', 'PENDING', %s, %s, %s, %s) RETURNING *",
+            (
+                approval_id,
+                project_id,
+                now,
+                json.dumps(target),
+                _target_hash(target),
+                now + timedelta(seconds=request.ttl_seconds),
+            ),
+        ).fetchone()
         connection.execute(
             "UPDATE projects SET state = 'AWAITING_APPROVAL', updated_at = %s WHERE id = %s",
             (now, project_id),
@@ -641,29 +985,49 @@ def request_production_approval(
             connection,
             project_id,
             "approval.requested",
-            {"approval_id": str(approval_id), "qa_state": project["state"]},
+            {
+                "approval_id": str(approval_id),
+                "target": target,
+                "target_sha256": approval["target_sha256"],
+                "expires_at": approval["expires_at"].isoformat(),
+            },
         )
         connection.commit()
-    return {"approval_id": str(approval_id), "project_id": project_id, "state": "PENDING"}
+    return {"approval_id": str(approval_id), **_public_approval(approval)}
 
 
 @app.post("/v1/approvals/{approval_id}/approve")
 def approve_production(
     approval_id: uuid.UUID,
+    request: ApprovalDecision,
     _: None = Depends(require_gateway_token),
-    __: None = Depends(require_human_approval_token),
+    actor: str = Depends(require_approval_actor),
 ) -> dict[str, Any]:
     now = utcnow()
     with pool.connection() as connection:
-        approval = connection.execute(
-            "UPDATE approvals SET state = 'APPROVED', resolved_at = %s "
-            "WHERE id = %s AND state = 'PENDING' RETURNING project_id",
-            (now, approval_id),
-        ).fetchone()
-        if approval is None:
+        project, approval = _locked_approval(connection, approval_id)
+        _check_approval(connection, project, approval, "PENDING")
+        if (
+            project["state"] != "AWAITING_APPROVAL"
+            or request.target_sha256 != approval["target_sha256"]
+        ):
             raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT, detail="approval is not pending"
+                status_code=409,
+                detail="reviewed target does not match pending approval",
             )
+        if (
+            approval["target"]["qa_state"] == "QA_REVIEW_REQUIRED"
+            and not request.accept_inconclusive_qa
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="explicit acknowledgement of inconclusive QA required",
+            )
+        approval = connection.execute(
+            "UPDATE approvals SET state = 'APPROVED', resolved_at = %s, approved_by = %s "
+            "WHERE id = %s RETURNING *",
+            (now, actor, approval_id),
+        ).fetchone()
         connection.execute(
             "UPDATE projects SET state = 'DEPLOY_APPROVED', updated_at = %s WHERE id = %s",
             (now, approval["project_id"]),
@@ -672,24 +1036,32 @@ def approve_production(
             connection,
             approval["project_id"],
             "approval.approved",
-            {"approval_id": str(approval_id)},
+            {
+                "approval_id": str(approval_id),
+                "approved_by": actor,
+                "target": approval["target"],
+                "target_sha256": approval["target_sha256"],
+                "expires_at": approval["expires_at"].isoformat(),
+                "accept_inconclusive_qa": request.accept_inconclusive_qa,
+            },
         )
         connection.commit()
-    return {"approval_id": str(approval_id), "project_id": approval["project_id"], "state": "APPROVED"}
+    return {"approval_id": str(approval_id), **_public_approval(approval)}
 
 
 @app.post("/v1/approvals/{approval_id}/cancel")
 def cancel_production_approval(
     approval_id: uuid.UUID,
     _: None = Depends(require_gateway_token),
-    __: None = Depends(require_human_approval_token),
+    actor: str = Depends(require_approval_actor),
 ) -> dict[str, Any]:
-    """Withdraw a pending production request without losing the QA decision."""
+    """Withdraw pending or unused granted authority without losing the QA decision."""
     now = utcnow()
     with pool.connection() as connection:
+        _locked_approval(connection, approval_id)
         approval = connection.execute(
             "UPDATE approvals SET state = 'CANCELLED', resolved_at = %s "
-            "WHERE id = %s AND state = 'PENDING' RETURNING project_id",
+            "WHERE id = %s AND state IN ('PENDING', 'APPROVED') RETURNING project_id",
             (now, approval_id),
         ).fetchone()
         if approval is None:
@@ -715,7 +1087,11 @@ def cancel_production_approval(
             connection,
             approval["project_id"],
             "approval.cancelled",
-            {"approval_id": str(approval_id), "restored_state": qa_state},
+            {
+                "approval_id": str(approval_id),
+                "restored_state": qa_state,
+                "actor": actor,
+            },
         )
         connection.commit()
     return {
@@ -731,9 +1107,24 @@ def record_production_release(
     project_id: str,
     request: ProjectProductionUpdate,
     _: None = Depends(require_gateway_token),
-    __: None = Depends(require_human_approval_token),
+    actor: str = Depends(require_approval_actor),
 ) -> dict[str, Any]:
     with pool.connection() as connection:
+        project, approval = _locked_approval(connection, request.approval_id)
+        if project["id"] != project_id:
+            raise HTTPException(
+                status_code=409, detail="approval belongs to another project"
+            )
+        _check_approval(connection, project, approval, "APPROVED")
+        if not approval["approved_by"]:
+            raise HTTPException(
+                status_code=409, detail="approval has no authenticated actor"
+            )
+        for key in ("commit_sha", "image_digest", "environment"):
+            if getattr(request, key) != approval["target"][key]:
+                raise HTTPException(
+                    status_code=409, detail="release does not match approved target"
+                )
         row = connection.execute(
             "UPDATE projects SET production_url = %s, state = 'LIVE', updated_at = %s "
             "WHERE id = %s AND state = 'DEPLOY_APPROVED' RETURNING *",
@@ -744,7 +1135,21 @@ def record_production_release(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="production deployment has not been approved",
             )
-        _project_event(connection, project_id, "production.released", request.model_dump())
+        connection.execute(
+            "UPDATE approvals SET state = 'CONSUMED', consumed_at = %s WHERE id = %s",
+            (utcnow(), request.approval_id),
+        )
+        _project_event(
+            connection,
+            project_id,
+            "production.released",
+            {
+                **request.model_dump(mode="json"),
+                "actor": actor,
+                "approved_by": approval["approved_by"],
+                "target_sha256": approval["target_sha256"],
+            },
+        )
         connection.commit()
     return _public_project(row)
 
@@ -815,7 +1220,9 @@ def get_job(
 ) -> dict[str, Any]:
     row = _load_job(job_id)
     if row is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="job not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="job not found"
+        )
     return _public_job(row)
 
 
@@ -848,17 +1255,28 @@ def receive_worker_event(
                 detail="event id already used with different event metadata",
             )
 
+        # Same lock order as submission, candidate changes, and approval consumption.
+        connection.execute(
+            "SELECT id FROM projects WHERE id = (SELECT project_id FROM jobs WHERE id = %s) FOR UPDATE",
+            (event.gateway_job_id,),
+        ).fetchone()
         job = connection.execute(
-            "SELECT last_event_sequence, action, project_id FROM jobs WHERE id = %s FOR UPDATE",
+            "SELECT last_event_sequence, action, project_id, state FROM jobs WHERE id = %s FOR UPDATE",
             (event.gateway_job_id,),
         ).fetchone()
         if job is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="job not found")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="job not found"
+            )
 
         if event.sequence <= job["last_event_sequence"]:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="event sequence must advance monotonically",
+            )
+        if job["state"] in {"SUCCEEDED", "FAILED_FINAL"}:
+            raise HTTPException(
+                status_code=409, detail="terminal job evidence is immutable"
             )
 
         try:
@@ -902,9 +1320,17 @@ def receive_worker_event(
                 ),
             )
             if event.event_type == "completed":
+                if job["action"] in {"code.build", "code.fix", "qa.review"}:
+                    _invalidate_approvals(
+                        connection, job["project_id"], "build_or_qa_evidence_changed"
+                    )
                 transition = {
                     "product.plan": ("PRD_READY", "prd", event.data.get("report")),
-                    "code.build": ("PREVIEW_READY", "build_job_id", event.gateway_job_id),
+                    "code.build": (
+                        "PREVIEW_READY",
+                        "build_job_id",
+                        event.gateway_job_id,
+                    ),
                     "code.fix": ("PREVIEW_READY", "build_job_id", event.gateway_job_id),
                     "qa.review": (
                         qa_project_state(event.data),
@@ -933,11 +1359,7 @@ def receive_worker_event(
                         {
                             "gateway_job_id": str(event.gateway_job_id),
                             **(
-                                {
-                                    "verdict": event.data.get("report", {}).get(
-                                        "verdict"
-                                    )
-                                }
+                                {"verdict": event.data.get("report", {}).get("verdict")}
                                 if job["action"] == "qa.review"
                                 and isinstance(event.data.get("report"), dict)
                                 else {}
@@ -1095,13 +1517,26 @@ def mcp_get_project(project_id: str) -> dict[str, Any]:
 @mcp.tool(
     name="request_production_approval",
     description=(
-        "Request human production approval after QA has passed. "
+        "Request expiring human approval for the registered immutable release candidate after QA. "
         "This tool cannot grant the approval."
     ),
     structured_output=True,
 )
-def mcp_request_production_approval(project_id: str) -> dict[str, Any]:
-    return request_production_approval(project_id, None)
+def mcp_request_production_approval(
+    project_id: str, ttl_seconds: int = 3600
+) -> dict[str, Any]:
+    return request_production_approval(
+        project_id, ApprovalRequest(ttl_seconds=ttl_seconds), None
+    )
+
+
+@mcp.tool(
+    name="get_production_approval",
+    description="Read an approval's immutable target, authenticated approver and effective expiry state. Cannot grant approval.",
+    structured_output=True,
+)
+def mcp_get_production_approval(approval_id: str) -> dict[str, Any]:
+    return get_approval(uuid.UUID(approval_id), None)
 
 
 # Keep the MCP mount last so the explicit REST and health routes above retain

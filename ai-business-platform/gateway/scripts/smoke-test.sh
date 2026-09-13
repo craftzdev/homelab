@@ -86,17 +86,13 @@ occurred_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 event=$(printf '{"event_id":"%s-replay-check","gateway_job_id":"%s","dispatch_id":"gateway:%s:1","worker_job_id":"%s","event_type":"completed","sequence":4,"occurred_at":"%s","data":{"passed":true}}' \
   "$test_id" "$job_one" "$job_one" "$worker_job_id" "$occurred_at")
 
-curl -fsS -o /dev/null -X POST http://127.0.0.1:8081/v1/worker-events \
-  -H "Authorization: Bearer $WORKER_CALLBACK_TOKEN" \
-  -H 'Content-Type: application/json' \
-  --data "$event"
-
-duplicate_response=$(curl -fsS -X POST http://127.0.0.1:8081/v1/worker-events \
+# A new event must not rewrite a terminal job's approved evidence.
+# Exact callback replay idempotency is covered by the DB integration suite.
+terminal_rewrite_code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8081/v1/worker-events \
   -H "Authorization: Bearer $WORKER_CALLBACK_TOKEN" \
   -H 'Content-Type: application/json' \
   --data "$event")
-duplicate=$(python3 -c 'import json,sys; print(str(json.loads(sys.argv[1])["duplicate"]).lower())' "$duplicate_response")
-test "$duplicate" = true
+test "$terminal_rewrite_code" = 409
 
 job_response=$(curl -fsS "$public_base/v1/jobs/$job_one" \
   "${public_headers[@]}" \

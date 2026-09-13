@@ -34,6 +34,7 @@ The MCP surface intentionally exposes only these tools:
 - `submit_business_idea`
 - `get_project`
 - `request_production_approval`
+- `get_production_approval`
 
 `submit_job` accepts only the Agent/Worker-backed actions `product.plan`,
 `code.build`, `code.fix`, `test.run`, `qa.review`, `analytics.read`,
@@ -46,7 +47,13 @@ Production approval is deliberately absent from MCP. It requires the independent
 `X-Human-Approval-Token` header in addition to Cloudflare Access and the Gateway
 Bearer token.
 
-A pending production request can be withdrawn with
+Approval is bound to a registered immutable release candidate, a server-side
+human identity, and an expiration time. See [bound approval API](docs/approvals.md)
+for the migration, request bodies, and deployment checklist. Legacy unbound
+approvals cannot be used after migration. `get_production_approval` is read-only;
+it allows either Grok Bot or Hermes to recover approval state without chat memory.
+
+A pending or granted-but-unused production request can be withdrawn with
 `POST /v1/approvals/{approval_id}/cancel`. Cancellation restores the state
 derived from the latest QA verdict and records an audit event.
 

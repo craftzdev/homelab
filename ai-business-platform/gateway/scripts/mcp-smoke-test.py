@@ -36,7 +36,11 @@ async def main() -> None:
                 await session.initialize()
                 tools = await session.list_tools()
                 tool_names = {tool.name for tool in tools.tools}
-                expected = {"submit_job", "get_job", "wait_for_job", "get_review_url"}
+                expected = {
+                    "submit_job", "get_job", "wait_for_job", "get_review_url",
+                    "submit_business_idea", "get_project", "request_production_approval",
+                    "get_production_approval",
+                }
                 if tool_names != expected:
                     raise RuntimeError(
                         f"unexpected MCP tools: {sorted(tool_names)}"
@@ -44,6 +48,9 @@ async def main() -> None:
                 submit_tool = next(tool for tool in tools.tools if tool.name == "submit_job")
                 properties = submit_tool.input_schema.get("properties", {})
                 if set(properties.get("action", {}).get("enum", [])) != {
+                    "product.plan",
+                    "qa.review",
+                    "growth.plan",
                     "browser.research",
                     "analytics.read",
                     "stripe.read",
