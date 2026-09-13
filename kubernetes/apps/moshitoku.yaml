@@ -81,6 +81,13 @@ metadata:
   annotations:
     # Longhorn と Gateway が収束してから同期する。
     argocd.argoproj.io/sync-wave: "9"
+    # API サーバーと CNPG が既定値を埋めるため、素の比較では
+    # HTTPRoute（backendRef の group / kind / weight、parentRef の
+    # group / kind）と CNPG の Cluster（plugins の enabled）が常に
+    # OutOfSync になる。常時 OutOfSync だと、本当の差分が埋もれる。
+    # 下の ServerSideApply と揃えて、API サーバーの dry-run 結果と
+    # 比べさせる。
+    argocd.argoproj.io/compare-options: ServerSideDiff=true
   finalizers:
     - resources-finalizer.argocd.argoproj.io
 spec:
