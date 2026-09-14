@@ -16,7 +16,14 @@
 | `webshare-api-key` | 外部サービスが発行。生成できない | **ここ（SOPS）** |
 | `discord-webhook-url` | 同上 | **ここ（SOPS）** |
 | DB パスワード / Django secret / MinIO secret | 自前生成。値自体に意味は無く再構築で同一なら足る | `scripts/bootstrap-moshitoku-secrets.sh`（Keychain） |
+| 内部取り込み API の token | 同上。送信側と受信側で同じ値であることだけが要件 | 同スクリプト（Keychain） |
 | `moshitoku-postgres-ca` / scraper 側 db-owner | CloudNativePG が実行時に作る値の複製 | 同スクリプト（SOPS では表現できない） |
+
+内部取り込み API の token は 2 つの Secret へ同時に配る。受信側が
+`moshitoku/moshitoku-runtime` の `ingest-token-config`（`{token: [source_key, ...]}`
+の JSON）、送信側が `moshitoku-scraper/moshitoku-scraper-ingest` の
+`ingest-api-token` である。`moshitoku-scraper-runtime` へ相乗りさせない。
+あちらは SOPS と Argo CD が持っており、スクリプトと取り合いになる。
 
 SOPS 側は Argo CD が desired state として配送し、selfHeal で復旧する。人が
 スクリプトを実行する手順が1つ減る。忘れると CronJob が起動直後に落ちるため、

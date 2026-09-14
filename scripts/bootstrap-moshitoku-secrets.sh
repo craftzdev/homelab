@@ -64,6 +64,24 @@ ensure_namespace "${SCRAPER_NAMESPACE}"
 db_password="$(ensure_generated_keychain_secret dev.craftz.moshitoku.db-password)"
 django_secret="$(ensure_generated_keychain_secret dev.craftz.moshitoku.django-secret-key)"
 minio_secret="$(ensure_generated_keychain_secret dev.craftz.moshitoku.minio-secret-key)"
+ingest_token="$(ensure_generated_keychain_secret dev.craftz.moshitoku.ingest-api-token)"
+
+# ---------------------------------------------------------------------------
+# 内部取り込み API が許可する Source
+#
+# 正本は moshitoku の Site.source_key である。ここはその写しであり、
+# 増えたときに追従しないと、その Source を api モードへ切り替えた時点で
+# 403（SOURCE_FORBIDDEN）になる。runbook の shadow 段階で必ず露見する。
+#
+# ⚠️ ここは「このスクレイパーが書いてよい Source」の一覧であり、
+#    「いま内部API経由で送る Source」ではない。後者は scraper 側の
+#    INGEST_MODE_<SOURCE> が決める。混ぜると、切り替えのたびに
+#    資格情報を触ることになる。
+# ---------------------------------------------------------------------------
+INGEST_SOURCE_KEYS=(
+  amefri chobirich djob ecnavi fruitmail gendama getmoney gmo hapitas
+  moppy nifty pointi poney powl rebates trima warau
+)
 
 # ---------------------------------------------------------------------------
 # moshitoku namespace
@@ -78,8 +96,17 @@ kubectl -n "${APP_NAMESPACE}" create secret generic moshitoku-db-owner \
   --from-literal=password="${db_password}" \
   --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 
+# 内部取り込み API の token 設定。{token: [許可する source_key, ...]} の JSON。
+# Web の Deployment が INGEST_TOKEN_CONFIG として読む。
+ingest_token_config="$(
+  printf '%s\n' "${INGEST_SOURCE_KEYS[@]}" \
+    | python3 -c 'import json,sys; print(json.dumps({sys.argv[1]: sys.stdin.read().split()}))' \
+      "${ingest_token}"
+)"
+
 kubectl -n "${APP_NAMESPACE}" create secret generic moshitoku-runtime \
   --from-literal=django-secret-key="${django_secret}" \
+  --from-literal=ingest-token-config="${ingest_token_config}" \
   --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 
 # バックアップ先の MinIO 資格情報。CNPG の ObjectStore が参照するため
@@ -106,6 +133,20 @@ ok "moshitoku database, runtime, and backup credentials are present"
 #    スクリプトと Argo CD の両方が書くと、selfHeal と取り合って値が
 #    往復する。生成値（DB パスワード等）と複製値だけがこのスクリプトの担当。
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# 内部取り込み API の token（送信側）
+#
+# 自前生成の値なので Keychain が情報源であり、SOPS には入れない。
+# 上の警告のとおり moshitoku-scraper-runtime へは足せないため、別の
+# Secret にする。受け取り側（moshitoku-runtime の ingest-token-config）と
+# 同じ値でなければ 401 になる。ここで同時に配るのはそのためである。
+# ---------------------------------------------------------------------------
+kubectl -n "${SCRAPER_NAMESPACE}" create secret generic moshitoku-scraper-ingest \
+  --from-literal=ingest-api-token="${ingest_token}" \
+  --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+
+ok "internal ingest API token is present on both sides"
 
 # ---------------------------------------------------------------------------
 # namespace をまたぐ複製
@@ -140,4 +181,5 @@ else
 fi
 
 unset db_password django_secret minio_secret webshare_key discord_url ca_crt
+unset ingest_token ingest_token_config
 ok "moshitoku secrets are reconciled"
