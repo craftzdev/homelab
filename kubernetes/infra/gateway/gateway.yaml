@@ -37,10 +37,7 @@ metadata:
     app.kubernetes.io/name: gateway
     app.kubernetes.io/part-of: external-access
 
-    # 下の default-404 HTTPRoute はこの namespace にあるため、Gateway の
-    # allowedRoutes セレクタに一致していなければ受け付けられない。
-    # このラベルが無いと catch-all が機能せず、未定義のホスト名に対して
-    # Gateway の既定応答が露出する。
+    # 基盤側で明示的な HTTPRoute を管理する場合の接続許可。
     homelab.io/gateway-access: external
 
 ---
@@ -181,33 +178,8 @@ spec:
       hostname: www.moshitoku.com
       allowedRoutes: *external-routes
 
----
-# ===========================================================================
-# 既定の応答（catch-all）
-#
-# どの HTTPRoute にも一致しないリクエストを cloudflare.com へ 302 で送る。
-# これが無いと Gateway の既定応答が露出し、内部構成の手がかりを与えうる。
-# 名前が default-404 なのは歴史的経緯で、実際に返すのは 404 ではなく 302 である。
-# ===========================================================================
-apiVersion: gateway.networking.k8s.io/v1
-kind: HTTPRoute
-metadata:
-  name: default-404
-  namespace: gateway
-  labels:
-    app.kubernetes.io/part-of: external-access
-spec:
-  parentRefs:
-    - name: external
-      namespace: gateway
-  rules:
-    - matches:
-        - path:
-            type: PathPrefix
-            value: /
-      filters:
-        - type: RequestRedirect
-          requestRedirect:
-            # 意図しないホスト名でのアクセスに情報を返さない
-            statusCode: 302
-            hostname: cloudflare.com
+# hostname を省略した PathPrefix / の「既定ルート」は追加しない。
+# hostname 固定 listener に接続するとアプリと同じホスト・パスで競合し、
+# Cilium がアプリの転送先ではなく既定ルートを採用する場合がある。
+# 未定義ホストは listener / cloudflared の 404 に任せる。
+# 既知ホストのパス処理はアプリの HTTPRoute が所有する。
