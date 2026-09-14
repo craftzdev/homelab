@@ -149,37 +149,24 @@ kubectl -n "${SCRAPER_NAMESPACE}" create secret generic moshitoku-scraper-ingest
 ok "internal ingest API token is present on both sides"
 
 # ---------------------------------------------------------------------------
-# namespace をまたぐ複製
+# スクレイパーへ DB 資格情報を渡さない
 #
-# DB_SSLMODE=verify-full のため、CA が無い・古いと接続できない。CA は
-# CloudNativePG が moshitoku namespace に作るので、そこから複製する。
+# 収集結果は内部取り込み API へ送る。スクレイパーは PostgreSQL へ接続せず、
+# 接続に使っていた db-owner と CA の複製も要らなくなった（設計 §20.2 M4
+# 「全Source移行後に旧DB資格情報を失効させる」）。
+#
+# 既に配ってしまったものは、このスクリプトでは消さない。消す操作は
+# 一度きりで、繰り返し実行する reconcile の役目ではない。残っていれば
+# 次の一行で消せる。
+#
+#   kubectl -n moshitoku-scraper delete secret moshitoku-db-owner moshitoku-postgres-ca
+#
+# ⚠️ 順序がある。スクレイパー側の参照（DB_PASSWORD の env、postgres-ca の
+#    マウント、CloudNativePG への egress）を先に外し、moshitoku 側の
+#    ingress を閉じてから消すこと。逆にすると、旧イメージで動いている
+#    収集が DB へ繋げなくなる。
 # ---------------------------------------------------------------------------
-kubectl -n "${SCRAPER_NAMESPACE}" create secret generic moshitoku-db-owner \
-  --type=kubernetes.io/basic-auth \
-  --from-literal=username=moshitoku \
-  --from-literal=password="${db_password}" \
-  --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 
-if ca_crt="$(kubectl -n "${APP_NAMESPACE}" get secret moshitoku-postgres-ca \
-    -o jsonpath='{.data.ca\.crt}' 2>/dev/null)" && [[ -n "${ca_crt}" ]]; then
-  kubectl apply -f - >/dev/null <<EOF
-apiVersion: v1
-kind: Secret
-metadata:
-  name: moshitoku-postgres-ca
-  namespace: ${SCRAPER_NAMESPACE}
-  annotations:
-    homelab/replicated-from: ${APP_NAMESPACE}/moshitoku-postgres-ca
-    homelab/replicated-by: scripts/bootstrap-moshitoku-secrets.sh
-type: Opaque
-data:
-  ca.crt: ${ca_crt}
-EOF
-  ok "PostgreSQL CA replicated into ${SCRAPER_NAMESPACE}"
-else
-  info "moshitoku-postgres-ca does not exist yet; re-run after CloudNativePG creates the cluster"
-fi
-
-unset db_password django_secret minio_secret webshare_key discord_url ca_crt
+unset db_password django_secret minio_secret webshare_key discord_url
 unset ingest_token ingest_token_config
 ok "moshitoku secrets are reconciled"
