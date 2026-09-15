@@ -27,6 +27,56 @@ spec:
           annotations:
             summary: "PVC {{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }} の空き容量が 10% を切りました"
 
+        # -------------------------------------------------------------------
+        # ゲストから見たディスク書き込み遅延
+        #
+        # 容量ではなく「遅さ」を見る。2026-09-13 のストレージ障害では、
+        # ZFS プールが一度も TRIM されておらず SATA SSD が GC で飽和し、
+        # ゲストの平均書き込み遅延がこうなっていた（実測）:
+        #
+        #   k8s-worker-1  54,449 ms      k8s-worker-2  41,997 ms
+        #   k8s-worker-3   5,495 ms      control-plane 3台  0-1 ms
+        #                                （control は NVMe なので影響なし）
+        #
+        # 平常時は 0-3 ms。取れていた値に対してアラートが無かったため、
+        # 数時間誰も気づかなかった。
+        # 経緯は docs/storage-migration-2026-09-13.md を参照。
+        # -------------------------------------------------------------------
+        - alert: NodeDiskWriteLatencyHigh
+          expr: |
+            rate(node_disk_write_time_seconds_total[5m])
+              / rate(node_disk_writes_completed_total[5m]) > 0.1
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ $labels.instance }} の {{ $labels.device }} の平均書き込み遅延が 100ms を超えています"
+            description: |
+              SSD なら 1ms 未満が正常。まず物理ホスト側の ZFS プールを疑う。
+              確認: ssh root@172.16.10.1X 'zpool status -t local-zfs | grep sda'
+              (untrimmed) なら zpool trim を検討する。
+              あわせて autotrim と org.debian:periodic-trim も確認:
+                zpool get autotrim local-zfs
+                zfs get org.debian:periodic-trim local-zfs
+
+        - alert: NodeDiskWriteLatencyCritical
+          # 秒単位に達すると Longhorn の再構築が RPC タイムアウトで落ち始め、
+          # 失敗と再試行が自己増幅ループになる。
+          expr: |
+            rate(node_disk_write_time_seconds_total[5m])
+              / rate(node_disk_writes_completed_total[5m]) > 1
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: "{{ $labels.instance }} の {{ $labels.device }} の平均書き込み遅延が 1 秒を超えています"
+            description: |
+              この水準では Longhorn のレプリカ再構築が完走できない。
+              再構築の連打は回復を妨げるため、まず止めることを検討する:
+                kubectl -n longhorn-system patch settings.longhorn.io \
+                  concurrent-replica-rebuild-per-node-limit --type=merge -p '{"value":"0"}'
+              その際は ArgoCD の longhorn app の自動同期も一時停止しないと戻される。
+
     # -----------------------------------------------------------------------
     # セキュリティ
     # -----------------------------------------------------------------------
@@ -131,3 +181,106 @@ spec:
             summary: "PBS observer の収集が 30 分以上失敗しています"
             description: |
               どの取得元が落ちているかは pbs_observer_source_success で確認する。
+
+    # -----------------------------------------------------------------------
+    # バックアップの「結果」
+    #
+    # 既存の homelab.monitoring は「observer が動いているか」しか見ていない。
+    # 収集は正常でも、バックアップ自体が失敗し続けることがある。
+    #
+    # 2026-09-11 から 5 夜連続で vzdump が
+    #   No space left on device (os error 28)
+    # で失敗していたが、誰も気づかなかった。そのとき
+    #   pbs_observer_datastore_avail_bytes      = 0
+    #   pbs_observer_latest_backup_task_success = 0
+    #   pbs_observer_backup_tasks_failed_24h    = 1
+    # はすべて収集済みだった。取れていた値に対してアラートが無かっただけ。
+    # 経緯は docs/storage-migration-2026-09-13.md を参照。
+    # -----------------------------------------------------------------------
+    - name: homelab.backup
+      rules:
+        - alert: PBSDatastoreFull
+          # 空きが尽きると prune すら書き込めず、削除もできなくなる。
+          # 「容量が減ってきた」ではなく「詰んだ」状態なので critical。
+          expr: |
+            pbs_observer_datastore_avail_bytes
+              / pbs_observer_datastore_total_bytes < 0.02
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: "PBS データストア {{ $labels.datastore }} の空きが 2% 未満です"
+            description: |
+              この状態では新規バックアップも prune も失敗する。
+              ext4 の root 予約ブロックがあるため、df の Available が 0 でも
+              root にはまだ余地がある（PBS は backup ユーザーで動く）。
+              確認: ssh root@172.16.10.51 'df -h /; tune2fs -l /dev/mapper/pbs-root | grep -i reserved'
+
+        - alert: PBSDatastoreFillingUp
+          expr: |
+            pbs_observer_datastore_avail_bytes
+              / pbs_observer_datastore_total_bytes < 0.15
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            summary: "PBS データストア {{ $labels.datastore }} の空きが 15% 未満です"
+            description: |
+              保持ポリシーと GC の結果を確認する。
+              確認: ssh root@172.16.10.51 'proxmox-backup-manager prune-job list'
+
+        - alert: PBSBackupTaskFailing
+          # 直近の vzdump タスクが失敗した状態。日次ジョブなので
+          # 6h 継続 = その日の実行が失敗したと確定してよい。
+          expr: |
+            pbs_observer_latest_backup_task_success == 0
+          for: 6h
+          labels:
+            severity: critical
+          annotations:
+            summary: "{{ $labels.node }} の直近のバックアップタスクが失敗しています"
+            description: |
+              確認: ssh root@172.16.10.11 'grep -ah vzdump /var/log/pve/tasks/index | tail -5'
+              失敗理由はタスクログ /var/log/pve/tasks/<n>/<UPID> を見る。
+
+        - alert: PBSBackupStale
+          # 静かに止まることが最も危ない。ジョブは毎日 02:30 なので、
+          # 36h 更新が無ければ 1 回以上落ちている。
+          #
+          # VM 1200 は kubernetes-daily-pbs の対象外（vmid は 1001-1003,1101-1103）で
+          # 定期バックアップが無いため除外する。1200 をジョブに追加したら
+          # この除外も外すこと。
+          expr: |
+            time() - pbs_observer_latest_snapshot_timestamp_seconds{backup_id!="1200"}
+              > 36 * 3600
+          for: 30m
+          labels:
+            severity: critical
+          annotations:
+            summary: "{{ $labels.backup_type }}/{{ $labels.backup_id }} のバックアップが 36 時間以上更新されていません"
+            description: |
+              バックアップジョブが失敗しているか、無効化されている。
+              確認: ssh root@172.16.10.11 'cat /etc/pve/jobs.cfg'
+
+        - alert: PBSBackupScheduleDisabled
+          expr: |
+            pbs_observer_schedule_enabled == 0
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            summary: "バックアップジョブ {{ $labels.job_id }} が無効化されています"
+            description: |
+              一時的に止めた場合は、戻し忘れていないか確認する。
+
+        - alert: PBSGarbageCollectionFailing
+          # GC が回らないと、prune しても実際の空き容量は戻らない。
+          expr: |
+            pbs_observer_gc_last_success == 0
+          for: 2h
+          labels:
+            severity: warning
+          annotations:
+            summary: "PBS {{ $labels.datastore }} のガベージコレクションが失敗しています"
+            description: |
+              確認: ssh root@172.16.10.51 'proxmox-backup-manager garbage-collection status gateway-backup'

@@ -1292,3 +1292,344 @@ DBについては §34-2 のとおり実サイズ15 MBで、ディスクI/Oを�
 実施する場合は、CIビルド時間の実測（前後比較）を根拠に改めて判断すべきで、
 現時点でその測定は行っていない（対処前のCIビルド時間の記録がないため
 厳密な前後比較はできない）。
+
+---
+
+# 追記8：残作業の着手（2026-09-15）
+
+## 43. 対策の持続確認（42時間後）
+
+2026-09-15 19:33 時点。TRIM完了（09-14 01:29）から約42時間。
+
+```
+Longhorn: healthy 22 / 22、失敗レプリカ 0
+ノード  : 6台すべて Ready
+CNPG    : 両クラスタ 3/3、主系 worker-3、healthy
+```
+
+| ホスト | autotrim | periodic-trim | frag | 状況 | write await | busy | maxtxg |
+|---|---|---|---:|---|---:|---:|---:|
+| 01 | on | enable | 12% | CIビルド実行中（24MB/s） | **9 ms** | 54% | 4.2 s |
+| 02 | on | enable | 10% | アイドル | 0 ms | 1% | 0.1 s |
+| 03 | on | enable | 8% | アイドル | 9 ms | 13% | 0.4 s |
+
+`pvesr` は `1200-0` 3.2秒 / `1200-1` 9.8秒、FailCount 0。
+**負荷下でも await は一桁 ms に収まっており、対策は持続している。**
+
+## 44. PBS：バックアップが5夜連続で失敗していた
+
+§3-2 で「PBS 97%」として積み残していた件を調べたところ、
+**より深刻な状態だった。**
+
+### 44-1. 事実
+
+```
+/dev/mapper/pbs-root  444G  422G  0  100%  /
+```
+
+vzdump タスクの結果（`/var/log/pve/tasks/index`）:
+
+| 実行時刻 | 結果 |
+|---|---|
+| 2026-09-11 02:30 | job errors |
+| 2026-09-12 02:30 | job errors |
+| 2026-09-13 02:30 | job errors |
+| 2026-09-14 02:30 | job errors |
+| 2026-09-15 02:30 | job errors |
+
+失敗理由（タスクログ実物）:
+
+```
+ERROR: VM 1001 qmp command 'backup' failed - backup connect failed:
+       command error: No space left on device (os error 28)
+```
+
+**09-13 の報告で「k8sノードVMのバックアップ先としては容量が足りない」と
+書いたのは不正確だった。訂正する。**
+k8s VM 6台（1001-1003 / 1101-1103）は `kubernetes-daily-pbs` ジョブで
+**日次バックアップされていた**。ただし 09-11 以降はすべて失敗している。
+
+### 44-2. なぜ容量が尽きたか — 二重のデッドロック
+
+1. **vzdump 側の保持ポリシーは正しく設定されている**
+
+   ```
+   vzdump: kubernetes-daily-pbs
+       prune-backups keep-daily=7,keep-weekly=4,keep-monthly=3
+       remove 1
+   ```
+
+   しかし prune は**バックアップ成功後**に走る。即失敗するため prune が動かない。
+
+2. **PBS 側の prune ジョブには keep-* が1つも無かった**
+
+   ```
+   prune: default-gateway-backup-532eb832-
+       schedule daily
+       store gateway-backup
+   ```
+
+   保持条件が無いため、毎日起動しては何も削除せずに終了していた。
+
+結果：**削除されない → 満杯 → バックアップ失敗 → prune が走らない**。
+
+### 44-3. 何が溜まっていたか
+
+各グループ 10〜11 スナップショットのうち **7 個が 2026-09-06 の同日内**
+（02:42 / 05:17 / 06:27 / 07:43 / 09:08 / 10:35 / 12:10）。
+クラスタ再構築日に約1.5時間おきに取られた作業スナップショットである。
+以降は 09-10〜09-13 の日次のみ。実在する日付は5日分しかない。
+
+各スナップショットは `drive-scsi0`（60GiB OS）と
+`drive-scsi1`（300GiB Longhorn）の**両方**を含む。
+
+### 44-4. 実施したこと
+
+PBS 側の prune ジョブに保持ポリシーを設定した。
+
+```
+proxmox-backup-manager prune-job update "default-gateway-backup-532eb832-" \
+  --keep-last 3 --keep-daily 7 --keep-weekly 4 --keep-monthly 3
+```
+
+`keep-last 3` は vzdump 側のポリシーに無いが意図的に追加した。
+VM 1200 は `kubernetes-daily-pbs` の対象外（vmid は 1001-1003,1101-1103）で
+定期バックアップが無く、09-05 のスナップショット3個しか無い。
+日付ベースの条件だけだと1個に減ってしまう。
+**バックアップが5夜黙って止まっていた事実を踏まえた安全弁**でもある。
+
+### 44-5. 未完了：prune を実行できていない
+
+```
+$ proxmox-backup-manager prune-job run "default-gateway-backup-532eb832-"
+Error: write failed: No space left on device (os error 28)
+```
+
+**削除するにも書き込みが必要で、それができない。**
+
+原因は ext4 の root 予約ブロック：
+
+```
+Block count:          118472704   (× 4096 = 485 GB)
+Reserved block count:   5923635   (× 4096 = 24.3 GB, 5%)
+Reserved blocks uid:  0 (user root)
+```
+
+PBS のプロセスは `backup` ユーザーで動くため、
+利用可能量が 0 に見える（root にはまだ 24.3 GB ある）。
+ジャーナルログ 492MB を削っても予約量に届かず効果が無い。
+
+**必要な操作（権限で拒否されたため未実施）:**
+
+```
+ssh root@172.16.10.51 'tune2fs -m 2 /dev/mapper/pbs-root'
+```
+
+5%（24.3GB）→ 2%（9.7GB）で約14GBが `backup` ユーザーに開放される。
+非破壊・即時・可逆（戻す場合は `tune2fs -m 5`）。
+データストアがルートFS上にあり418G/444Gをバックアップが占める構成のため、
+2% は恒久設定としても妥当と考える。
+
+その後に prune → GC の順で実行する。
+GC は atime ベースで 24h5m の猶予があるため、prune 直後の GC で
+すぐに容量が戻るとは限らない点に注意。
+
+## 45. 監視の追加
+
+### 45-1. 何が足りなかったか
+
+調べた結果、**メトリクスはすべて収集されていた。アラートが無かっただけ**だった。
+
+PBS 障害の当日、Prometheus には以下が入っていた：
+
+```
+pbs_observer_datastore_avail_bytes{datastore="gateway-backup"} = 0
+pbs_observer_latest_backup_task_success{node=...}              = 0   (3ノードとも)
+pbs_observer_backup_tasks_failed_24h{node=...}                 = 1   (3ノードとも)
+```
+
+既存の `homelab.monitoring` グループは
+`PBSObserverTargetMissing` と `BackupTelemetryCollectionFailing` のみ、
+つまり「observer が動いているか」しか見ていなかった。
+**収集は正常で、バックアップだけが失敗していた**ため何も鳴らなかった。
+
+ストレージ障害についても同様で、ゲスト側の遅延は記録されていた。
+障害時間帯（09-13 18:00–19:30 JST）の平均書き込み遅延ピーク：
+
+| ノード | ピーク |
+|---|---:|
+| k8s-worker-1 | **54,449 ms** |
+| k8s-worker-2 | **41,997 ms** |
+| k8s-worker-3 | 5,495 ms |
+| k8s-1 / k8s-2 / k8s-3（NVMe） | 0〜1 ms |
+
+平常時は 0〜3 ms。control-plane が無傷なのは NVMe 上にあるため。
+
+### 45-2. 追加したアラート（`kubernetes/infra/monitoring/alerts.yaml`）
+
+新グループ `homelab.backup`:
+
+| アラート | 条件 | severity |
+|---|---|---|
+| `PBSDatastoreFull` | 空き < 2%、10m | critical |
+| `PBSDatastoreFillingUp` | 空き < 15%、1h | warning |
+| `PBSBackupTaskFailing` | `latest_backup_task_success == 0`、6h | critical |
+| `PBSBackupStale` | 最新スナップショットが36h以上前、30m | critical |
+| `PBSBackupScheduleDisabled` | `schedule_enabled == 0`、1h | warning |
+| `PBSGarbageCollectionFailing` | `gc_last_success == 0`、2h | warning |
+
+`homelab.storage` に追加:
+
+| アラート | 条件 | severity |
+|---|---|---|
+| `NodeDiskWriteLatencyHigh` | 平均書き込み遅延 > 100ms、15m | warning |
+| `NodeDiskWriteLatencyCritical` | 平均書き込み遅延 > 1s、10m | critical |
+
+### 45-3. 検証結果
+
+CRD と Prometheus Operator の admission webhook（PromQL構文）を通過：
+
+```
+kubectl apply --dry-run=server -f kubernetes/infra/monitoring/alerts.yaml
+→ prometheusrule.monitoring.coreos.com/homelab-rules configured (server dry run)
+```
+
+実データに対する評価：
+
+| アラート | 現在 | 障害時 |
+|---|---|---|
+| `PBSDatastoreFull` | **発火**（実障害） | — |
+| `PBSBackupTaskFailing` | **発火** 3ノード（実障害） | — |
+| `PBSBackupStale` | **発火** 6VM（1200は正しく除外） | — |
+| `PBSBackupScheduleDisabled` | 無発火（正） | — |
+| `PBSGarbageCollectionFailing` | 無発火（正） | — |
+| `NodeDiskWriteLatencyHigh/Critical` | **無発火**（誤検知なし） | **worker-1 で19サンプル中18回発火** |
+
+`PBSBackupStale` の `backup_id!="1200"` 除外は、除外を外すと1200が
+追加で一致することを確認済み（意図どおり動いている）。
+
+### 45-4. Longhorn メトリクスが1つも無かった
+
+`longhorn_*` のメトリクスが Prometheus に1件も存在しなかった。
+`kubernetes/infra/longhorn/values.yaml` の ServiceMonitor が
+`enabled: false` のままだったため。コメントには
+
+> Prometheus Operator の CRD は monitoring 導入後に有効化する。
+
+とあり、**回収されていない TODO** だった。CRD は既に存在する
+（`kubectl get crd servicemonitors.monitoring.coreos.com`）ので
+`enabled: true` にした。
+
+⚠️ Longhorn のボリューム縮退・再構築に対するアラートは**まだ書いていない**。
+manager の 9500 番ポートに直接 HTTP で問い合わせても空応答で、
+実際のメトリクス名を確認できなかったため。
+メトリクスが流れ始めてから、実名を確認した上で追加する。
+**推測でルールを書くことはしない。**
+
+## 46. `talos/patches/worker.yaml.tftpl` の修正
+
+### 46-1. 実測：Talos は serial を見ていない
+
+指示書は「Proxmox側の既存serialは `longhorn` だが、ゲストへの見え方を
+推測しない」と警告していた。実際に確認した結果、**警告が的中した。**
+
+`talosctl -n 172.16.40.21 get disks <id> -o yaml`（Talos v1.13.9）:
+
+| Talos | サイズ | model | transport | serial | by-id symlink |
+|---|---|---|---|---|---|
+| `sda` | 60 GiB | QEMU HARDDISK | virtio | **無し** | `scsi-0QEMU_QEMU_HARDDISK_drive-scsi0` |
+| `sdb` | 300 GiB | QEMU HARDDISK | virtio | **無し** | `scsi-0QEMU_QEMU_HARDDISK_drive-scsi1` |
+
+`serial` フィールドは両方とも空で、by-id にも `longhorn` は現れない。
+`disk.serial == "longhorn"` に書き換えていたら**何にも一致せず
+ボリュームが作られなくなっていた。**
+
+### 46-2. 変更内容
+
+1. **コメントの訂正。** 「serial で判定している」は二重に誤り
+   （設定が serial を使っていない上に、serial 自体が存在しない）。
+   実測結果と確認コマンドを書いた。
+2. **`minSize: 50GB` → `200GB`。** 将来 64GiB の DB 用ディスクを追加しても
+   それを Longhorn 用として掴まないためのガード。
+   現在の 300GiB ディスクは条件を満たすため**今日の挙動は変わらない**。
+
+`match: '!system_disk'` と `grow: true` は**変更していない。**
+検証できない CEL 式への書き換えは行わない。
+
+### 46-3. 未検証・未適用
+
+```
+$ tofu state list
+Error: Failed to request input from user for variable
+       var.state_encryption_passphrase
+```
+
+state が暗号化されており passphrase が無いため **`tofu plan` を実行できない。**
+指示書ステップ2-5「planでVM置換、既存ディスク削除・縮小、意図しない
+Talos再適用や再起動がないことを確認する」は**未実施**。
+
+**この変更はレビュー可能な差分として残すのみで、適用していない。**
+適用前に必ず plan で確認すること。
+
+## 47. `scripts/reconcile-proxmox-zfs-trim.sh`（新規）
+
+§26-1 で「別作業として提案する」とした収束スクリプトを追加した。
+`scripts/reconcile-pbs-kubernetes-backup.sh` の流儀に合わせている
+（引数なしは確認のみ、`--apply` で反映、日本語コメント、冪等）。
+
+```
+使い方: reconcile-proxmox-zfs-trim.sh [--apply] [--trim-now]
+```
+
+- `--apply`：`autotrim=on` と `org.debian:periodic-trim=enable` を設定
+- `--trim-now`：`--apply` 併用時のみ。未TRIMのプールに `zpool trim` を開始。
+  実行中のTRIMがあるホストは飛ばす。
+
+事前条件として、プールの存在と `health=ONLINE` を確認してから変更する。
+
+検証：
+
+```
+bash -n          → OK
+shellcheck       → 指摘なし
+引数なし実行     → 3ホストの現在値を正しく表示
+--apply          → 設定変更 0 件（冪等性を確認）
+--trim-now 単独  → 「--apply と併用してください」で exit 1
+```
+
+## 48. Longhorn の外部バックアップ先 — 未実施
+
+```
+$ kubectl -n longhorn-system get backuptargets.longhorn.io
+NAME      URL   CREDENTIAL   AVAILABLE
+default                      false
+```
+
+`longhorn-backup-credential` Secret はクラスタにもリポジトリにも存在しない。
+`kubernetes/infra/longhorn/README.md` に Cloudflare R2 を使う手順があるが、
+
+- R2 バケットの作成
+- R2 API トークンの発行
+- SOPS での暗号化
+
+はいずれも**利用者の認証情報が必要**で、こちらでは実施できない。
+外部サービス上にリソースを作る操作でもあるため、独断では行わない。
+
+CNPG のバックアップがクラスタ内 MinIO のみに依存している問題
+（§41-5 の優先度:高 の2番）と同根であり、**未解決のまま残る。**
+
+## 49. 変更ファイル（2026-09-15 ぶん）
+
+| ファイル | 変更 | 適用状態 |
+|---|---|---|
+| `kubernetes/infra/monitoring/alerts.yaml` | アラート8個追加 | 未適用（ArgoCD経由でmergeされたら反映） |
+| `kubernetes/infra/longhorn/values.yaml` | ServiceMonitor を有効化 | 未適用（同上） |
+| `talos/patches/worker.yaml.tftpl` | コメント訂正＋`minSize` 200GB | **未適用・plan未実行** |
+| `scripts/reconcile-proxmox-zfs-trim.sh` | 新規 | 実行して検証済み |
+| `docs/storage-migration-2026-09-13.md` | 本追記 | — |
+
+ライブに反映済みの変更は PBS の prune ジョブ保持ポリシーのみ（§44-4）。
+
+他作業の変更（`kubernetes/infra/harbor/README.md`、
+`scripts/bootstrap-cluster-secrets.sh`、`docs/moshitoku-monitoring-handoff.md`、
+`scripts/reconcile-moshitoku-harbor.py`）には触れていない。

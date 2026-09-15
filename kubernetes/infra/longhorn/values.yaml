@@ -127,10 +127,17 @@ service:
 # ---------------------------------------------------------------------------
 metrics:
   serviceMonitor:
-    # Prometheus Operator の CRD は monitoring 導入後に有効化する。
-    # 初回 bootstrap では CRD がまだ無いため、先に有効化すると
-    # Longhorn の Helm install 自体が失敗する。
-    enabled: false
+    # Prometheus Operator の CRD が無い状態で有効化すると Longhorn の
+    # Helm install 自体が失敗するため、初回 bootstrap では false にしていた。
+    # monitoring 導入済みで servicemonitors.monitoring.coreos.com が
+    # 存在するため有効化する。
+    #
+    # 2026-09-13 のストレージ障害では、Longhorn のメトリクスが 1 つも
+    # 収集されておらず、ボリュームの縮退も再構築の失敗も Prometheus から
+    # 見えなかった。経緯は docs/storage-migration-2026-09-13.md を参照。
+    #
+    # 前提: kubectl get crd servicemonitors.monitoring.coreos.com
+    enabled: true
     additionalLabels:
       release: kube-prometheus-stack
 
