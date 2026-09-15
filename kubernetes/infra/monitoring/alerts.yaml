@@ -42,34 +42,69 @@ spec:
         # 数時間誰も気づかなかった。
         # 経緯は docs/storage-migration-2026-09-13.md を参照。
         # -------------------------------------------------------------------
+        #
+        # ---------------------------------------------------------------
+        # 閾値の決め方（2026-09-16、24時間 288 サンプルの実測）
+        #
+        # 単純な閾値では分離できなかった。ゲストから見た値には Longhorn の
+        # 複製往復と LUKS 層が含まれ、CI やイメージスキャンの最中は数秒に
+        # 達するのが正常である（直近6時間のピーク 9.8 s）。
+        #
+        #   閾値      24h誤検知    09-13障害時の一致
+        #   > 0.1 s   45/288       -          ← 常時鳴る。無視されるだけ
+        #   > 1   s   28/288       18/19
+        #   > 10  s    0/288        2/19      ← 誤検知は無いが障害も拾えない
+        #
+        # そこで「瞬間値」ではなく「30分間一度も下回らなかったか」で見る。
+        # スパイクと持続的劣化が分離できる。
+        #
+        #   min_over_time(...[30m:1m]) > 0.5   →  1/288    13/19
+        #   min_over_time(...[30m:1m]) > 1     →  0/288     5/19
+        #
+        # dm-* を除くのは、LUKS/device-mapper が下位デバイスの I/O を
+        # そのまま二重計上するため。
+        #
+        # ⚠️ この指標は物理ディスクの遅延そのものではない。
+        #    本来は Proxmox ホスト（172.16.10.11-13）を node_exporter で
+        #    直接スクレイプすべきだが、現状は監視対象外である。
+        #    経緯は docs/storage-migration-2026-09-13.md を参照。
+        # ---------------------------------------------------------------
         - alert: NodeDiskWriteLatencyHigh
           expr: |
-            rate(node_disk_write_time_seconds_total[5m])
-              / rate(node_disk_writes_completed_total[5m]) > 0.1
-          for: 15m
+            min_over_time(
+              (
+                rate(node_disk_write_time_seconds_total{device!~"dm-.*"}[5m])
+                  / rate(node_disk_writes_completed_total{device!~"dm-.*"}[5m])
+              )[30m:1m]
+            ) > 0.5
+          for: 5m
           labels:
             severity: warning
           annotations:
-            summary: "{{ $labels.instance }} の {{ $labels.device }} の平均書き込み遅延が 100ms を超えています"
+            summary: "{{ $labels.instance }} の {{ $labels.device }} の書き込み遅延が 30 分以上 500ms を下回っていません"
             description: |
-              SSD なら 1ms 未満が正常。まず物理ホスト側の ZFS プールを疑う。
+              一時的な負荷ではなく、持続的な劣化を示す。
+              まず物理ホスト側の ZFS プールを疑う。
               確認: ssh root@172.16.10.1X 'zpool status -t local-zfs | grep sda'
               (untrimmed) なら zpool trim を検討する。
               あわせて autotrim と org.debian:periodic-trim も確認:
-                zpool get autotrim local-zfs
-                zfs get org.debian:periodic-trim local-zfs
+                scripts/reconcile-proxmox-zfs-trim.sh
 
         - alert: NodeDiskWriteLatencyCritical
-          # 秒単位に達すると Longhorn の再構築が RPC タイムアウトで落ち始め、
+          # この水準が続くと Longhorn の再構築が RPC タイムアウトで落ち始め、
           # 失敗と再試行が自己増幅ループになる。
           expr: |
-            rate(node_disk_write_time_seconds_total[5m])
-              / rate(node_disk_writes_completed_total[5m]) > 1
-          for: 10m
+            min_over_time(
+              (
+                rate(node_disk_write_time_seconds_total{device!~"dm-.*"}[5m])
+                  / rate(node_disk_writes_completed_total{device!~"dm-.*"}[5m])
+              )[30m:1m]
+            ) > 1
+          for: 5m
           labels:
             severity: critical
           annotations:
-            summary: "{{ $labels.instance }} の {{ $labels.device }} の平均書き込み遅延が 1 秒を超えています"
+            summary: "{{ $labels.instance }} の {{ $labels.device }} の書き込み遅延が 30 分以上 1 秒を下回っていません"
             description: |
               この水準では Longhorn のレプリカ再構築が完走できない。
               再構築の連打は回復を妨げるため、まず止めることを検討する:
