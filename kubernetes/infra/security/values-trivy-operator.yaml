@@ -70,6 +70,63 @@ trivy:
   # `trivy.mode: ClientServer` に切り替えて server モードを検討すること。
   # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# スキャンジョブの securityContext
+#
+# ⚠️ 下の `securityContext:` は **operator 自身の Pod** に効く設定であり、
+#    operator が起動する **スキャンジョブの Pod** には効かない。
+#    スキャンジョブ側は trivyOperator.scanJobPodTemplate* で別途指定する。
+#
+# security namespace は pod-security.kubernetes.io/enforce=restricted。
+# chart 0.34.0 の既定値は
+#   scanJobPodTemplatePodSecurityContext: {}
+#   scanJobPodTemplateContainerSecurityContext:
+#     allowPrivilegeEscalation / capabilities / privileged / readOnlyRootFilesystem
+# のみで、restricted が要求する runAsNonRoot と seccompProfile を満たさない。
+#
+# その結果 2026-09-16 時点で、スキャンジョブが Pod 作成の段階で拒否され続け、
+# **VulnerabilityReport が 1 件も生成されていなかった**（ConfigAuditReport は
+# 295 件あり、正常に見えていた）。実際のエラー:
+#
+#   pods "scan-vulnerabilityreport-..." is forbidden:
+#     violates PodSecurity "restricted:latest":
+#       runAsNonRoot != true (pod or containers "...", "database",
+#         "data-permissions-ensurer" must set securityContext.runAsNonRoot=true),
+#       seccompProfile (... must set securityContext.seccompProfile.type to
+#         "RuntimeDefault" or "Localhost")
+#
+# さらに trivy_image_vulnerabilities メトリクスが存在しないため、
+# alerts.yaml の HighSeverityVulnerabilityDetected は発火し得なかった。
+# 経緯は docs/storage-migration-2026-09-13.md を参照。
+#
+# 📌 node-collector（CIS ベンチマーク用）は別問題で、ここでは直らない。
+#    hostPID=true と 8 個の hostPath マウントを必要とし、
+#    restricted とは設計上両立しない。namespace のハードニングを優先し、
+#    node-collector は失敗したままとする（ClusterComplianceReport は得られない）。
+#
+# 📌 root が必要なのは filesystem / rootfs スキャンのときだけで、
+#    ここで使うイメージスキャン（standalone）は非 root で動く。
+# ---------------------------------------------------------------------------
+trivyOperator:
+  scanJobPodTemplatePodSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 10000
+    runAsGroup: 10000
+    # emptyDir（Trivy の DB キャッシュ）へ非 root で書けるようにする
+    fsGroup: 10000
+    seccompProfile:
+      type: RuntimeDefault
+  # chart 既定値を明示的に再掲したうえで、不足している 2 項目を足す
+  scanJobPodTemplateContainerSecurityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop: [ALL]
+    privileged: false
+    readOnlyRootFilesystem: true
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+
 serviceMonitor:
   enabled: true
   labels:
