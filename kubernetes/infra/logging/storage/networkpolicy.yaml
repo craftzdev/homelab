@@ -63,9 +63,18 @@ spec:
         # moshitoku の CloudNativePG が Barman で WAL とベースバックアップを
         # ここへ送る。許可しないとアーカイブが失敗し、転送できない WAL が
         # 蓄積して DB のディスクを埋める。
-        - matchLabels:
+        #
+        # ⚠️ クラスタ名を直接指さない。復元は別名のクラスタとして起動し、
+        #    その Job の Pod は cnpg.io/cluster=<復元先の名前> を持つ。
+        #    名前で固定すると復元がここへ接続できず、**バックアップは
+        #    取れているのに戻せない。** 実際に復元を試して分かった。
+        #    送信側（moshitoku 名前空間の egress）だけ直しても通らない。
+        #    Cilium は両側で許可されて初めて通る。
+        - matchExpressions:
+            - key: cnpg.io/cluster
+              operator: Exists
+          matchLabels:
             io.kubernetes.pod.namespace: moshitoku
-            cnpg.io/cluster: moshitoku-postgres
       toPorts:
         - ports:
             - port: "9000"
