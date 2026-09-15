@@ -105,8 +105,22 @@ resource "proxmox_virtual_environment_vm" "node" {
   # Talos の UserVolumeConfig がこのディスクを検出して
   # /var/mnt/longhorn へマウントする（talos/patches/ を参照）。
   #
-  # ⚠️ serial を固定している。Talos の diskSelector がこの値で
-  #    「どちらが Longhorn 用か」を判別するため、変更してはならない。
+  # ⚠️ serial = "longhorn" を付けているが、**Talos はこの値を見ていない。**
+  #    2026-09-15 に talosctl で実測したところ、ゲスト内の Talos は
+  #    どちらのディスクにも serial を報告しない（両方とも
+  #    model="QEMU HARDDISK" / transport=virtio、by-id は drive-scsiN）。
+  #    実際の判別条件は talos/patches/worker.yaml.tftpl の
+  #    `match: '!system_disk'` とサイズ（minSize）である。
+  #    詳細と実測値は同ファイルのコメント、および
+  #    docs/storage-migration-2026-09-13.md を参照。
+  #
+  # backup: control-plane では PBS のバックアップ対象から外す。
+  #    Longhorn の storage node は worker 3 台だけで
+  #    （worker.yaml.tftpl の node.longhorn.io/create-default-disk ラベル）、
+  #    control のこのディスクは実使用 816K の空ディスクである。
+  #    バックアップしても得るものが無い。worker 側は Longhorn データの
+  #    唯一のクラスタ外コピーなので必ず含める（ADR-0008 の階層3。
+  #    階層2の Velero が未導入のため、PBS が S5/S6 を単独で受けている）。
   # ---------------------------------------------------------------------------
   disk {
     datastore_id = var.vm_datastore_id
@@ -118,6 +132,7 @@ resource "proxmox_virtual_environment_vm" "node" {
     iothread     = true
     cache        = "none"
     serial       = "longhorn"
+    backup       = each.value.role != "controlplane"
   }
 
   scsi_hardware = "virtio-scsi-single"

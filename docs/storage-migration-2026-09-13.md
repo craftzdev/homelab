@@ -1633,3 +1633,145 @@ CNPG のバックアップがクラスタ内 MinIO のみに依存している�
 他作業の変更（`kubernetes/infra/harbor/README.md`、
 `scripts/bootstrap-cluster-secrets.sh`、`docs/moshitoku-monitoring-handoff.md`、
 `scripts/reconcile-moshitoku-harbor.py`）には触れていない。
+
+---
+
+# 追記9：PBS の容量回復とバックアップ復旧（2026-09-16）
+
+## 50. 実施内容
+
+§44-5 で「tune2fs が必要」としたが、**tune2fs を使わずに解決できた。**
+
+### 50-1. 空き容量の確保（journal の削減）
+
+PBS のプロセスは `backup` ユーザーで動くため、ext4 の root 予約 5%（22.6 GiB）
+により Available が 0 に見えていた。`prune` すら書き込めない状態。
+
+systemd journal を削って `backup` ユーザーに書き込み余地を作った。
+
+```
+journalctl --vacuum-size=150M     # 547.8M → 149.1M、398.6M 解放
+→ Available 0 → 312M
+```
+
+**tune2fs による予約率変更は行っていない（5% のまま）。**
+
+### 50-2. prune
+
+§44-4 で設定した保持ポリシーで実行。
+
+```
+proxmox-backup-manager prune-job run "default-gateway-backup-532eb832-"
+→ TASK OK
+```
+
+スナップショット **66 個 → 30 個**（削除 36 個）。
+削除されたのは全て 2026-09-06 の同日内スナップショット（§44-3）。
+VM 1200 は `keep-last 3` により 3 個とも保持された（意図どおり）。
+
+ただしインデックスは 1 グループ 29〜32 MB しかなく、この時点では
+**412M しか空かない**。実体は `.chunks` にある。
+
+### 50-3. GC
+
+```
+proxmox-backup-manager garbage-collection start gateway-backup
+→ TASK OK
+```
+
+| 指標 | 前 | 後 |
+|---|---:|---:|
+| `/` 使用 | 422G (100%) | **238G (57%)** |
+| 空き | **0** | **184G** |
+| `.chunks` | 417G | 234G |
+| チャンク数 | 139,775 | 93,497 |
+| pending-bytes | 11.2 GiB | 0 |
+
+**183GB を回収した。**
+
+前回 GC が 2026-09-15 00:00 で、チャンクの atime がそこで止まっており、
+GC の 24h5m 猶予を超えていたため即座に回収できた。
+
+### 50-4. バックアップの復旧確認
+
+単体で検証してから残りを実行した。
+
+```
+VM 1001: dirty-bitmap 2.1 GiB / 360.0 GiB、46 秒、99% 再利用 → OK
+```
+
+⚠️ **作業中のミス：** 残り 5 台を sv-proxmox-01 から一括実行したが、
+`vzdump` はローカルノードの VM しか対象にできない。
+1002/1003/1102/1103 は空振りした。各 VM の所在ノードで実行し直した。
+
+| VM | ノード |
+|---|---|
+| 1001, 1101, 1200 | sv-proxmox-01 |
+| 1002, 1102 | sv-proxmox-02 |
+| 1003, 1103 | sv-proxmox-03 |
+
+最終結果（2026-09-16 07:45–07:58 JST）:
+
+```
+1001 (6)  2026-09-15T22:45:04Z      1101 (5)  2026-09-15T22:46:15Z
+1002 (6)  2026-09-15T22:57:52Z      1102 (5)  2026-09-15T22:58:37Z
+1003 (6)  2026-09-15T22:57:52Z      1103 (5)  2026-09-15T22:58:36Z
+1200 (3)  2026-09-05T19:33:25Z      ← 日次ジョブ対象外（§44-4）
+```
+
+**k8s ノード VM 6 台すべてが最新化され、5 夜の欠測が解消した。**
+容量は 280G 使用 / 142G 空き / 67%。
+
+## 51. control-plane の Longhorn ディスクをバックアップ対象から除外
+
+### 51-1. 根拠
+
+- Longhorn の storage node として登録されているのは **worker 3 台のみ**
+  （`kubectl -n longhorn-system get nodes.longhorn.io`）
+- control の `scsi1` は実使用 **816K / 300G** の空ディスク
+- それでも毎回 360 GiB 分の対象として扱われていた
+
+worker 側は ADR-0008 階層 3 として Longhorn データの唯一のクラスタ外
+コピーであり（階層 2 の Velero は**未デプロイ**であることを確認）、
+**必ず対象に残す。**
+
+### 51-2. 変更
+
+`tofu/10-proxmox-talos/vms.tf`：
+
+```hcl
+disk {
+  ...
+  serial = "longhorn"
+  backup = each.value.role != "controlplane"
+}
+```
+
+あわせて、同ファイルにあった誤ったコメント
+（「serial を固定している。Talos の diskSelector がこの値で判別する」）を
+§46-1 の実測結果に基づいて訂正した。
+
+`tofu fmt -check` / `tofu validate` は通過。
+
+ライブ側は `qm set` で `backup=1` → `backup=0` に変更した。
+変更前後の文字列を比較し、**backup トークン以外が変わらないことを
+確認してから**適用している。
+
+### 51-3. 検証
+
+```
+INFO: include disk 'scsi0' 'local-lvm:vm-1001-disk-0' 60G
+INFO: exclude disk 'scsi1' 'local-zfs:vm-1001-disk-1' (backup=no)
+INFO: transferred 380.00 MiB in 11 seconds
+INFO: Finished Backup of VM 1001 (00:00:11)
+```
+
+control のバックアップは **2.1 GiB / 46 秒 → 380 MiB / 11 秒**。
+worker 3 台は `backup=1` のまま、6 ノードすべて Ready を維持。
+
+### 51-4. 本来の解決策
+
+PBS が 1 台あたり 360 GiB を扱っているのは、ADR-0008 階層 2 が
+存在しないためである。Longhorn の外部バックアップ（→ S3/R2）を
+用意すれば PBS は OS ディスクだけで足り、1 台 360 GiB → 60 GiB になる。
+R2 の認証情報が必要なため未実施（§48）。
