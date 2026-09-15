@@ -82,6 +82,18 @@
       "matchPackageNames": ["/cloudflared/"],
       "labels": ["external-access"],
       "schedule": ["at any time"]
+    },
+    {
+      "description": "自作イメージのベースイメージは patch と digest のみ automerge する。このリポジトリで Dockerfile / manifest を直接持つのは ai-gateway と pbs-exporter の 2 つだけで、どちらも Python ベースイメージ。third-party の chart / イメージは対象外のまま（automerge: false）。",
+      "matchFileNames": [
+        "ai-business-platform/gateway/Dockerfile",
+        "kubernetes/infra/homepage/pbs-exporter/workload.yaml"
+      ],
+      "matchUpdateTypes": ["patch", "digest"],
+      "groupName": null,
+      "automerge": true,
+      "platformAutomerge": true,
+      "labels": ["own-image", "automerge"]
     }
   ],
 

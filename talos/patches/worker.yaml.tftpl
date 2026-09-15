@@ -174,9 +174,21 @@ hostname: ${hostname}
 # UserVolumeConfig で /var/mnt/longhorn として独立させることで、
 # OS のライフサイクルとデータのライフサイクルを分離する。
 #
-# ⚠️ diskSelector は VM 側で固定した serial 番号で判定している。
-#    tofu/10-proxmox-talos/vms.tf の scsi1 の `serial = "longhorn"` を
-#    変更すると、ここが一致しなくなりボリュームが作られない。
+# ⚠️ この選択は serial では判定していない。実際の条件は `!system_disk`。
+#    tofu/10-proxmox-talos/vms.tf の scsi1 には `serial = "longhorn"` が
+#    付いているが、**ゲスト内の Talos はその serial を見ていない。**
+#
+#    2026-09-15 に Talos v1.13.9 上で実測した結果（worker-1）:
+#
+#      sda  60GiB   model="QEMU HARDDISK"  transport=virtio  serial: 無し
+#           symlink /dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_drive-scsi0
+#      sdb 300GiB   model="QEMU HARDDISK"  transport=virtio  serial: 無し
+#           symlink /dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_drive-scsi1
+#
+#    serial フィールドは両方とも空で、by-id にも "longhorn" は現れない。
+#    つまり `disk.serial == "longhorn"` に書き換えると**何にも一致せず
+#    ボリュームが作られなくなる。** 確認コマンド:
+#      talosctl -n <worker> get disks sdb -o yaml
 # ===========================================================================
 apiVersion: v1alpha1
 kind: UserVolumeConfig
@@ -186,17 +198,30 @@ provisioning:
     # ---------------------------------------------------------------------
     # システムディスク以外を選ぶ。
     #
-    # VM のディスクは 2 本だけ（scsi0 = OS、scsi1 = Longhorn）なので、
-    # 「システムディスクでない方」で一意に決まる。
+    # ⚠️ この条件が一意なのは「VM のディスクが 2 本だけ」という前提に
+    #    依存している（scsi0 = OS、scsi1 = Longhorn）。
+    #    3 本目を追加すると system_disk 以外が 2 本になり、
+    #    どちらが選ばれるか決まらない。さらに `grow: true` があるため、
+    #    掴んだ側を残り全体まで広げようとする。
     #
-    # serial や by-id のパスで判定する方法もあるが、Proxmox が
-    # ゲストへどう見せるかに依存するため、Talos 自身が知っている
-    # system_disk を基準にする方が確実で壊れにくい。
+    #    ディスクを追加する場合は、追加する前に条件を一意にすること。
+    #    serial は使えない（上記の実測）。使える候補は
+    #      - サイズ（下の minSize / maxSize）
+    #      - disk.symlinks に含まれる drive-scsiN
+    #    のいずれか。symlinks を使う CEL 式は導入バージョンで
+    #    検証してから採用すること。
     # ---------------------------------------------------------------------
     match: '!system_disk'
   # 最小サイズ。これを下回るディスクしか無い場合はエラーになる
   # （意図しないディスクを掴む事故を防ぐガード）。
-  minSize: 50GB
+  #
+  # ⚠️ 200GB にしているのは、将来 DB 用などの小さいディスク（64GiB 想定）を
+  #    追加したときに、それを誤って Longhorn 用として掴まないため。
+  #    Longhorn 用ディスクは tofu の longhorn_disk_gib（既定 300）で作られる。
+  #    この値を 200GiB 未満に下げる場合は、ここも合わせて下げること。
+  #    下回るとボリュームが作られずエラーになる（黙って別のディスクを
+  #    掴むより、明示的に失敗する方が安全）。
+  minSize: 200GB
   # ディスクの残り全体まで広げる（実サイズは Proxmox 側の
   # longhorn_disk_gib で決まる）
   grow: true
