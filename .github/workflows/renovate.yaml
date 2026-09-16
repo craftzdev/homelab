@@ -64,6 +64,34 @@ jobs:
     runs-on: homelab-runner
     timeout-minutes: 30
     steps:
+      # この Workflow は 2026-09-12 に一度だけ起動し、この 2 つの Secret が
+      # 未設定だったため App トークンの発行で失敗した。以後スケジュールは
+      # 回っておらず、Renovate の PR は 1 件も作られていない。失敗そのものより
+      # 「何が足りないのか」が通知メールから分からなかったことが尾を引いたため、
+      # 不足している名前と対処をジョブの要約に出してから止める。
+      - name: Verify the App credentials are present
+        env:
+          APP_ID: ${{ secrets.RENOVATE_APP_ID }}
+          APP_KEY: ${{ secrets.RENOVATE_APP_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          missing=()
+          [[ -n "${APP_ID}" ]] || missing+=(RENOVATE_APP_ID)
+          [[ -n "${APP_KEY}" ]] || missing+=(RENOVATE_APP_PRIVATE_KEY)
+          if (( ${#missing[@]} > 0 )); then
+            {
+              echo "## Renovate は起動できません"
+              echo
+              echo "未設定の Secret: \`${missing[*]}\`"
+              echo
+              echo "homelab-renovate GitHub App を作成し、上記を"
+              echo "リポジトリの Actions secrets へ登録してください。"
+              echo "手順: docs/vulnerability-scanning-2026-09-16.md の §10-6"
+            } >>"${GITHUB_STEP_SUMMARY}"
+            echo "::error::Renovate の GitHub App Secret が未設定です: ${missing[*]}"
+            exit 1
+          fi
+
       - name: Mint a short-lived installation token
         id: app-token
         uses: actions/create-github-app-token@v3
@@ -116,6 +144,11 @@ jobs:
             args+=("--dry-run=${DRY_RUN}")
             # 手動確認を更新時間帯の外で行えるようにする。schedule の上書きは
             # dry-run のときだけで、週次の実行は renovate.json の schedule に従う。
-            args+=('--force={"schedule":["at any time"]}')
+            #
+            # ⚠️ `--force=...` という CLI オプションは存在しない。似た名前の
+            #    `--force-cli` はあるが意味が違う（CLI 引数を force 節へ移す）。
+            #    渡すと Renovate は "unknown option" で即座に終了するため、
+            #    force 設定は環境変数で与える。
+            export RENOVATE_FORCE='{"schedule":["at any time"]}'
           fi
           renovate "${args[@]}"
