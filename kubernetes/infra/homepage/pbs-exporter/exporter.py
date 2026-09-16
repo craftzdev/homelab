@@ -47,6 +47,15 @@ NODE_EXPORTER_KEEP = frozenset((
     'node_load1', 'node_memory_MemAvailable_bytes', 'node_memory_MemTotal_bytes',
 ))
 NODE_EXPORTER_KEEP_PREFIX = ('zfs_pool_',)
+# node_disk_* は物理デバイスだけを通す。zd* は VM の zvol、dm-* は
+# device-mapper、loop* はイメージで、いずれも下位デバイスの I/O を
+# 別の名前で二重に数えているだけである。
+#
+# 2026-09-16 の実測では 1 ホストあたり zvol が 55 系列あり、最大 73ms と
+# 物理ディスク（sda 0-10ms / nvme 0ms）より一桁遅く見えていた。
+# 除外しないとホスト側の閾値（50ms）が zvol で誤検知する。
+# VM の仮想ディスクの遅延はゲスト側の node_exporter で見るのが正しい。
+NODE_EXPORTER_SKIP_DEVICE_PREFIX = ('zd', 'dm-', 'loop', 'sr')
 snapshot = b'pbs_observer_collection_success 0\n'
 lock = threading.Lock()
 
@@ -195,6 +204,14 @@ def collect():
             if name not in NODE_EXPORTER_KEEP and not name.startswith(NODE_EXPORTER_KEEP_PREFIX):
                 continue
             labels = labels.rstrip('}') if brace else ''
+            if name.startswith('node_disk_'):
+                device = ''
+                for part in labels.split('","'):
+                    if part.startswith('device="') or part.startswith('device='):
+                        device = part.split('=', 1)[1].strip('"')
+                        break
+                if device.startswith(NODE_EXPORTER_SKIP_DEVICE_PREFIX):
+                    continue
             node_label = 'pve_node=' + json.dumps(node)
             merged = labels + ',' + node_label if labels else node_label
             lines.append('pve_' + name + '{' + merged + '} ' + value)
