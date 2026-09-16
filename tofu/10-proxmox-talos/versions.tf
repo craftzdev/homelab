@@ -18,7 +18,7 @@ terraform {
     # VM 起動から Talos API が応答するまでの待機に使用
     time = {
       source  = "hashicorp/time"
-      version = "~> 0.12"
+      version = "~> 0.14"
     }
   }
 
