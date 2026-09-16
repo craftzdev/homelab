@@ -8,7 +8,7 @@ PBS の容量構造を調べた。
 | | |
 |---|---|
 | 再発リスク | **残っている**が、以前より低い。監視が埋まったため無言では進行しない |
-| 直接の対処 | `tune2fs -m 2` で 13.6 GiB を回収する。**未実施 — 実行権限が無い**（§4） |
+| 直接の対処 | `tune2fs -m 2` で 13.6 GiB を回収した。**実施済み**（§4） |
 | 構造的な原因 | **datastore がルートFS上にある**。これは今回直せない（§5） |
 
 ## 1. 何が起きていたのか
@@ -105,13 +105,14 @@ Deduplication factor:  42.52
 | `PBSDatastoreFillingUp` | avail/total < 15% | 空き 66.6 GiB を切ると発報 |
 | `PBSDatastoreFull` | avail/total < 2% | 空き 8.9 GiB。ここまで来たら手遅れに近い |
 
-現在は空き 86 GiB / 19.4% なので、警告まで **約 19 GiB** の余裕しかない。
+§4 の実施前は空き 86 GiB / 19.4% で、警告まで **約 19 GiB** しか無かった。
+実施後は 98.7 GiB / 22.2%、警告まで **32.2 GiB** である。
 
 `pbs_observer_datastore_avail_bytes` は statvfs の `f_bavail`（非 root から
 見た空き）に由来するため、**予約ブロックを差し引いた値**である。
 つまり §4 を実施すると、この比率も実態に即して改善する。
 
-## 4. 未実施 — `tune2fs -m 2`
+## 4. 実施済み — `tune2fs -m 2`
 
 専用のバックアップ機で 22.6 GiB を root のために確保し続ける意味は薄い。
 このホストの OS 全体は **3,929 MiB** しかない。
@@ -131,6 +132,34 @@ ssh root@172.16.10.51 'tune2fs -m 2 /dev/mapper/pbs-root'
 # 確認
 ssh root@172.16.10.51 'tune2fs -l /dev/mapper/pbs-root | grep "^Reserved block count"; df -h /'
 ```
+
+### 4-1. 実施結果（2026-09-16）
+
+```
+$ tune2fs -m 2 /dev/mapper/pbs-root
+Setting reserved blocks percentage to 2% (2369454 blocks)
+```
+
+| | 前 | 後 |
+|---|---:|---:|
+| Reserved block count | 5,923,635 | 2,369,454 |
+| 予約サイズ | 22.6 GiB | 9.0 GiB |
+| `df` の空き | 86 GiB | **99 GiB** |
+| statvfs `f_bavail` / total | 19.4% | **22.2%** |
+| `PBSDatastoreFillingUp`(15%) までの余裕 | 約 19 GiB | **32.2 GiB** |
+
+Prometheus 側にも反映されている。アラートが使う式をそのまま評価した。
+
+```
+pbs_observer_datastore_avail_bytes  = 106,013,753,344   (98.7 GiB)
+pbs_observer_datastore_total_bytes  = 476,497,756,160
+avail / total                       = 22.25%
+PBSDatastoreFull / FillingUp        = inactive
+```
+
+両メトリクスのラベルは完全に一致しており、除算は結果を返す。
+**このアラートは発火し得る**（本セッションで 4 件見つけた
+「設定済みだが評価できない」型ではない）。
 
 **元に戻すのはコマンド 1 つである。**
 
@@ -153,7 +182,7 @@ ssh root@172.16.10.51 'tune2fs -m 5 /dev/mapper/pbs-root'
 > **復旧操作そのものができなくなる。** 2% = 9.0 GiB はそのための余地で
 > あって、PBS のための余地ではない。
 
-### 4-1. 併せて検討できるもの（未実施）
+### 4-2. 併せて検討できるもの（未実施）
 
 VG に 16 GiB が未使用のまま残っている。
 
@@ -173,7 +202,7 @@ ssh root@172.16.10.51 'lvextend -l +100%FREE /dev/pbs/root && resize2fs /dev/map
 §4 と併せて **約 29.6 GiB**（空き 86 → 116 GiB）になる。
 
 ⚠️ こちらは `tune2fs` と違って簡単には戻せない。急ぐ必要は無いので、
-§4 を先に入れて様子を見るのが妥当である。
+§4 を先に入れた（実施済み）ので、まず様子を見るのが妥当である。
 
 ## 5. 直していない構造的な原因
 
