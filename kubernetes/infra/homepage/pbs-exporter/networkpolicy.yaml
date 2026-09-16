@@ -31,3 +31,27 @@ spec:
         - ports:
             - port: "8006"
               protocol: TCP
+    # -----------------------------------------------------------------------
+    # Proxmox ホストの node_exporter（3台・9100/TCP のみ）
+    #
+    # 2026-09-13 の障害を診断できた指標（SATA の write await、ZFS の txg 同期
+    # 時間、zpool の TRIM 状態）は、いずれもホスト側にしか無い。しかし
+    # CiliumClusterwideNetworkPolicy/deny-egress-to-home-network が
+    # 172.16.10.0/24 への egress を拒否しており、Prometheus からは届かない。
+    #
+    # monitoring namespace を除外リストへ追加すれば直接スクレイプできるが、
+    # それは Prometheus 本体に管理ネットワークへの経路を与えることになる。
+    # 代わりに、既に除外されていて監査対象も小さい pbs-observer が
+    # node_exporter を読み、必要な指標だけを再出力する。
+    # 追加する到達先は 3 ホストの 9100 のみで、他は増やさない。
+    #
+    # 経緯は docs/storage-migration-2026-09-13.md を参照。
+    # -----------------------------------------------------------------------
+    - toCIDR:
+        - "172.16.10.11/32"
+        - "172.16.10.12/32"
+        - "172.16.10.13/32"
+      toPorts:
+        - ports:
+            - port: "9100"
+              protocol: TCP

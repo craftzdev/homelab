@@ -1865,3 +1865,186 @@ CI やイメージスキャンの最中に数秒へ達するのは正常だっ�
 今回の障害で最も直接的な証拠だった
 「SATA write await」「ZFS txg sync 時間」「zpool の未 TRIM 状態」は、
 いずれも**今も Prometheus からは見えない**。
+
+---
+
+# 追記11：残った穴を埋める（2026-09-16）
+
+§55 で「物理ディスクの遅延・ZFS の txg 同期時間・zpool の未 TRIM 状態は
+今も Prometheus から見えない」と書いた件、および Longhorn のアラート未作成を解消した。
+
+## 56. Longhorn のアラート（6 件）
+
+### 56-1. メトリクスの実体を確認した
+
+§52 で「`longhorn_volume_robustness` は 88 系列中 66 系列が 0 で、
+3 台の manager が全ボリュームを報告しているため畳み込みが必要」と
+書いたが、**これは誤りだった。**
+
+実際には `state` ラベルによる one-hot である。
+
+```
+longhorn_volume_robustness{volume,pvc,pvc_namespace,node,state}
+  state = healthy | degraded | faulted | unknown
+  該当する state が 1、それ以外が 0
+```
+
+したがって `max by (volume)` ではなく `{state="degraded"} == 1` で判定する。
+
+### 56-2. レプリカ数では判定できない
+
+`longhorn_replica_state{state="running"}` で実レプリカ数は取れるが、
+**CNPG の 6 ボリュームは設計上レプリカ 1**（冗長化は PostgreSQL の
+3 インスタンスが担う、§4-1）。単純な「コピー 1 個」判定は誤検知する。
+
+robustness は希望数との比較を含むため、これを主判定に使う。
+そのうえで「希望数を下回り、かつ実際に動いているコピーが 1 個」を
+join で取り出したのが `LonghornVolumeDegradedSingleReplica` で、
+これが §11-1 の状況（Prometheus / Loki / MinIO が worker-3 に 1 コピー）に対応する。
+
+### 56-3. 追加したルール
+
+| アラート | 条件 | for | severity |
+|---|---|---|---|
+| `LonghornVolumeDegraded` | `robustness{state="degraded"} == 1` | 30m | warning |
+| `LonghornVolumeDegradedSingleReplica` | 上記 かつ running レプリカ < 2 | 10m | critical |
+| `LonghornVolumeFaulted` | `robustness{state="faulted"} == 1` | 5m | critical |
+| `LonghornNodeNotReady` | `node_status{condition="ready"} == 0` | 10m | critical |
+| `LonghornNodeNotSchedulable` | `node_status{condition="schedulable"} == 0` | 30m | warning |
+| `LonghornDiskFillingUp` | `disk_usage / disk_capacity > 0.75` | 1h | warning |
+
+`degraded` に 30m を置いたのは、再構築中は正常に degraded を通過するため。
+30 分続く場合は「再構築が進んでいない」を意味する。
+
+検証：6 件すべて現在 silent。single-replica の join が
+**設計上 1 レプティカの 6 ボリュームに一致しない**ことも確認した
+（1 レプリカ 6 件、うち degraded 0 件）。
+障害時の再現検証はできない（当時メトリクスが存在しなかったため）。
+
+## 57. Proxmox ホストのメトリクス
+
+### 57-1. 経路の設計
+
+`CiliumClusterwideNetworkPolicy/deny-egress-to-home-network` が
+172.16.10.0/24 への egress を全面拒否している（ポート指定なしの `toCIDR`）。
+ホストは 172.16.10/20/30 にしかアドレスを持たず、VLAN40 には居ないため、
+迂回路も無い。
+
+`monitoring` を除外リストへ追加すれば直接スクレイプできるが、それは
+**Prometheus 本体に管理ネットワークへの経路を与える**ことを意味する。
+加えて、除外すると同時に `egress: toEntities: all` の対象からも外れるため、
+Prometheus の egress をすべて書き直す必要がある（書き損じるとスクレイプが止まる）。
+
+採用した経路：
+
+```
+Proxmox ホスト
+  prometheus-node-exporter      … 物理ディスクの I/O カウンタ
+  zfs-textfile-collector.timer  … TRIM 状態・txg 同期時間
+    → portal/pbs-observer が 9100 を読み、必要な系列だけ pve_ 接頭辞で再出力
+      → Prometheus は従来どおり pbs-observer だけをスクレイプ
+```
+
+`portal` は既に除外リストにあり、許可先を 172.16.10.11-13 の 9100 のみ
+追加した。宅内へ到達できるのは 212 行の専用エクスポーターのままで、
+Prometheus 本体には経路を与えない。
+
+### 57-2. ホスト側（実施済み・3 台とも稼働中）
+
+`scripts/reconcile-proxmox-node-exporter.sh --apply`
+
+- `prometheus-node-exporter` 1.9.0-1+b4 を導入
+- 待ち受けを **vmbr0 の管理 IP に固定**（既定の 0.0.0.0 だと VLAN20/30 にも出る）
+- `scripts/proxmox-zfs-textfile-collector.sh` を配置、1 分間隔の systemd timer
+
+⚠️ Proxmox のファイアウォールは無効（`pve-firewall status` = disabled）。
+node_exporter は管理 LAN 上の誰からでも読める。公開するのはシステム統計で
+資格情報は含まないが、**管理 LAN が信頼境界であるという前提に依存する**。
+
+### 57-3. node_exporter が出さないもの
+
+node_exporter 1.9.0 の ZFS collector は ARC / ZIL / dataset は出すが、
+**TRIM 状態と txg 同期時間は出さない**（`node_zfs_zpool_*` は
+dataset と ZIL のみ）。今回の障害で決定的だった 2 つがちょうど欠けている。
+
+そのため textfile collector を自作した。出力（1 ホストあたり 12 系列）:
+
+```
+zfs_pool_trim_state{pool,device,state}      untrimmed/trimming/completed/unsupported の one-hot
+zfs_pool_trim_progress_ratio{pool,device}
+zfs_pool_autotrim{pool}
+zfs_pool_periodic_trim_enabled{pool}        ← §24 の設定漏れを直接検知する
+zfs_pool_health{pool}
+zfs_pool_fragmentation_ratio{pool}
+zfs_pool_capacity_ratio{pool}
+zfs_pool_txg_sync_seconds_max{pool}         直近 98 txg（約 495 秒）の最大
+zfs_pool_txg_sync_seconds_last{pool}
+```
+
+**⚠️ 実装上の落とし穴：** ホストによって awk の実装が違う。
+
+```
+host 11: /usr/bin/gawk
+host 12: /usr/bin/mawk
+host 13: /usr/bin/mawk
+```
+
+最初 3 引数の `match(s, re, arr)`（gawk 拡張）を使ったため、
+ホスト 11 では動きホスト 12/13 で `syntax error` になった。
+`sub()` だけを使う POSIX の範囲へ書き直してある。
+
+### 57-4. 取り込み側（`pbs-observer`）
+
+`NODE_EXPORTER_KEEP` に列挙した系列と `zfs_pool_` 接頭辞だけを通し、
+`pve_` を付けて `pve_node` ラベルを足して再出力する。
+
+実データでの絞り込み結果（ホスト 11）:
+
+```
+node_exporter 全系列 : 3,649
+再出力する系列       :   155  (4.2%)
+```
+
+素通しすると数千系列になるため、明示したものだけを通す設計にしている。
+
+### 57-5. 追加したルール（6 件）
+
+| アラート | 条件 | severity |
+|---|---|---|
+| `ProxmoxZFSPoolUntrimmed` | `trim_state{state="untrimmed"} == 1`、1h | warning |
+| `ProxmoxZFSPeriodicTrimDisabled` | `periodic_trim_enabled == 0`、6h | warning |
+| `ProxmoxZFSAutotrimDisabled` | `autotrim == 0`、6h | warning |
+| `ProxmoxZFSTxgSyncSlow` | `txg_sync_seconds_max > 30`、10m | critical |
+| `ProxmoxHostDiskWriteLatencyHigh` | 物理 write await > 50ms、15m | warning |
+| `ProxmoxZFSPoolNotOnline` | `health == 0`、5m | critical |
+
+閾値の根拠（いずれも本記録の実測値）:
+
+- txg 同期：障害時 51.8s / ピーク 154.7s、CI 負荷下の平常値 13.6s → **30s**
+- 物理 write await：障害時 190〜319ms、平常時 1ms 未満 → **50ms**
+
+ホスト側は Longhorn の複製往復も LUKS も挟まらない物理ディスクの値なので、
+ゲスト側の代理指標（§54 で 0.5s / 1s まで上げざるを得なかった）より
+**1 桁鋭い閾値が使える。** これが §55 で埋めたかった穴そのものである。
+
+`ProxmoxZFSPoolUntrimmed` と `ProxmoxZFSPeriodicTrimDisabled` は、
+**今回の根本原因そのものを検知する。** 設定漏れがあれば 2026-09-06 の
+プール作成直後に鳴っていた。
+
+## 58. 検証できたこと・できていないこと
+
+| 対象 | 状態 |
+|---|---|
+| node_exporter 3 台稼働、`zfs_pool_*` 12 系列ずつ公開 | ✅ 実機確認 |
+| collector が gawk / mawk 両方で動作 | ✅ 両方で実行確認 |
+| 再出力フィルタ（3,649 → 155 系列、ラベル結合） | ✅ 実データで確認 |
+| NetworkPolicy / alerts.yaml / kustomize build | ✅ server dry-run 通過 |
+| Longhorn 6 ルールが現在 silent、CNPG を誤検知しない | ✅ 実データで確認 |
+| **pod → ホスト 9100 の到達（E2E）** | ❌ **未確認** |
+| **`pve_*` が Prometheus に届くこと** | ❌ **未確認** |
+
+E2E を確認できていないのは、ArgoCD の `root` アプリ（app-of-apps）が
+`homepage` の同期設定を戻し、Deployment と NetworkPolicy を
+git の内容へ巻き戻すため。マージ後に確認する。
+
+一時的に適用したものはすべて ArgoCD が巻き戻し済みで、手当ての残骸は無い。
