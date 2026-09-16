@@ -61,6 +61,23 @@ spec:
         #   min_over_time(...[30m:1m]) > 0.5   →  1/288    13/19
         #   min_over_time(...[30m:1m]) > 1     →  0/288     5/19
         #
+        # ⚠️ さらに「書き込みが実際に起きていること」を条件に加える。
+        #    これが無いと、ほぼアイドルなボリュームで誤検知する。
+        #    2026-09-16 に worker-3 の sdj（Longhorn ボリューム）で発火したが、
+        #    直近 1 時間のピークが **0.026 IOPS**（約 39 秒に 1 回）で、
+        #    散発的な遅い書き込みを 5 分レートの窓が持ち回っていただけだった。
+        #    実害は無い。
+        #
+        #    障害時に遅かったデバイスは 1.4〜4.0 IOPS 出ていたので、
+        #    0.5 IOPS の下限なら取りこぼさない（20 倍以上の余裕）。
+        #    24h 誤検知: ガード無し 4/288 → ガード有り 1/288。
+        #
+        # ⚠️ critical の閾値は 1s ではなく 800ms。ガードを入れると 1s では
+        #    09-13 の障害を一度も拾えなかった（1s を 30 分継続していたのは
+        #    IOPS がガードを下回るデバイスだけだった）。800ms なら
+        #    24h 誤検知 0/288 のまま worker-1 で 7 サンプル発火する。
+        #    「鳴らない critical」に意味は無いので下げた。
+        #
         # dm-* を除くのは、LUKS/device-mapper が下位デバイスの I/O を
         # そのまま二重計上するため。
         #
@@ -71,12 +88,20 @@ spec:
         # ---------------------------------------------------------------
         - alert: NodeDiskWriteLatencyHigh
           expr: |
-            min_over_time(
-              (
-                rate(node_disk_write_time_seconds_total{device!~"dm-.*"}[5m])
-                  / rate(node_disk_writes_completed_total{device!~"dm-.*"}[5m])
-              )[30m:1m]
-            ) > 0.5
+            (
+              min_over_time(
+                (
+                  rate(node_disk_write_time_seconds_total{device!~"dm-.*"}[5m])
+                    / rate(node_disk_writes_completed_total{device!~"dm-.*"}[5m])
+                )[30m:1m]
+              ) > 0.5
+            )
+            and
+            (
+              min_over_time(
+                rate(node_disk_writes_completed_total{device!~"dm-.*"}[5m])[30m:1m]
+              ) > 0.5
+            )
           for: 5m
           labels:
             severity: warning
@@ -94,17 +119,25 @@ spec:
           # この水準が続くと Longhorn の再構築が RPC タイムアウトで落ち始め、
           # 失敗と再試行が自己増幅ループになる。
           expr: |
-            min_over_time(
-              (
-                rate(node_disk_write_time_seconds_total{device!~"dm-.*"}[5m])
-                  / rate(node_disk_writes_completed_total{device!~"dm-.*"}[5m])
-              )[30m:1m]
-            ) > 1
+            (
+              min_over_time(
+                (
+                  rate(node_disk_write_time_seconds_total{device!~"dm-.*"}[5m])
+                    / rate(node_disk_writes_completed_total{device!~"dm-.*"}[5m])
+                )[30m:1m]
+              ) > 0.8
+            )
+            and
+            (
+              min_over_time(
+                rate(node_disk_writes_completed_total{device!~"dm-.*"}[5m])[30m:1m]
+              ) > 0.5
+            )
           for: 5m
           labels:
             severity: critical
           annotations:
-            summary: "{{ $labels.instance }} の {{ $labels.device }} の書き込み遅延が 30 分以上 1 秒を下回っていません"
+            summary: "{{ $labels.instance }} の {{ $labels.device }} の書き込み遅延が 30 分以上 800ms を下回っていません"
             description: |
               この水準では Longhorn のレプリカ再構築が完走できない。
               再構築の連打は回復を妨げるため、まず止めることを検討する:
