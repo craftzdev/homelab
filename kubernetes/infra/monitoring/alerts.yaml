@@ -418,6 +418,42 @@ spec:
               新しい保存先へ一度も書けていない場合、古い保存先の中身は
               もう更新されていない。
 
+        - alert: CNPGRetentionNotEnforced
+          # 保持ポリシーが「適用されているつもりで削除できていない」状態を捕まえる。
+          #
+          # retentionPolicy は 7d。正常なら first_recoverability_point は
+          # 7 日前あたりで頭打ちになる。削除に失敗し続けると際限なく古くなる。
+          #
+          # ⚠️ これは R2 のバケットロックを有効にしたときの検証手段でもある。
+          #    ロックは「保持期間内の削除と上書き」を禁じるため、保持期間の
+          #    起点と経過後の扱いを誤ると barman が古いバックアップを
+          #    消せなくなる。Cloudflare のドキュメントには
+          #      - 保持の起点がアップロード時刻か
+          #      - 期間経過後に通常どおり削除できるか
+          #    が明記されていない（2026-09-16 時点）。
+          #    バケットロックを入れたら 8〜10 日後にこのアラートが
+          #    鳴らないことを確認する。鳴ったらロックルールを外す。
+          #
+          # 10d にしているのは 7d の保持に対する余裕。バックアップが
+          # 数日止まっても即座には鳴らない。
+          expr: |
+            time() - max by (namespace) (
+              barman_cloud_cloudnative_pg_io_first_recoverability_point > 0
+            ) > 10 * 86400
+          for: 6h
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ $labels.namespace }} の最古の復旧可能時点が 10 日以上前です"
+            description: |
+              retentionPolicy は 7d なので、正常なら 7 日前あたりで頭打ちになる。
+              古いバックアップを削除できていない可能性がある。
+                - R2 バケットロックを入れた直後なら、それが原因の可能性が高い
+                - barman のサイドカーログで retention の失敗を確認する:
+                    kubectl -n {{ $labels.namespace }} logs <pod> -c plugin-barman-cloud | grep -i retention
+              放置しても即座に困りはしない（1 バックアップ約 25MB、R2 無料枠 10GB）が、
+              保持ポリシーが機能していないこと自体が想定と食い違っている。
+
         - alert: CNPGWALArchiveFailing
           # WAL がアーカイブできないと、PITR の連続性が切れる。
           # 放置すると pg_wal が溜まり続けて PVC を埋める。
