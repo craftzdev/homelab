@@ -23,6 +23,30 @@ PBS_BASE = 'https://pbs.home.arpa:8007/api2/json'
 DATASTORE = 'gateway-backup'
 PBS_CONTEXT = ssl.create_default_context(cafile='/etc/pbs-ca/pbs-ca.pem')
 PBS_AUTH = 'PBSAPIToken=' + os.environ['PBS_TOKEN_ID'] + ':' + os.environ['PBS_TOKEN_SECRET']
+
+# ---------------------------------------------------------------------------
+# Proxmox ホストの node_exporter
+#
+# 2026-09-13 のストレージ障害を診断できた指標（SATA の write await、ZFS の
+# txg 同期時間、zpool の TRIM 状態）は、ホスト側にしか存在しない。
+# Prometheus は 172.16.10.0/24 へ出られないため（clusterwide egress deny）、
+# 既に例外を持つこのエクスポーターが読み、必要な系列だけを再出力する。
+# 監視対象を増やすときは networkpolicy.yaml の 9100 許可も合わせること。
+#
+# ⚠️ node_exporter の全系列を素通しすると数千系列になる。ここで明示した
+#    ものだけを通す。プレフィックス zfs_pool_ は
+#    scripts/proxmox-zfs-textfile-collector.sh が出す自前の指標。
+# ---------------------------------------------------------------------------
+PVE_NODE_EXPORTERS = {'sv-proxmox-01': '172.16.10.11',
+                      'sv-proxmox-02': '172.16.10.12',
+                      'sv-proxmox-03': '172.16.10.13'}
+NODE_EXPORTER_KEEP = frozenset((
+    'node_disk_read_time_seconds_total', 'node_disk_reads_completed_total',
+    'node_disk_write_time_seconds_total', 'node_disk_writes_completed_total',
+    'node_disk_io_time_seconds_total',
+    'node_load1', 'node_memory_MemAvailable_bytes', 'node_memory_MemTotal_bytes',
+))
+NODE_EXPORTER_KEEP_PREFIX = ('zfs_pool_',)
 snapshot = b'pbs_observer_collection_success 0\n'
 lock = threading.Lock()
 
@@ -32,6 +56,13 @@ def api(path, pbs=False):
                                  headers={'Authorization': PBS_AUTH if pbs else AUTH})
     with urllib.request.urlopen(req, context=PBS_CONTEXT if pbs else CONTEXT, timeout=12) as response:
         return json.load(response)['data']
+
+
+def node_exporter_text(host):
+    """Plain HTTP; node_exporter exposes no credentials and the hosts are
+    reachable only over the management LAN."""
+    with urllib.request.urlopen(f'http://{host}:9100/metrics', timeout=8) as response:
+        return response.read().decode('utf-8', 'replace')
 
 
 def collect():
@@ -48,9 +79,12 @@ def collect():
                     'pbs_snapshots': f'/admin/datastore/{DATASTORE}/snapshots',
                     'pbs_gc': f'/admin/datastore/{DATASTORE}/gc',
                     'pbs_verify_jobs': '/config/verify'})
+    node_exporter_keys = {f'node_exporter_{node}': host for node, host in PVE_NODE_EXPORTERS.items()}
     results = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
         futures = {key: executor.submit(api, path, key.startswith('pbs_')) for key, path in queries.items()}
+        futures.update({key: executor.submit(node_exporter_text, host)
+                        for key, host in node_exporter_keys.items()})
         for key, future in futures.items():
             try:
                 results[key] = future.result()
@@ -146,6 +180,28 @@ def collect():
             if gc.get(field) is not None:
                 metric('gc_' + name, gc[field], datastore=DATASTORE)
 
+    def node_exporter_metrics(node, text):
+        """Re-emit a curated subset under a pve_ prefix with a pve_node label.
+        Counters keep counter semantics, so rate() works as it would against a
+        direct scrape."""
+        kept = 0
+        for line in text.splitlines():
+            if not line or line[0] == '#':
+                continue
+            head, _, value = line.rpartition(' ')
+            if not head or not value:
+                continue
+            name, brace, labels = head.partition('{')
+            if name not in NODE_EXPORTER_KEEP and not name.startswith(NODE_EXPORTER_KEEP_PREFIX):
+                continue
+            labels = labels.rstrip('}') if brace else ''
+            node_label = 'pve_node=' + json.dumps(node)
+            merged = labels + ',' + node_label if labels else node_label
+            lines.append('pve_' + name + '{' + merged + '} ' + value)
+            kept += 1
+        if kept == 0:
+            raise ValueError('no matching series')
+
     parse('storage', storage_metrics)
     parse('jobs', job_metrics)
     for node in NODES:
@@ -155,11 +211,14 @@ def collect():
     parse('pbs_snapshots', snapshot_metrics)
     parse('pbs_verify_jobs', verify_metrics)
     parse('pbs_gc', gc_metrics)
+    for node in PVE_NODE_EXPORTERS:
+        parse(f'node_exporter_{node}', lambda text, node=node: node_exporter_metrics(node, text))
 
     # Emitted as one block so each series appears exactly once per scrape.
-    for key in queries:
+    all_sources = list(queries) + list(node_exporter_keys)
+    for key in all_sources:
         metric('source_success', outcomes.get(key, 0), source=key)
-    metric('collection_success', all(outcomes.get(key) for key in queries))
+    metric('collection_success', all(outcomes.get(key) for key in all_sources))
     metric('collection_timestamp_seconds', time.time())
     return ('\n'.join(lines) + '\n').encode()
 

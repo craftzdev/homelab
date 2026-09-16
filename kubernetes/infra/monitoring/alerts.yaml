@@ -113,6 +113,214 @@ spec:
               その際は ArgoCD の longhorn app の自動同期も一時停止しないと戻される。
 
     # -----------------------------------------------------------------------
+    # Longhorn
+    #
+    # 2026-09-13 の障害では、レプリカ再構築が失敗し続けて縮退ボリュームが
+    # 3 → 7 個に増え、Prometheus / Loki / MinIO がコピー 1 個まで減っていた。
+    # いずれも worker-3 に集中しており、同ノードには CNPG 両クラスタの主系も
+    # 載っていた。1 筐体の喪失で DB 主系と DB バックアップ先を同時に失う
+    # 状態だったが、**Longhorn のメトリクスは 1 つも収集されていなかった**
+    # （ServiceMonitor が CRD 導入前の TODO のまま無効だった）。
+    # 経緯は docs/storage-migration-2026-09-13.md を参照。
+    #
+    # メトリクスの形（2026-09-16 実測）:
+    #   longhorn_volume_robustness{volume,pvc,pvc_namespace,node,state}
+    #     state ごとの one-hot。該当状態が 1、それ以外が 0。
+    #     state は healthy / degraded / faulted / unknown。
+    #   longhorn_replica_state{volume,replica,node,state}  state=running 等
+    #   longhorn_node_status{node,condition}  condition=ready/schedulable/...
+    #
+    # ⚠️ レプリカ数 1 は異常ではない。CNPG の 6 ボリュームは
+    #    longhorn-cnpg-retain で意図的にレプリカ 1（冗長化は PostgreSQL の
+    #    3 インスタンスが担う）。そのため「実レプリカ数」ではなく
+    #    robustness（希望数を満たしているか）で判定する。
+    # -----------------------------------------------------------------------
+    - name: homelab.longhorn
+      rules:
+        - alert: LonghornVolumeDegraded
+          # 再構築中は一時的に degraded になる。30 分続く場合は
+          # 「再構築が進んでいない」ことを意味する。
+          expr: |
+            longhorn_volume_robustness{state="degraded"} == 1
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Longhorn ボリューム {{ $labels.pvc_namespace }}/{{ $labels.pvc }} が 30 分以上 degraded です"
+            description: |
+              再構築が完走していない可能性がある。まず失敗理由を見る:
+                kubectl -n longhorn-system get events --field-selector reason=FailedRebuilding
+              再試行上限（rebuildRetryCount=5）に達していると Longhorn は
+              諦めて放置する。その場合は healthyAt が空で engine の
+              replicaAddressMap にも居ない空レプリカを削除して作り直させる。
+              ディスク遅延が原因のことも多い。NodeDiskWriteLatency* も確認。
+
+        - alert: LonghornVolumeDegradedSingleReplica
+          # 希望数を下回っており、かつ実際に動いているコピーが 1 個しかない。
+          # 次に 1 つ失うとデータが無くなる。
+          expr: |
+            (longhorn_volume_robustness{state="degraded"} == 1)
+              and on (volume)
+            (count by (volume) (longhorn_replica_state{state="running"} == 1) < 2)
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Longhorn ボリューム {{ $labels.pvc_namespace }}/{{ $labels.pvc }} のコピーが 1 個しかありません"
+            description: |
+              次に 1 つ失うとデータが失われる。残っているコピーのノードを
+              再起動・drain・退避の対象から外すこと。
+                kubectl -n longhorn-system get replicas.longhorn.io \
+                  -o custom-columns=N:.metadata.name,V:.spec.volumeName,NODE:.spec.nodeID,S:.status.currentState
+
+        - alert: LonghornVolumeFaulted
+          expr: |
+            longhorn_volume_robustness{state="faulted"} == 1
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Longhorn ボリューム {{ $labels.pvc_namespace }}/{{ $labels.pvc }} が faulted です"
+            description: |
+              正常なレプリカが 1 つも無く、ボリュームは読み書きできない。
+
+        - alert: LonghornNodeNotReady
+          expr: |
+            longhorn_node_status{condition="ready"} == 0
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Longhorn ノード {{ $labels.node }} が Ready ではありません"
+
+        - alert: LonghornNodeNotSchedulable
+          # 容量不足やノードの cordon で新しいレプリカを置けない。
+          # 縮退したまま復旧できなくなる。
+          expr: |
+            longhorn_node_status{condition="schedulable"} == 0
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Longhorn ノード {{ $labels.node }} に新しいレプリカを配置できません"
+
+        - alert: LonghornDiskFillingUp
+          expr: |
+            longhorn_disk_usage_bytes / longhorn_disk_capacity_bytes > 0.75
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            summary: "Longhorn ディスク {{ $labels.node }} の使用率が 75% を超えています"
+            description: |
+              空きが減るとレプリカを配置できなくなり、縮退から復旧できなくなる。
+
+    # -----------------------------------------------------------------------
+    # Proxmox ホストのストレージ
+    #
+    # 2026-09-13 の障害を診断できた指標は、いずれもホスト側にしか無かった。
+    # ゲスト（172.16.40.x）の node_exporter が見せる遅延には Longhorn の
+    # 複製往復と LUKS が含まれ、物理ディスクの値とは別物である。
+    # 当時 Prometheus はホスト（172.16.10.x）を一切見ていなかった。
+    #
+    # 取り込み経路（clusterwide egress deny を迂回しないための設計）:
+    #   Proxmox ホスト
+    #     prometheus-node-exporter        … 物理ディスクの I/O カウンタ
+    #     zfs-textfile-collector.timer    … TRIM 状態・txg 同期時間
+    #       （どちらも node_exporter の ZFS collector には無い）
+    #   → portal/pbs-observer が 9100 を読み、必要な系列だけ pve_ 接頭辞で再出力
+    #   → Prometheus は従来どおり pbs-observer だけをスクレイプ
+    #
+    # 導入は scripts/reconcile-proxmox-node-exporter.sh。
+    # 経緯は docs/storage-migration-2026-09-13.md を参照。
+    # -----------------------------------------------------------------------
+    - name: homelab.proxmox-storage
+      rules:
+        - alert: ProxmoxZFSPoolUntrimmed
+          # これが今回の根本原因そのもの。Debian の月次 TRIM は既定で
+          # NVMe 専用プールしか対象にせず、SATA プールは永久に飛ばされる。
+          # プール作成から 7 日で Longhorn の再構築が完走できなくなった。
+          expr: |
+            pve_zfs_pool_trim_state{state="untrimmed"} == 1
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ $labels.pve_node }} の {{ $labels.pool }}/{{ $labels.device }} が一度も TRIM されていません"
+            description: |
+              SSD の FTL が空きブロックを認識できず、GC で飽和して
+              書き込み遅延が桁違いに悪化する。
+                scripts/reconcile-proxmox-zfs-trim.sh --apply --trim-now
+              Longhorn のコピーが 1 個しかないボリュームがある状態では
+              実行しないこと。
+
+        - alert: ProxmoxZFSPeriodicTrimDisabled
+          # untrimmed そのものより先に出る予兆。設定漏れを検知する。
+          expr: |
+            pve_zfs_pool_periodic_trim_enabled == 0
+          for: 6h
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ $labels.pve_node }} の {{ $labels.pool }} は月次 TRIM の対象外です"
+            description: |
+              org.debian:periodic-trim が enable でないため、
+              /etc/cron.d/zfsutils-linux は毎月起動しても何もしない
+              （既定の auto は NVMe 専用プールのみ対象）。
+                scripts/reconcile-proxmox-zfs-trim.sh --apply
+
+        - alert: ProxmoxZFSAutotrimDisabled
+          expr: |
+            pve_zfs_pool_autotrim == 0
+          for: 6h
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ $labels.pve_node }} の {{ $labels.pool }} で autotrim が無効です"
+            description: |
+              月次 TRIM だけでは間に合わない（7 日で壊滅した実績がある）。
+                scripts/reconcile-proxmox-zfs-trim.sh --apply
+
+        - alert: ProxmoxZFSTxgSyncSlow
+          # txg の同期が詰まると、その上のすべての書き込みが待たされる。
+          # 障害時は 95MB に 51.8 秒、ピークで 154.7 秒。
+          # CI 負荷下の平常値は 13.6 秒だったため 30 秒を境にする。
+          # 指標は直近約 8 分（98 txg）の最大値。
+          expr: |
+            pve_zfs_pool_txg_sync_seconds_max > 30
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: "{{ $labels.pve_node }} の {{ $labels.pool }} で txg 同期に 30 秒以上かかっています"
+            description: |
+              この水準では Longhorn のレプリカ再構築が完走できない。
+              まず TRIM 状態を疑う（pve_zfs_pool_trim_state）。
+
+        - alert: ProxmoxHostDiskWriteLatencyHigh
+          # ホスト側なので Longhorn も LUKS も挟まらない、物理ディスクの値。
+          # 平常時 1ms 未満、障害時 190-319ms。ゲスト側の代理指標より鋭い。
+          expr: |
+            rate(pve_node_disk_write_time_seconds_total[5m])
+              / rate(pve_node_disk_writes_completed_total[5m]) > 0.05
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ $labels.pve_node }} の {{ $labels.device }} の物理書き込み遅延が 50ms を超えています"
+            description: |
+              SSD なら 1ms 未満が正常。TRIM 状態と ZFS の txg 同期時間を確認する。
+
+        - alert: ProxmoxZFSPoolNotOnline
+          expr: |
+            pve_zfs_pool_health == 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "{{ $labels.pve_node }} の {{ $labels.pool }} が ONLINE ではありません"
+
+    # -----------------------------------------------------------------------
     # セキュリティ
     # -----------------------------------------------------------------------
     - name: homelab.security
