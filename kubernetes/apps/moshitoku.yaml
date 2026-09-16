@@ -43,6 +43,10 @@ spec:
       kind: Deployment
     - group: batch
       kind: Job
+    # 案件の束ね直し（moshitoku-case-matching）。CaseMatch が無い案件は
+    # 比較に出ないため、収集と同じ頻度で流す必要がある。
+    - group: batch
+      kind: CronJob
     - group: policy
       kind: PodDisruptionBudget
     - group: networking.k8s.io
