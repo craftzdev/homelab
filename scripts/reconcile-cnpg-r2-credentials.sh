@@ -19,33 +19,35 @@
 # 詳細は docs/storage-migration-2026-09-13.md を参照。
 #
 # ---------------------------------------------------------------------------
-# 事前に用意するもの
+# なぜトークンを 2 つに分けるのか
 # ---------------------------------------------------------------------------
-#   1. R2 バケット 2 つ
-#        homelab-umami-postgres
-#        homelab-moshitoku-postgres
-#   2. 上記 2 バケットに絞った R2 API トークン（Object Read & Write）
-#   3. 認証情報の渡し方（どちらか）
+# 機能上は 1 つを両バケットにスコープすれば足りる。分けているのは
+# **被害範囲を切るため**である。トークンはそれぞれ別の namespace の
+# Secret に入るので、共有すると片方の namespace が侵害されたときに
+# もう片方のバックアップまで削除できてしまう。
 #
-#      a) macOS Keychain — このリポジトリの既定の流儀
-#           security add-generic-password -U -a "$USER" \
-#             -s dev.craftz.homelab.r2-cnpg-access-key-id     -w '<Access Key ID>'
-#           security add-generic-password -U -a "$USER" \
-#             -s dev.craftz.homelab.r2-cnpg-secret-access-key -w '<Secret Access Key>'
+# ⚠️ Object Read & Write には削除権限が含まれ、barman はこれを必要とする
+#    （retentionPolicy 30d の実行に削除が要る）。したがって書き込み専用には
+#    できず、侵害されたクラスタは R2 上のバックアップを消せる。
+#    ADR-0008 の S6（ランサムウェア）を完全には塞がない。
+#    塞ぐならバケットロック／オブジェクト保持の利用を検討すること。
 #
-#      b) 環境変数 — 1Password 等、別の保管庫から渡す場合
-#           R2_ACCESS_KEY_ID="$(op read 'op://<vault>/<item>/access key id')" \
-#           R2_SECRET_ACCESS_KEY="$(op read 'op://<vault>/<item>/secret access key')" \
-#             ./scripts/reconcile-cnpg-r2-credentials.sh --apply
+# ---------------------------------------------------------------------------
+# 認証情報の取得元
+# ---------------------------------------------------------------------------
+# 1Password（`op` CLI）から読む。**このリポジトリで 1Password を使う
+# 最初のスクリプトである。** 他の秘密はすべて macOS Keychain にある。
+# 全体を 1Password へ寄せる移行は別途進める前提で、ここでは op を直接使う。
 #
-#      環境変数があればそちらを優先する。Keychain は無くてもよい。
+# ⚠️ フィールドのラベルは ASCII にすること。`op read` の参照は
+#    日本語ラベルを受け付けない（invalid character in secret reference）。
 #
-# ⚠️ Git には平文・暗号文とも置かない。既存の
-#    ai-business-platform/infra/scripts/bootstrap-umami-secrets.sh と同じ流儀。
-#
-# 📌 このリポジトリの秘密はすべて macOS Keychain に置かれている。
-#    1Password へ寄せるなら、この 1 つだけでなく全体の方針として
-#    決めた方がよい（保管場所が二箇所に分かれるのが一番まずい）。
+# 事前に必要なもの:
+#   - R2 バケット 2 つ（homelab-umami-postgres / homelab-moshitoku-postgres）
+#   - バケットごとにスコープした **アカウント** API トークン 2 つ
+#     （ユーザートークンは、そのユーザーの権限が変わると黙って失効する）
+#   - 1Password のアイテム 2 つ。それぞれ ACCESS_KEY_ID と
+#     SECRET_ACCESS_KEY というラベルのフィールドを持つこと
 #
 # ⚠️ 既存の umami-s3-credentials / moshitoku-s3-credentials は **MinIO 用**で、
 #    別のスクリプトが管理している。上書きすると次回の実行で MinIO の値へ
@@ -55,12 +57,14 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 KUBECONFIG_PATH="${KUBECONFIG_PATH:-${REPO_ROOT}/_out/kubeconfig}"
-KEYCHAIN_ACCESS_KEY="${KEYCHAIN_ACCESS_KEY:-dev.craftz.homelab.r2-cnpg-access-key-id}"
-KEYCHAIN_SECRET_KEY="${KEYCHAIN_SECRET_KEY:-dev.craftz.homelab.r2-cnpg-secret-access-key}"
+OP_VAULT="${OP_VAULT:-Personal}"
 APPLY=false
 
-# namespace:secret-name
-TARGETS=("analytics:umami-r2-credentials" "moshitoku:moshitoku-r2-credentials")
+# namespace | secret 名 | 1Password のアイテム名
+TARGETS=(
+  "analytics|umami-r2-credentials|Homelab Umami Cloudflare R2"
+  "moshitoku|moshitoku-r2-credentials|Homelab moshitoku Cloudflare R2"
+)
 
 readonly C_RED=$'\033[0;31m' C_GREEN=$'\033[0;32m' C_YELLOW=$'\033[0;33m'
 readonly C_BLUE=$'\033[0;34m' C_RESET=$'\033[0m'
@@ -73,20 +77,19 @@ usage() {
   cat <<'USAGE'
 使い方: reconcile-cnpg-r2-credentials.sh [--apply]
 
-引数なしでは前提条件だけを確認する（Keychain に値があるか、
+引数なしでは前提条件だけを確認する（1Password から読めるか、
 対象 namespace が存在するか）。--apply で Secret を投入する。
 
 環境変数:
-  R2_ACCESS_KEY_ID      指定すると Keychain より優先される
-  R2_SECRET_ACCESS_KEY  同上（1Password 等から渡す場合に使う）
-  KUBECONFIG_PATH       既定: _out/kubeconfig
-  KEYCHAIN_ACCESS_KEY   既定: dev.craftz.homelab.r2-cnpg-access-key-id
-  KEYCHAIN_SECRET_KEY   既定: dev.craftz.homelab.r2-cnpg-secret-access-key
+  OP_VAULT         1Password の vault 名（既定: Personal）
+  KUBECONFIG_PATH  既定: _out/kubeconfig
 
 投入先:
-  analytics/umami-r2-credentials
-  moshitoku/moshitoku-r2-credentials
+  analytics/umami-r2-credentials       <- "Homelab Umami Cloudflare R2"
+  moshitoku/moshitoku-r2-credentials   <- "Homelab moshitoku Cloudflare R2"
   いずれも キー ACCESS_KEY_ID / ACCESS_SECRET_KEY
+
+値そのものは一切出力しない（取得の可否と文字数だけを報告する）。
 USAGE
 }
 
@@ -99,41 +102,42 @@ while [[ $# -gt 0 ]]; do
 done
 
 command -v kubectl >/dev/null || die "kubectl が見つかりません"
+command -v op >/dev/null || die "1Password CLI (op) が見つかりません"
 [[ -s "${KUBECONFIG_PATH}" ]] || die "kubeconfig が見つかりません: ${KUBECONFIG_PATH}"
+
+op account list >/dev/null 2>&1 || die "op にサインインしていません（op signin）"
 
 k() { kubectl --kubeconfig "${KUBECONFIG_PATH}" "$@"; }
 
-read_keychain() {
-  command -v security >/dev/null || return 0
-  security find-generic-password -s "$1" -w 2>/dev/null || true
-}
-
-# 環境変数があればそちらを使う。無ければ Keychain を見る。
-access_key="${R2_ACCESS_KEY_ID:-}"
-secret_key="${R2_SECRET_ACCESS_KEY:-}"
-source_label=環境変数
-if [[ -z "${access_key}" || -z "${secret_key}" ]]; then
-  access_key="${access_key:-$(read_keychain "${KEYCHAIN_ACCESS_KEY}")}"
-  secret_key="${secret_key:-$(read_keychain "${KEYCHAIN_SECRET_KEY}")}"
-  source_label=Keychain
-fi
-
-# 値そのものは出力しない。取得元と長さだけを報告する。
-if [[ -z "${access_key}" || -z "${secret_key}" ]]; then
-  die "認証情報を取得できません。--help の「認証情報の渡し方」を参照してください"
-fi
-ok "${source_label} から取得しました（access_key ${#access_key} 文字 / secret_key ${#secret_key} 文字）"
-
 for target in "${TARGETS[@]}"; do
-  namespace="${target%%:*}"
-  secret="${target##*:}"
-  k get namespace "${namespace}" >/dev/null 2>&1 \
-    || die "namespace が存在しません: ${namespace}"
+  IFS='|' read -r namespace secret item <<<"${target}"
+  info "=== ${namespace}/${secret} ==="
+
+  access_key="$(op read "op://${OP_VAULT}/${item}/ACCESS_KEY_ID" 2>/dev/null || true)"
+  secret_key="$(op read "op://${OP_VAULT}/${item}/SECRET_ACCESS_KEY" 2>/dev/null || true)"
+  [[ -n "${access_key}" ]] || die "op から読めません: op://${OP_VAULT}/${item}/ACCESS_KEY_ID"
+  [[ -n "${secret_key}" ]] || die "op から読めません: op://${OP_VAULT}/${item}/SECRET_ACCESS_KEY"
+  ok "  1Password から取得（access_key ${#access_key} 文字 / secret ${#secret_key} 文字）"
+
+  k get namespace "${namespace}" >/dev/null 2>&1 || die "namespace がありません: ${namespace}"
   if k -n "${namespace}" get secret "${secret}" >/dev/null 2>&1; then
-    info "${namespace}/${secret}: 既存（更新します）"
+    info "  Secret: 既存（更新します）"
   else
-    info "${namespace}/${secret}: 新規"
+    info "  Secret: 新規"
   fi
+
+  if [[ "${APPLY}" == true ]]; then
+    k -n "${namespace}" create secret generic "${secret}" \
+      --from-literal=ACCESS_KEY_ID="${access_key}" \
+      --from-literal=ACCESS_SECRET_KEY="${secret_key}" \
+      --dry-run=client -o yaml \
+      | k apply -f - >/dev/null
+    k -n "${namespace}" get secret "${secret}" -o jsonpath='{.data.ACCESS_KEY_ID}' >/dev/null \
+      || die "${namespace}/${secret} の反映を確認できません"
+    ok "  投入しました"
+  fi
+
+  unset access_key secret_key
 done
 
 if [[ "${APPLY}" != true ]]; then
@@ -141,25 +145,10 @@ if [[ "${APPLY}" != true ]]; then
   exit 0
 fi
 
-for target in "${TARGETS[@]}"; do
-  namespace="${target%%:*}"
-  secret="${target##*:}"
-  k -n "${namespace}" create secret generic "${secret}" \
-    --from-literal=ACCESS_KEY_ID="${access_key}" \
-    --from-literal=ACCESS_SECRET_KEY="${secret_key}" \
-    --dry-run=client -o yaml \
-    | k apply -f - >/dev/null
-  k -n "${namespace}" get secret "${secret}" -o jsonpath='{.data.ACCESS_KEY_ID}' >/dev/null \
-    || die "${namespace}/${secret} の反映を確認できません"
-  ok "${namespace}/${secret} を投入しました"
-done
-
-unset access_key secret_key
-
 cat <<'EOS'
 
 次の手順:
-  1. ObjectStore を R2 へ向ける（この PR のマニフェスト変更）
+  1. ObjectStore を R2 へ向ける（この PR のマニフェスト変更をマージする）
   2. ArgoCD が同期したら、手動でバックアップを 1 回実行して疎通を確認する
        kubectl -n moshitoku create -f - <<'YAML'
        apiVersion: postgresql.cnpg.io/v1
@@ -174,5 +163,5 @@ cat <<'EOS'
            name: barman-cloud.cloudnative-pg.io
        YAML
   3. CNPGNoBackupEver / CNPGBackupFailing が鳴らないことを確認する
-  4. 旧 MinIO のバケットは、R2 で復元確認が取れるまで消さないこと
+  4. 旧 MinIO のバケットは、R2 からの復元確認が取れるまで消さないこと
 EOS
