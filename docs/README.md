@@ -25,10 +25,11 @@
 | [0005](adr/0005-cloudflare-zero-trust.md) | **Cloudflare Tunnel + Access** で公開する | インバウンド開放ゼロ。認可を自作しない |
 | [0006](adr/0006-argocd-sops.md) | **ArgoCD + SOPS/age** | 外部の秘密ストアに依存せず Git だけで完結する |
 | ~~[0007](adr/0007-dual-nic-topology.md)~~ | ~~デュアル NIC（VLAN40 + VLAN20）~~ | ⛔ **Superseded** — ADR-0009 により置き換え |
-| [0008](adr/0008-backup-strategy.md) | **3 階層バックアップ**（etcd / Velero / PBS） | 冗長化はバックアップではない。障害の種類ごとに手段を分ける |
+| ~~[0008](adr/0008-backup-strategy.md)~~ | ~~**3 階層バックアップ**（etcd / Velero / PBS）~~ | ⛔ **Superseded** — ADR-0012 により置き換え |
 | [0009](adr/0009-drop-ceph-adopt-longhorn.md) | **Ceph を廃止し Longhorn へ** | 実測で SSD の性能不足が判明。維持には 10〜20 万円の換装が必要で、利用実態に見合わなかった |
 | [0010](adr/0010-gateway-api.md) | **ingress-nginx をやめ Cilium Gateway API へ** | ingress-nginx は 2026年3月に EOL。外部公開の入口に修正されないコンポーネントは置けない |
 | [0011](adr/0011-dedicated-worker-plane.md) | **control-plane 3台 + worker 3台へ分離** | AI実行負荷とLonghornデータを制御系から隔離し、Talos APIで冪等に管理する |
+| [0012](adr/0012-backup-strategy-revisited.md) | **Velero を採らず、CNPG のバックアップを R2 へ置く** | 守るべきものは 231MB だった。実装されていないものを決定として書かない |
 
 ## コンポーネント別の手順書
 
@@ -58,5 +59,6 @@
 
 | # | 項目 | 状態 |
 | --- | --- | --- |
-| 1 | Longhorn のバックアップ先（外部 S3）の設定 | **未着手**（本番データを載せる前に必須） |
+| 1 | DB のクラスタ外バックアップ | ✅ **完了** — CNPG → Cloudflare R2。復元検証済み（[ADR-0012](adr/0012-backup-strategy-revisited.md)） |
+| 1b | Longhorn 全体の外部バックアップ | **採らない判断**。DB 以外は再構築可能なデータで、PBS の VM イメージで足りる（[ADR-0012](adr/0012-backup-strategy-revisited.md)） |
 | 2 | Git 履歴に残る平文 SSH パスワードの除去 | **未着手**（公開前に必須） |
