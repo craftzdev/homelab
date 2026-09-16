@@ -2362,3 +2362,152 @@ WAL アーカイブも動作している（`archived_count` 15→16、`failed_co
 
 **moshitoku は未マージのため MinIO のままである。** 守るべき 231 MB のうち
 200 MB は moshitoku 側なので、そちらをマージするまで目的は達成されていない。
+
+---
+
+# 追記15：R2 からの復元検証（2026-09-16）
+
+§68 で「取れることと戻せることは別」として残していた件。
+隔離した使い捨てクラスタを作って実際に復元した。
+
+## 73. 結論：復元できた。ただし一度失敗した
+
+最終的に umami の R2 バックアップから完全な復元に成功した。
+
+| | 復元先 | 本番 |
+|---|---|---|
+| DB | umami | umami |
+| サイズ | 9,230 kB | 9,206 kB |
+| テーブル数 | **25** | **25** |
+| `website` / `website_event` | 0 / 0 | 0 / 0 |
+| `pg_is_in_recovery` | `f`（完了） | — |
+
+**だが最初の 2 回は失敗した。** その原因の方が重要である。
+
+## 74. ⚠️ 保存先を切り替えた直後のバックアップは復元できなかった
+
+1 回目の失敗:
+
+```
+encountered an error while checking the presence of first needed WAL
+in the archive: object storage or file not found
+00000001000000000000000C: WAL not found
+```
+
+R2 に置かれたベースバックアップ（`20260916T033427`）は
+`beginWal=...000C` を要求するが、**その WAL は旧 MinIO にしか無かった。**
+
+保存先を切り替えても、それ以前に生成された WAL は移動しない。
+umami は書き込みが無い（`website_event` 0 行）ため、切り替え後に
+新しい WAL が 1 つも生成されず、R2 には「ベースバックアップだけあって
+それを整合させる WAL が無い」状態が出来ていた。
+
+**バックアップは `completed` と報告され、R2 にオブジェクトも存在した。
+それでも復元できなかった。**
+
+> §67 で「`completed` の表示だけでは足りない、R2 にオブジェクトが増える
+> ことを確認せよ」と書いたが、**それでもまだ足りなかった。**
+> オブジェクトの存在は復元可能性を意味しない。
+
+## 75. ⚠️ 書き込みの少ない DB では、endWal がアーカイブされない
+
+2 回目の失敗。新しいベースバックアップを取り直しても失敗した。
+
+```
+r2-chain-jgsvq : beginWal=...000E  endWal=...000F
+archiver       : last_archived=...000E   current=...000F   ← 未アーカイブ
+```
+
+復元には beginWal 〜 endWal が揃っている必要があるが、**endWal は
+バックアップ完了後も 13 分以上アーカイブされなかった。**
+`archive_timeout: 5min` が設定されているにもかかわらず、である。
+
+書き込みを起こして WAL を切り替えると即座にアーカイブされ、復元が成功した。
+
+```
+psql -c "select txid_current(); select pg_switch_wal();"
+→ archived_count 16 → 17、last_archived_wal = ...000F
+→ 復元成功
+```
+
+**これは低書き込み DB 一般の問題である。** バックアップ直後の時点では、
+そのバックアップはまだ復元できない。次に WAL が切り替わるまで待つ必要があり、
+完全にアイドルな DB ではそれがいつになるか分からない。
+
+## 76. 運用上の含意
+
+### 76-1. 保存先を切り替えたときの手順
+
+1. 新しい保存先へ向ける
+2. **書き込みを起こして WAL を切り替える**（`select txid_current(); select pg_switch_wal();`）
+3. ベースバックアップを取る
+4. **もう一度 WAL を切り替える**（endWal をアーカイブさせる）
+5. **実際に復元してみる**
+6. それまで旧保存先を消さない
+
+### 76-2. 旧 MinIO はまだ消せない
+
+umami については R2 からの復元が成立したので、原理的には消せる。
+ただし **moshitoku では未検証**である。moshitoku は書き込みがあるため
+WAL が自然に流れており、状況は umami より良いはずだが、確かめていない。
+
+**両方で復元が成立するまで、旧 MinIO のバケットは残す。**
+
+### 76-3. 監視で捕まえられるか
+
+「最新バックアップの endWal がアーカイブ済みか」を PromQL で直接
+表現するのは難しい（WAL 名は文字列で、比較できない）。
+
+`CNPGBackupStale` / `CNPGBackupFailing` はこの状態を検知できない。
+バックアップは正常に完了しているためである。
+
+現実的な対策は**定期的な復元検証**であり、アラートではない。
+本記録の §76-1 を手順として残す。
+
+## 77. 検証の手順（再現用）
+
+```yaml
+# analytics namespace に使い捨てクラスタを作る。
+# storageClass は longhorn-single（Delete ポリシー・1 レプリカ）を使い、
+# 検証後に PVC ごと消えるようにする。
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: umami-restore-test
+  namespace: analytics
+spec:
+  instances: 1
+  imageName: <本番と同じ image>
+  enableSuperuserAccess: false
+  affinity:
+    nodeSelector:
+      homelab.craftz.dev/workload-plane: "true"   # control-plane は taint 済み
+  storage:
+    size: 2Gi
+    storageClass: longhorn-single
+  bootstrap:
+    recovery:
+      source: umami-r2-source
+  externalClusters:
+    - name: umami-r2-source
+      plugin:
+        name: barman-cloud.cloudnative-pg.io
+        parameters:
+          barmanObjectName: umami-minio
+          serverName: umami-postgres-v1
+```
+
+⚠️ `externalClusters[].plugin` に `isWALArchiver` を設定しないこと。
+設定すると検証用クラスタが本番と同じ場所へ WAL を書き始める。
+
+削除は `kubectl -n analytics delete cluster umami-restore-test`。
+`longhorn-single` は Delete ポリシーなので PVC と Longhorn ボリュームも
+自動で消える（実測で約 40 秒）。本番の 2 クラスタは 3/3 のまま影響しなかった。
+
+## 78. 残る課題（更新）
+
+- ~~R2 からの復元は未検証~~ → **umami で検証済み。moshitoku は未検証。**
+- **低書き込み DB の endWal 問題**（§75）。定期的な復元検証で担保するしかない。
+- ADR-0008 の更新。Velero は未デプロイのままで、今回の変更は階層 2 の目的を
+  CNPG に限って満たすもの。現状の ADR は「やるつもりで未着手」に見える。
+- 侵害時のバックアップ削除（barman が削除権限を要するため塞げていない）。
