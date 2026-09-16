@@ -6,7 +6,14 @@
 # この namespace の umami Service へ転送する。
 #
 #   https://moshitoku.com/_analytics/script.js → umami:3000 /script.js
-#   https://moshitoku.com/_analytics/api/send  → umami:3000 /api/send
+#     Gateway が直接 Umami へ振り分ける。
+#
+#   https://moshitoku.com/_analytics/api/send  → moshitoku-analytics:8000
+#     こちらは Gateway から Umami へ直接は行かない。moshitoku 側のアプリが
+#     本文サイズ・レート・website ID を検証してから Umami へ転送する
+#     （moshitoku の app/presentation/views/analytics.py）。
+#     そのため **pod 間（moshitoku → analytics）の ingress** も要る。
+#     下の umami-app-forward-ingress がそれを開ける。
 #
 # Umami 自身の公開範囲は変わらない。管理画面は引き続き Tailnet 限定である。
 # ===========================================================================
@@ -58,6 +65,41 @@ spec:
       app.kubernetes.io/name: umami
   ingress:
     - fromEntities: [ingress]
+      toPorts:
+        - ports:
+            - port: "3000"
+              protocol: TCP
+
+---
+# ---------------------------------------------------------------------------
+# moshitoku のアプリからの転送を受ける
+#
+# /_analytics/api/send は Gateway から直接 Umami へは行かない。
+# moshitoku-analytics が検証したうえでサーバー側から転送する。
+# これは pod 間の通信なので "ingress" identity では表現されず、
+# 上の umami-gateway-ingress では通らない。
+#
+# 2026-09-16 時点で、送信側（moshitoku-analytics の egress）には
+# analytics/umami:3000 への許可が既にあったが、**受け側が無かった**。
+# そのため moshitoku-analytics から umami へは到達できていなかった。
+# 実際 pod からの疎通はタイムアウトしていた。
+#
+# ⚠️ 許可するのは moshitoku namespace から umami の 3000 のみ。
+#    analytics-rules は書き換えない（Cilium は許可の和集合で評価する）。
+# ---------------------------------------------------------------------------
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: umami-app-forward-ingress
+  namespace: analytics
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: umami
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: moshitoku
       toPorts:
         - ports:
             - port: "3000"
