@@ -150,6 +150,30 @@ grafana:
     size: 5Gi
 
   # -------------------------------------------------------------------------
+  # 更新方式
+  #
+  # 上の persistence は RWO（ReadWriteOnce）の Longhorn ボリュームである。
+  # chart 既定の RollingUpdate は「新しい Pod を起動してから古い Pod を消す」
+  # ため、新旧が同時に同じ RWO ボリュームを要求する。両者が別ノードへ
+  # スケジュールされると、新 Pod はボリュームを掴めず Init で止まったまま
+  # 永久に Ready にならない。
+  #
+  # 2026-09-16 時点で実際にこの状態だった:
+  #   ...-7f9fdcd597-cj6fx  3/3 Running   k8s-worker-3  ← ボリューム保持
+  #   ...-85d5d49746-wfcqk  0/3 Init:0/1  k8s-worker-2  ← 3日7時間停止
+  #
+  # その結果 Deployment のロールアウトが期限切れになり、
+  #   Deployment "kube-prometheus-stack-grafana" exceeded its progress deadline
+  # で **monitoring アプリの ArgoCD 同期が毎回失敗し続けていた**。
+  # アラート定義の変更が反映されない原因にもなっていた。
+  #
+  # Recreate なら古い Pod を先に落としてからボリュームを引き継ぐ。
+  # 単一レプリカなので更新時に短い停止が入るが、RWO では避けられない。
+  # -------------------------------------------------------------------------
+  deploymentStrategy:
+    type: Recreate
+
+  # -------------------------------------------------------------------------
   # GrafanaはTailscale Ingress経由だけで恒久公開する。ClusterIPに固定し、
   # LAN上の認証前HTTP listenerを持たせない。
   # -------------------------------------------------------------------------
