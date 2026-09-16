@@ -2118,3 +2118,165 @@ VM の仮想ディスクの遅延は、ゲスト側の node_exporter で見る�
 絞り込み前（デプロイ中の式）: 3 系列が一致（すべて zvol）
 絞り込み後                  : 0 系列（silent）
 ```
+
+---
+
+# 追記13：CNPG のバックアップを Cloudflare R2 へ（2026-09-16）
+
+§48 で「Longhorn の外部バックアップ先が未設定」として残していた件。
+利用者の判断で、Longhorn 全体ではなく **CNPG のバックアップだけ**を
+クラスタ外へ出す方針とした。
+
+## 61. 何を守る必要があるのかを先に測った
+
+Longhorn の実データ 46.2 GiB の内訳（`status.actualSize` 実測）:
+
+| 分類 | 容量 | 失ったら |
+|---|---:|---|
+| **DB バックアップ**（MinIO 内 moshitoku 200MB / umami 31MB） | **231 MB** | **復旧不能** |
+| 監視データ（Prometheus 22.9G / Loki 4.1G＋chunks 2.2G / Tempo） | 約 29 GB | 困らない（保持 15 日） |
+| コンテナイメージ（harbor-registry 2.7G / image-registry 1.1G） | 約 4 GB | CI で再ビルド可能 |
+| Harbor 内部（trivy DB / redis / jobservice） | 約 1.8 GB | 再構築可能 |
+| DB 本体のボリューム（6 インスタンス） | 約 4.4 GB | 上の 231MB から復元可能 |
+
+**守る必要があるのは 231 MB。** DB の論理サイズは各 7.5 MB で、
+残りは WAL とインデックスである。
+
+### 61-1. 本当の穴は「置き場所」だった
+
+「バックアップが無い」わけではなかった。PBS が worker VM の 300GiB
+ディスク（＝Longhorn データそのもの）を日次で取っている。
+
+穴は一点だけ：**CNPG のバックアップが MinIO＝Longhorn 上にあり、
+守るべき対象と同じストレージに載っていた。** Longhorn が論理破損すれば
+DB とそのバックアップが同時に消える。ADR-0008 が旧構成の
+`minio-for-velero` について警告していたのと同じ形である。
+
+## 62. コスト
+
+R2 の料金（2026-09-16 時点の理解。契約前に現行料金を要確認）:
+ストレージ $0.015/GB・月、Class A $4.50/100万、Class B $0.36/100万、
+**エグレス無料**、無料枠 10 GB・月。
+
+| 案 | 容量 | 月額 |
+|---|---:|---:|
+| **採用：CNPG バックアップのみ** | 231 MB（30 日保持で 1〜2 GB） | **$0**（無料枠内） |
+| Longhorn 全ボリューム | 46 GB | 約 $0.54 |
+
+エグレス無料は復元時に効く（S3 なら 46GB の復元で約 $4）。
+
+## 63. 設計判断
+
+- **MinIO を置き換える**（併用しない）。barman-cloud は WAL アーカイバを
+  1 つしか持てず、MinIO→R2 の同期 CronJob を足すと「同期が黙って止まる」
+  失敗モードが増える。本セッションで既にその形の失敗を 2 度見ている。
+- **トークンはバケットごとに 2 つに分ける。** 機能上は 1 つで足りるが、
+  それぞれ別 namespace の Secret に入るため、共有すると片方の namespace が
+  侵害されたときにもう片方のバックアップまで削除できる。
+- **アカウント API トークンを使う**（ユーザートークンではない）。
+  ユーザーの権限が変わると黙って失効するため。
+
+### 63-1. 塞がらない穴
+
+Object Read & Write には削除権限が含まれ、barman は `retentionPolicy: 30d`
+の実行にこれを必要とする。**書き込み専用にはできず、侵害されたクラスタは
+R2 上のバックアップを削除できる。** ADR-0008 の S6（ランサムウェア）は
+完全には塞がらない。バケットロック／オブジェクト保持で塞げる可能性があるが、
+現行仕様は未確認。
+
+主目的の S5（ストレージの論理破損で DB とバックアップを同時に失う）は
+R2 に置くだけで確実に塞がる。
+
+## 64. 実機で確認したこと
+
+### 64-1. バケット名が違っていた
+
+依頼時に伝えられた `homelab-moshitoku-postgre` は、実際には
+**`homelab-moshitoku-postgres`** だった（末尾の `s`）。
+署名付き HEAD リクエストで両方を試して確定させた。
+
+```
+[moshitoku] homelab-moshitoku-postgres : OK (200)
+[moshitoku] homelab-moshitoku-postgre  : HTTP 403
+[umami]     homelab-umami-postgres     : OK (200)
+[umami]     homelab-umami-postgre      : HTTP 403
+```
+
+1 文字違えばバックアップは無言で失敗する。**推測で書かず実機で確かめた。**
+互いのバケットに 403 が返ることから、トークンのスコープ分離も確認できた。
+
+### 64-2. NetworkPolicy の追加は不要だった
+
+当初「両 namespace に R2 への egress 追加が必要」と判断したが、**誤りだった。**
+
+`CiliumClusterwideNetworkPolicy/deny-egress-to-home-network` は
+除外リスト（`ceph-csi` / `kube-system` / `portal` / `velero` / `status`）
+以外の全 namespace に `egress: toEntities: all` を与えている。
+`analytics` も `moshitoku` も対象なので、宅内 CIDR 以外へは既に出られる。
+
+実機確認:
+
+```
+analytics/umami-postgres-1  → R2:443  CONNECTED
+moshitoku/moshitoku-postgres-1 → R2:443  CONNECTED
+```
+
+一度書いたポリシー追加は撤回した。`rules.dns` を足すと namespace 全体の
+DNS を壊すリスクがあり、不要な変更でそれを冒す理由が無い。
+代わりに ObjectStore のコメントへ「将来除外リストへ入れたら明示的な
+egress が要る」と記録した。
+
+### 64-3. R2 は IPv4/IPv6 両方を返す
+
+クラスタは `enable-ipv6=false` のため IPv4 が使われる。
+`getent ahosts` では IPv6 が先に返るが、接続は成立している。
+
+## 65. ⚠️ 誤診断を 1 つ記録しておく
+
+検証中、ObjectStore を R2 に向けた直後のバックアップが `completed` に
+なったのに R2 は空だった。このとき **「ObjectStore を変更しても稼働中の
+インスタンスは古い設定を使い続ける」と誤って結論し**、不要な
+ローリング再起動（`cnpg.io/restartedAt`）まで試した。
+
+実際は **ArgoCD が設定を巻き戻していた**だけだった。
+`umami` アプリの自動同期を止めても、root（app-of-apps）がそれを復元し、
+未 push のブランチではなく `main` の内容＝MinIO へ selfHeal していた。
+バックアップはその時点で正しく MinIO へ書いていた。CNPG の挙動は正常。
+
+**この環境ではマージ前のライブ検証が成立しない**（`homepage` でも
+同じ壁に当たった）。`root` アプリを止めない限り、どの app の一時変更も
+巻き戻される。
+
+## 66. 変更内容
+
+| リポジトリ / ファイル | 変更 |
+|---|---|
+| homelab `kubernetes/infra/umami/database.yaml` | ObjectStore を R2 へ |
+| homelab `scripts/reconcile-cnpg-r2-credentials.sh` | 新規（1Password から Secret 投入） |
+| homelab `kubernetes/infra/monitoring/alerts.yaml` | CNPG バックアップ監視 4 件（追記済み） |
+| moshitoku `deploy/kubernetes/database.yaml` | ObjectStore を R2 へ |
+
+Secret は投入済み（`analytics/umami-r2-credentials`、
+`moshitoku/moshitoku-r2-credentials`、いずれも 1Password 由来）。
+
+## 67. マージ後に必ず確認すること
+
+1. ObjectStore が R2 を指していること
+2. 手動バックアップを 1 回実行し、**R2 のバケットに実際にオブジェクトが
+   増えることを確認する**（`completed` の表示だけでは足りない。§65）
+3. `CNPGNoBackupEver` / `CNPGBackupFailing` が鳴らないこと
+4. WAL アーカイブが R2 へ流れること（`cnpg_pg_stat_archiver_failed_count`
+   が増えないこと）
+
+**旧 MinIO のバケットは、R2 からの復元確認が取れるまで削除しない。**
+切り替え後は更新が止まるだけで、中身は残る。
+
+## 68. 残る課題
+
+- **R2 からの復元は未検証。** バックアップが取れることと戻せることは別である。
+  隔離した環境への復元確認は別作業として残る。
+- Longhorn 本体の外部バックアップ（監視データ・コンテナイメージ）は
+  引き続き PBS のみ。§61 のとおり代替可能なデータなので優先度は低い。
+- ADR-0008 の階層 2（Velero）は未デプロイのまま。本変更は階層 2 の
+  目的（S5）を CNPG に限って満たすもので、ADR の全体像を満たすものではない。
+  **ADR-0008 を実態に合わせて更新する必要がある。**

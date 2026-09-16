@@ -8,14 +8,45 @@ metadata:
 spec:
   retentionPolicy: "30d"
   configuration:
-    destinationPath: s3://umami-postgres/
-    endpointURL: http://minio.logging.svc.cluster.local:9000
+    # -----------------------------------------------------------------------
+    # バックアップ先は Cloudflare R2（クラスタ外）
+    #
+    # 以前はクラスタ内 MinIO（s3://umami-postgres/ →
+    # minio.logging.svc.cluster.local:9000）に置いていた。その MinIO は
+    # Longhorn の上にあり、**守るべき対象と同じストレージ**に載っていた。
+    # Longhorn が論理破損すれば DB とそのバックアップが同時に消える。
+    # ADR-0008 が「旧構成の minio-for-velero と同じ問題」として警告していた
+    # 状態そのものである。
+    #
+    # 2026-09-16 の実測では、Longhorn の実データ 46.2 GiB のうち代替不能なのは
+    # 231 MB だけ（moshitoku 200MB / umami 31MB）。残りは保持 15 日の監視
+    # データと再ビルド可能なコンテナイメージ。R2 の無料枠 10 GB に十分収まる。
+    #
+    # ⚠️ 認証情報は umami-s3-credentials ではなく umami-r2-credentials。
+    #    前者は MinIO 用で bootstrap-umami-secrets.sh が管理しており、
+    #    上書きすると次回実行時に MinIO の値へ戻される。
+    #    投入は scripts/reconcile-cnpg-r2-credentials.sh（1Password から読む）。
+    #
+    # 📌 NetworkPolicy の追加は不要（2026-09-16 に実機確認）。
+    #    CiliumClusterwideNetworkPolicy/deny-egress-to-home-network は
+    #    除外リスト（ceph-csi / kube-system / portal / velero / status）以外の
+    #    全 namespace に `egress: toEntities: all` を与えており、宅内 CIDR 以外へは
+    #    既に出られる。analytics も対象なので R2 へ到達できる。
+    #
+    #    ⚠️ 逆に言えば、将来 analytics を除外リストへ追加した場合は
+    #       この宛先への egress を明示的に書かないとバックアップが無言で止まる。
+    #       その際は CNPGBackupStale / CNPGNoBackupEver が鳴る。
+    #
+    # 経緯は docs/storage-migration-2026-09-13.md を参照。
+    # -----------------------------------------------------------------------
+    destinationPath: s3://homelab-umami-postgres/
+    endpointURL: https://1a04b6f3502614c09cde09c933331300.r2.cloudflarestorage.com
     s3Credentials:
       accessKeyId:
-        name: umami-s3-credentials
+        name: umami-r2-credentials
         key: ACCESS_KEY_ID
       secretAccessKey:
-        name: umami-s3-credentials
+        name: umami-r2-credentials
         key: ACCESS_SECRET_KEY
     wal:
       compression: gzip

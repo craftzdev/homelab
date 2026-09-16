@@ -327,6 +327,80 @@ spec:
             summary: "{{ $labels.pve_node }} の {{ $labels.pool }} が ONLINE ではありません"
 
     # -----------------------------------------------------------------------
+    # CloudNativePG のバックアップ
+    #
+    # 2026-09-16 時点で、DB のバックアップは唯一の代替不能なデータである。
+    # Longhorn の実データ 46.2 GiB のうち、失って困るのは
+    # MinIO 内の moshitoku-postgres 200MB と umami-postgres 31MB だけで、
+    # 残りは監視データ（保持 15 日の時系列）とコンテナイメージ（再ビルド可）。
+    #
+    # ⚠️ 動くのは barman_cloud_* の方。`cnpg_collector_last_available_backup_timestamp`
+    #    は barman-cloud プラグイン構成では常に 0 で、これを使ったアラートは
+    #    一度も発火しない（本セッションで 3 度繰り返した失敗の形）。
+    #
+    # ⚠️ WAL のアーカイブ間隔では判定しない。書き込みが無い DB は
+    #    正当に WAL を出さない。実測で umami は 4.2 日アーカイブ無しだったが、
+    #    これは website_event が 0 行（計測データを受けていない）ためで
+    #    バックアップの異常ではない。失敗カウンタの増加で見る。
+    # -----------------------------------------------------------------------
+    - name: homelab.cnpg-backup
+      rules:
+        - alert: CNPGBackupStale
+          # 日次スケジュール（18:30 / 19:00 UTC）なので 36h は 1 回以上の欠測。
+          expr: |
+            time() - max by (namespace) (
+              barman_cloud_cloudnative_pg_io_last_available_backup_timestamp > 0
+            ) > 36 * 3600
+          for: 30m
+          labels:
+            severity: critical
+          annotations:
+            summary: "{{ $labels.namespace }} の DB バックアップが 36 時間以上更新されていません"
+            description: |
+              確認: kubectl -n {{ $labels.namespace }} get backups.postgresql.cnpg.io
+              バックアップ先の疎通も見る（ObjectStore の destinationPath / endpointURL）。
+
+        - alert: CNPGBackupFailing
+          # 直近の試行が失敗し、成功より新しい状態。
+          expr: |
+            max by (namespace) (barman_cloud_cloudnative_pg_io_last_failed_backup_timestamp)
+              > max by (namespace) (barman_cloud_cloudnative_pg_io_last_available_backup_timestamp)
+          for: 1h
+          labels:
+            severity: critical
+          annotations:
+            summary: "{{ $labels.namespace }} の DB バックアップが失敗しています"
+
+        - alert: CNPGNoBackupEver
+          # ObjectStore を差し替えた直後に、新しい保存先へ一度も書けていない状態を捕まえる。
+          expr: |
+            max by (namespace) (barman_cloud_cloudnative_pg_io_last_available_backup_timestamp) == 0
+          for: 6h
+          labels:
+            severity: critical
+          annotations:
+            summary: "{{ $labels.namespace }} にはバックアップが 1 つも存在しません"
+            description: |
+              バックアップ先を切り替えた直後は特にこれを確認すること。
+              新しい保存先へ一度も書けていない場合、古い保存先の中身は
+              もう更新されていない。
+
+        - alert: CNPGWALArchiveFailing
+          # WAL がアーカイブできないと、PITR の連続性が切れる。
+          # 放置すると pg_wal が溜まり続けて PVC を埋める。
+          expr: |
+            increase(cnpg_pg_stat_archiver_failed_count[1h]) > 0
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ $labels.namespace }}/{{ $labels.pod }} で WAL のアーカイブが失敗しています"
+            description: |
+              確認: kubectl -n {{ $labels.namespace }} exec {{ $labels.pod }} -c postgres -- \
+                psql -c 'select * from pg_stat_archiver'
+              バックアップ先が外部（R2）の場合、外向き通信の疎通も確認する。
+
+    # -----------------------------------------------------------------------
     # セキュリティ
     # -----------------------------------------------------------------------
     - name: homelab.security
