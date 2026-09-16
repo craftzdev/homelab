@@ -66,6 +66,16 @@ django_secret="$(ensure_generated_keychain_secret dev.craftz.moshitoku.django-se
 minio_secret="$(ensure_generated_keychain_secret dev.craftz.moshitoku.minio-secret-key)"
 ingest_token="$(ensure_generated_keychain_secret dev.craftz.moshitoku.ingest-api-token)"
 
+# /_analytics/api/send のレート制限キーを作る HMAC 鍵。
+#
+# 空だと _rate_limit_key() が鍵なしで "IP:分" をハッシュするため、
+# キャッシュのダンプや監視の出力から総当たりで接続元IPが復元できる。
+# 匿名化の意味が無くなるので、必ず値を入れる。
+#
+# ⚠️ 値が変わるとレート制限の窓が一度だけリセットされる。
+#    影響はその 1 分だけなので、失った場合は作り直してよい。
+analytics_rate_hash_key="$(ensure_generated_keychain_secret dev.craftz.moshitoku.analytics-rate-hash-key)"
+
 # ---------------------------------------------------------------------------
 # 内部取り込み API が許可する Source
 #
@@ -107,6 +117,7 @@ ingest_token_config="$(
 kubectl -n "${APP_NAMESPACE}" create secret generic moshitoku-runtime \
   --from-literal=django-secret-key="${django_secret}" \
   --from-literal=ingest-token-config="${ingest_token_config}" \
+  --from-literal=analytics-rate-hash-key="${analytics_rate_hash_key}" \
   --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 
 # バックアップ先の MinIO 資格情報。CNPG の ObjectStore が参照するため
