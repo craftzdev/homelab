@@ -6,7 +6,5 @@ resources:
   - storageclass.yaml
   - minio.yaml
   - minio-bootstrap.yaml
-  - minio-umami-bootstrap.yaml
-  - minio-moshitoku-bootstrap.yaml
   - monitoring.yaml
   - networkpolicy.yaml

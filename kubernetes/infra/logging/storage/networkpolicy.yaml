@@ -51,18 +51,18 @@ spec:
             io.kubernetes.pod.namespace: logging
             app.kubernetes.io/name: minio-bucket-bootstrap
         - matchLabels:
-            io.kubernetes.pod.namespace: logging
-            app.kubernetes.io/name: minio-umami-bootstrap
-        - matchLabels:
-            io.kubernetes.pod.namespace: logging
-            app.kubernetes.io/name: minio-moshitoku-bootstrap
-        - matchLabels:
             io.kubernetes.pod.namespace: analytics
         - matchLabels:
             io.kubernetes.pod.namespace: monitoring
-        # moshitoku の CloudNativePG が Barman で WAL とベースバックアップを
-        # ここへ送る。許可しないとアーカイブが失敗し、転送できない WAL が
-        # 蓄積して DB のディスクを埋める。
+        # CloudNativePG のバックアップ先は R2 へ移った（ADR-0012）。
+        # この経路はもう書き込みには使われていないが、MinIO には R2 が
+        # まだ持っていない 4〜6 日分の世代が残っており、**そこからの復元
+        # 経路として残している。** R2 の保持が 7 日に達したら
+        # （2026-09-23 頃）、バケットごとこの 2 つの許可も消すこと。
+        # 経緯は docs/minio-cnpg-decommission-2026-09-16.md を参照。
+        #
+        # ⚠️ 消す順序を誤らないこと。ここを先に消すと、冷凍コピーが
+        #    残っていても復元できない。
         #
         # ⚠️ クラスタ名を直接指さない。復元は別名のクラスタとして起動し、
         #    その Job の Pod は cnpg.io/cluster=<復元先の名前> を持つ。
@@ -81,46 +81,6 @@ spec:
               protocol: TCP
 
 ---
-apiVersion: cilium.io/v2
-kind: CiliumNetworkPolicy
-metadata:
-  name: minio-bootstrap-egress
-  namespace: logging
-spec:
-  endpointSelector:
-    matchLabels:
-      app.kubernetes.io/name: minio-bucket-bootstrap
-  egress:
-    - toEndpoints:
-        - matchLabels:
-            io.kubernetes.pod.namespace: logging
-            app.kubernetes.io/name: minio
-      toPorts:
-        - ports:
-            - port: "9000"
-              protocol: TCP
-
----
-apiVersion: cilium.io/v2
-kind: CiliumNetworkPolicy
-metadata:
-  name: minio-umami-bootstrap-egress
-  namespace: logging
-spec:
-  endpointSelector:
-    matchLabels:
-      app.kubernetes.io/name: minio-umami-bootstrap
-  egress:
-    - toEndpoints:
-        - matchLabels:
-            io.kubernetes.pod.namespace: logging
-            app.kubernetes.io/name: minio
-      toPorts:
-        - ports:
-            - port: "9000"
-              protocol: TCP
-
----
 # ===========================================================================
 # moshitoku の bucket 作成 Job から MinIO への egress
 #
@@ -131,12 +91,12 @@ spec:
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
-  name: minio-moshitoku-bootstrap-egress
+  name: minio-bootstrap-egress
   namespace: logging
 spec:
   endpointSelector:
     matchLabels:
-      app.kubernetes.io/name: minio-moshitoku-bootstrap
+      app.kubernetes.io/name: minio-bucket-bootstrap
   egress:
     - toEndpoints:
         - matchLabels:
