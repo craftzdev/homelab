@@ -40,6 +40,16 @@ on:
           - extract
           - lookup
           - full
+      # renovate.json の schedule は「土曜 9-18 時 JST」で、それ以外の時刻に
+      # 手で流しても cloudflared（at any time 指定）しか出ない。設計どおりの
+      # 挙動だが、窓の外で一度だけ全件を出したいことがある。
+      #
+      # ⚠️ これは方針の一時的な上書きである。常用しないこと。窓を広げたい
+      #    なら renovate.json を直すのが筋で、ここを既定 true にはしない。
+      force_schedule:
+        description: "Ignore renovate.json's schedule for this run"
+        type: boolean
+        default: false
 
 # 実行中の Renovate を新しい実行で打ち切ると、作成途中のブランチと PR が
 # 中途半端に残る。待たせる方が安全。
@@ -137,18 +147,28 @@ jobs:
           RENOVATE_REQUIRE_CONFIG: required
           LOG_LEVEL: info
           DRY_RUN: ${{ inputs.dry_run }}
+          FORCE_SCHEDULE: ${{ inputs.force_schedule }}
         run: |
           set -euo pipefail
           args=()
           if [[ -n "${DRY_RUN}" ]]; then
             args+=("--dry-run=${DRY_RUN}")
-            # 手動確認を更新時間帯の外で行えるようにする。schedule の上書きは
-            # dry-run のときだけで、週次の実行は renovate.json の schedule に従う。
-            #
-            # ⚠️ `--force=...` という CLI オプションは存在しない。似た名前の
-            #    `--force-cli` はあるが意味が違う（CLI 引数を force 節へ移す）。
-            #    渡すと Renovate は "unknown option" で即座に終了するため、
-            #    force 設定は環境変数で与える。
+          fi
+
+          # schedule を無視する条件は 2 つ。
+          #
+          #   - dry-run: 確認を更新時間帯の外で行えるようにするため。
+          #     何も書き込まないので方針への影響が無い。
+          #   - force_schedule: 窓の外で本番実行したいとき。明示指定のみ。
+          #
+          # 週次の scheduled 実行はどちらにも当たらないため、renovate.json の
+          # schedule にそのまま従う。
+          #
+          # ⚠️ `--force=...` という CLI オプションは存在しない。似た名前の
+          #    `--force-cli` はあるが意味が違う（CLI 引数を force 節へ移す）。
+          #    渡すと Renovate は "unknown option" で即座に終了するため、
+          #    force 設定は環境変数で与える。
+          if [[ -n "${DRY_RUN}" || "${FORCE_SCHEDULE}" == "true" ]]; then
             export RENOVATE_FORCE='{"schedule":["at any time"]}'
           fi
           renovate "${args[@]}"
