@@ -113,6 +113,109 @@ spec:
               その際は ArgoCD の longhorn app の自動同期も一時停止しないと戻される。
 
     # -----------------------------------------------------------------------
+    # Longhorn
+    #
+    # 2026-09-13 の障害では、レプリカ再構築が失敗し続けて縮退ボリュームが
+    # 3 → 7 個に増え、Prometheus / Loki / MinIO がコピー 1 個まで減っていた。
+    # いずれも worker-3 に集中しており、同ノードには CNPG 両クラスタの主系も
+    # 載っていた。1 筐体の喪失で DB 主系と DB バックアップ先を同時に失う
+    # 状態だったが、**Longhorn のメトリクスは 1 つも収集されていなかった**
+    # （ServiceMonitor が CRD 導入前の TODO のまま無効だった）。
+    # 経緯は docs/storage-migration-2026-09-13.md を参照。
+    #
+    # メトリクスの形（2026-09-16 実測）:
+    #   longhorn_volume_robustness{volume,pvc,pvc_namespace,node,state}
+    #     state ごとの one-hot。該当状態が 1、それ以外が 0。
+    #     state は healthy / degraded / faulted / unknown。
+    #   longhorn_replica_state{volume,replica,node,state}  state=running 等
+    #   longhorn_node_status{node,condition}  condition=ready/schedulable/...
+    #
+    # ⚠️ レプリカ数 1 は異常ではない。CNPG の 6 ボリュームは
+    #    longhorn-cnpg-retain で意図的にレプリカ 1（冗長化は PostgreSQL の
+    #    3 インスタンスが担う）。そのため「実レプリカ数」ではなく
+    #    robustness（希望数を満たしているか）で判定する。
+    # -----------------------------------------------------------------------
+    - name: homelab.longhorn
+      rules:
+        - alert: LonghornVolumeDegraded
+          # 再構築中は一時的に degraded になる。30 分続く場合は
+          # 「再構築が進んでいない」ことを意味する。
+          expr: |
+            longhorn_volume_robustness{state="degraded"} == 1
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Longhorn ボリューム {{ $labels.pvc_namespace }}/{{ $labels.pvc }} が 30 分以上 degraded です"
+            description: |
+              再構築が完走していない可能性がある。まず失敗理由を見る:
+                kubectl -n longhorn-system get events --field-selector reason=FailedRebuilding
+              再試行上限（rebuildRetryCount=5）に達していると Longhorn は
+              諦めて放置する。その場合は healthyAt が空で engine の
+              replicaAddressMap にも居ない空レプリカを削除して作り直させる。
+              ディスク遅延が原因のことも多い。NodeDiskWriteLatency* も確認。
+
+        - alert: LonghornVolumeDegradedSingleReplica
+          # 希望数を下回っており、かつ実際に動いているコピーが 1 個しかない。
+          # 次に 1 つ失うとデータが無くなる。
+          expr: |
+            (longhorn_volume_robustness{state="degraded"} == 1)
+              and on (volume)
+            (count by (volume) (longhorn_replica_state{state="running"} == 1) < 2)
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Longhorn ボリューム {{ $labels.pvc_namespace }}/{{ $labels.pvc }} のコピーが 1 個しかありません"
+            description: |
+              次に 1 つ失うとデータが失われる。残っているコピーのノードを
+              再起動・drain・退避の対象から外すこと。
+                kubectl -n longhorn-system get replicas.longhorn.io \
+                  -o custom-columns=N:.metadata.name,V:.spec.volumeName,NODE:.spec.nodeID,S:.status.currentState
+
+        - alert: LonghornVolumeFaulted
+          expr: |
+            longhorn_volume_robustness{state="faulted"} == 1
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Longhorn ボリューム {{ $labels.pvc_namespace }}/{{ $labels.pvc }} が faulted です"
+            description: |
+              正常なレプリカが 1 つも無く、ボリュームは読み書きできない。
+
+        - alert: LonghornNodeNotReady
+          expr: |
+            longhorn_node_status{condition="ready"} == 0
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Longhorn ノード {{ $labels.node }} が Ready ではありません"
+
+        - alert: LonghornNodeNotSchedulable
+          # 容量不足やノードの cordon で新しいレプリカを置けない。
+          # 縮退したまま復旧できなくなる。
+          expr: |
+            longhorn_node_status{condition="schedulable"} == 0
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Longhorn ノード {{ $labels.node }} に新しいレプリカを配置できません"
+
+        - alert: LonghornDiskFillingUp
+          expr: |
+            longhorn_disk_usage_bytes / longhorn_disk_capacity_bytes > 0.75
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            summary: "Longhorn ディスク {{ $labels.node }} の使用率が 75% を超えています"
+            description: |
+              空きが減るとレプリカを配置できなくなり、縮退から復旧できなくなる。
+
+    # -----------------------------------------------------------------------
     # セキュリティ
     # -----------------------------------------------------------------------
     - name: homelab.security
