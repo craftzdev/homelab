@@ -300,9 +300,15 @@ spec:
         - alert: ProxmoxHostDiskWriteLatencyHigh
           # ホスト側なので Longhorn も LUKS も挟まらない、物理ディスクの値。
           # 平常時 1ms 未満、障害時 190-319ms。ゲスト側の代理指標より鋭い。
+          #
+          # ⚠️ device の絞り込みを外さないこと。エクスポーター側でも
+          #    zd*/dm-*/loop* は落としているが、ここでも明示しておく。
+          #    zvol は下位デバイスの I/O を別名で二重計上し、2026-09-16 の
+          #    実測では最大 73ms（物理 sda は 0-10ms）と一桁遅く見えていた。
+          #    絞らないとこの閾値は zvol で誤検知する。
           expr: |
-            rate(pve_node_disk_write_time_seconds_total[5m])
-              / rate(pve_node_disk_writes_completed_total[5m]) > 0.05
+            rate(pve_node_disk_write_time_seconds_total{device=~"sd.*|nvme.*"}[5m])
+              / rate(pve_node_disk_writes_completed_total{device=~"sd.*|nvme.*"}[5m]) > 0.05
           for: 15m
           labels:
             severity: warning
