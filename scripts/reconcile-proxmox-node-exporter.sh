@@ -91,6 +91,9 @@ COLLECTOR_SRC="${SCRIPT_DIR}/proxmox-zfs-textfile-collector.sh"
 
 pve() { local h="$1"; shift; ssh -o BatchMode=yes -o ConnectTimeout=10 "${PVE_SSH_USER}@${h}" "$@"; }
 
+listen_out="$(mktemp)"
+trap 'rm -f "${listen_out}"' EXIT
+
 changed=0
 
 for host in ${PVE_HOSTS}; do
@@ -131,7 +134,11 @@ for host in ${PVE_HOSTS}; do
       printf '%s\n' \"\$want\" >> /etc/default/prometheus-node-exporter
       systemctl restart prometheus-node-exporter
       echo CHANGED
-    fi"  | grep -q CHANGED && { changed=$((changed + 1)); ok "  待ち受けアドレスを設定しました"; } || true
+    fi" > "${listen_out}" || true
+  if grep -q CHANGED "${listen_out}"; then
+    changed=$((changed + 1))
+    ok "  待ち受けアドレスを設定しました"
+  fi
 
   scp -q -o BatchMode=yes "${COLLECTOR_SRC}" \
     "${PVE_SSH_USER}@${host}:/usr/local/bin/proxmox-zfs-textfile-collector.sh"
