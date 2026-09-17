@@ -267,3 +267,165 @@ spec:
     - fromEntities:
         - host
         - remote-node
+
+---
+# ---------------------------------------------------------------------------
+# monitoring
+#
+# Prometheus は「クラスタ中の Pod を片っ端から scrape する」のが仕事なので、
+# 宛先を絞る意味は薄い。ここで閉じたいのはその逆で、インターネットへの
+# 外向き通信である（侵害時の持ち出し経路になる）。
+#
+# 宅内 CIDR への deny は clusterwide-egress-deny.yaml が担う。VLAN40 の
+# node-exporter（Talos ノードと Business Gateway VM）は宅内 CIDR ではないため、
+# ここで明示する。
+# ---------------------------------------------------------------------------
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: monitoring
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: monitoring-egress
+  namespace: monitoring
+spec:
+  endpointSelector: {}
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+
+    # Prometheus / kube-state-metrics / Operator / Grafana の API 参照
+    - toEntities:
+        - kube-apiserver
+
+    # クラスタ内の scrape 先。ポートはコンポーネントごとに異なり、
+    # exporter を足すたびに変わるため、宛先ポートは絞らない。
+    - toEndpoints:
+        - {}
+
+    # kubelet（10250）と node-exporter（9100）。ノード上で動くため
+    # Pod ではなく host / remote-node として現れる。
+    - toEntities:
+        - host
+        - remote-node
+
+    # VLAN40 上の node-exporter。Talos ノードと Business Gateway VM が
+    # ここに含まれる。
+    - toCIDR:
+        - 172.16.40.0/24
+      toPorts:
+        - ports:
+            - port: "9100"
+              protocol: TCP
+
+---
+# Grafana だけは grafana.com へ出る（プラグインとバージョン確認）。
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: grafana-public-https
+  namespace: monitoring
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: grafana
+  egress:
+    - toCIDRSet:
+        - cidr: 0.0.0.0/0
+          except:
+            - 10.0.0.0/8
+            - 100.64.0.0/10
+            - 169.254.0.0/16
+            - 172.16.0.0/12
+            - 192.168.0.0/16
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+
+---
+# ---------------------------------------------------------------------------
+# image-registry
+#
+# レジストリは pull を受けるだけで、外へ出る必要が無い。
+# ---------------------------------------------------------------------------
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: image-registry
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: image-registry-egress
+  namespace: image-registry
+spec:
+  endpointSelector: {}
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+
+---
+# ---------------------------------------------------------------------------
+# kubelet-serving-cert-approver
+#
+# kubelet の CSR を承認するだけのコンポーネント。apiserver 以外へは出ない。
+# ---------------------------------------------------------------------------
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: kubelet-serving-cert-approver
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: kubelet-serving-cert-approver-egress
+  namespace: kubelet-serving-cert-approver
+spec:
+  endpointSelector: {}
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+    - toEntities:
+        - kube-apiserver
