@@ -71,3 +71,38 @@ spec:
         - ports:
             - port: "3000"
               protocol: TCP
+
+---
+# The barman-cloud plugin archives WAL and base backups to Cloudflare R2
+# (ObjectStore umami-minio in database.yaml). Until 2026-09 this only worked
+# through the clusterwide blanket egress allow. The DNS rule lets Cilium learn
+# the R2 addresses for toFQDNs; it matches moshitoku-postgres.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: umami-postgres-backup
+  namespace: analytics
+spec:
+  endpointSelector:
+    matchLabels:
+      cnpg.io/cluster: umami-postgres
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+          rules:
+            dns:
+              - matchPattern: "*"
+    - toFQDNs:
+        - matchName: 1a04b6f3502614c09cde09c933331300.r2.cloudflarestorage.com
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
