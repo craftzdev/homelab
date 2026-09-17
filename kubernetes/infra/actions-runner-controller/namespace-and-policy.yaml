@@ -196,7 +196,7 @@ spec:
   policyTypes: [Ingress, Egress]
 
 ---
-# Builder Pods can resolve DNS, use public HTTPS and push to Harbor through
+# Builder Pods can resolve DNS, use public HTTP(S) and push to Harbor through
 # the CI proxy. They accept no ingress and cannot reach the Kubernetes API or
 # home networks.
 apiVersion: cilium.io/v2
@@ -228,6 +228,11 @@ spec:
       toPorts:
         - ports:
             - port: "443"
+              protocol: TCP
+            # Debian 系ベースイメージの apt-get は既定で http://deb.debian.org
+            # を使う（ai-business-worker / moshitoku の Dockerfile）。
+            # ビルドキャッシュが効かない回だけ現れるので、観測で見落としやすい。
+            - port: "80"
               protocol: TCP
     - toEndpoints:
         - matchLabels:

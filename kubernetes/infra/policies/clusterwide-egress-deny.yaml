@@ -143,8 +143,26 @@ spec:
           - kube-system
           - portal
           - velero
-          # 自前の allow だけで動くことを確認済みの namespace
+          # 自前の allow だけで動くことを確認済みの namespace。
+          # Hubble で全 egress（UDP を含む）を収集し、各 namespace の
+          # allow と突き合わせてから追加する。
           - status
+          # 2026-09-18: 7844/QUIC と Gateway backend の許可を検証用 Pod で確認
+          - cloudflared
+          # 2026-09-18: 第 1 陣（観測した egress がすべて自前の allow に収まる）
+          - arc-builders
+          - arc-runners
+          - arc-systems
+          - argocd
+          - cert-manager
+          - cnpg-system
+          - default
+          - gateway
+          - harbor
+          - logging
+          - logging-audit
+          - longhorn-system
+          - security
       - key: homelab.io/legacy-egress-allow
         operator: NotIn
         values:
