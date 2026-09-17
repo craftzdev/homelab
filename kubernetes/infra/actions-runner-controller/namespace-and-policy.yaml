@@ -13,8 +13,24 @@ kind: Namespace
 metadata:
   name: arc-runners
   labels:
+    # Daemonless runners and the Harbor CI proxy only. Privileged image
+    # builders live in arc-builders so that this namespace can stay restricted.
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: arc-builders
+  labels:
     # Repository-scoped image builders use ARC's ephemeral Docker-in-Docker
-    # mode. Cilium still limits their network access.
+    # mode, which needs a privileged container. A privileged container is
+    # effectively root on its node, so these Pods are kept apart from the
+    # unprivileged runners and receive nothing they do not need: no
+    # ServiceAccount token, no TLS private key, and only the network access
+    # listed in builder-network below.
     pod-security.kubernetes.io/enforce: privileged
     pod-security.kubernetes.io/audit: restricted
     pod-security.kubernetes.io/warn: restricted
@@ -81,14 +97,113 @@ spec:
   policyTypes: [Ingress, Egress]
 
 ---
-# Job Pods can resolve DNS and use public HTTPS. They cannot reach the
-# Kubernetes API or home networks. Harbor's dedicated CI endpoint is the sole
-# private-network exception.
+# Daemonless job Pods can resolve DNS and use public HTTPS. They cannot reach
+# the Kubernetes API, home networks or Harbor.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
   name: runner-public-https-only
   namespace: arc-runners
+spec:
+  endpointSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: NotIn
+        values:
+          - harbor-ci-proxy
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+    - toCIDRSet:
+        - cidr: 0.0.0.0/0
+          except:
+            - 10.0.0.0/8
+            - 100.64.0.0/10
+            - 169.254.0.0/16
+            - 172.16.0.0/12
+            - 192.168.0.0/16
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+
+---
+# Harbor's dedicated CI endpoint. It forwards registry traffic from the image
+# builders and from Talos nodes to Harbor's in-cluster nginx.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: harbor-ci-proxy
+  namespace: arc-runners
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: harbor-ci-proxy
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: harbor
+            k8s:app: harbor
+            k8s:component: nginx
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: arc-builders
+      toPorts:
+        - ports:
+            - port: "5000"
+              protocol: TCP
+    # kubelet/containerd pulls originate from the Talos node rather than a
+    # workload identity. Limit Harbor's LAN registry listener to cluster nodes.
+    - fromEntities:
+        - host
+        - remote-node
+      toPorts:
+        - ports:
+            - port: "5000"
+              protocol: TCP
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: arc-builders
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+
+---
+# Builder Pods can resolve DNS, use public HTTPS and push to Harbor through
+# the CI proxy. They accept no ingress and cannot reach the Kubernetes API or
+# home networks.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: builder-network
+  namespace: arc-builders
 spec:
   endpointSelector: {}
   egress:
@@ -131,20 +246,40 @@ spec:
         - ports:
             - port: "8080"
               protocol: TCP
-  ingress:
-    - fromEndpoints:
-        - matchLabels:
-            io.kubernetes.pod.namespace: arc-runners
-      toPorts:
-        - ports:
-            - port: "5000"
-              protocol: TCP
-    # kubelet/containerd pulls originate from the Talos node rather than a
-    # workload identity. Limit Harbor's LAN registry listener to cluster nodes.
-    - fromEntities:
-        - host
-        - remote-node
-      toPorts:
-        - ports:
-            - port: "5000"
-              protocol: TCP
+
+---
+# The public half of Secret/harbor-ci-proxy-tls, identical to
+# talos/certs/harbor-registry-ca.crt. Builders only need to trust the proxy;
+# they must never be able to read its private key.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: harbor-ci-ca
+  namespace: arc-builders
+data:
+  tls.crt: |
+    -----BEGIN CERTIFICATE-----
+    MIIESTCCArGgAwIBAgIUYHWp0uFRSzbeYZgsUa+Z5WstvD4wDQYJKoZIhvcNAQEL
+    BQAwGDEWMBQGA1UEAwwNMTcyLjE2LjQwLjIwMTAeFw0yNjA5MTEwOTM4NTVaFw0z
+    NjA5MDgwOTM4NTVaMBgxFjAUBgNVBAMMDTE3Mi4xNi40MC4yMDEwggGiMA0GCSqG
+    SIb3DQEBAQUAA4IBjwAwggGKAoIBgQCj7oMDpIZh/RKrjmiSYUVvWfvM04DRybB9
+    LFMmZ3Elsw6K4IwDPkCTq37Utgxq7rHmAIyhh+WY64EW3UXJBghzcxrhDB8KKZiv
+    SofpKGq4+PhBoKZqsP2uQSAIa0U657zNqIM9Z52CuLhcOIxPTpQTYx3iyu1z4nv/
+    XRvPnLR4COv0c6uK1Cxx3SWhph+yow56NhJ+yChDUR23RMicd11fG/bQ88NSbf6f
+    WUK+Gi+/moT9JhcW3DuuZcroaSAF1F1EDhtZ+Bo9yWQtkr9gpBjPu8R8ox6wELDk
+    fSpE/uEdds/msmTaUuG5DV9fYgvb6mLCaFP0kUTCqwdCTzyeHs8T908G0ordYY/X
+    wAcVH22Hk3M1n0Zyvaux0uNOoY/tmbbm2Gla6V3xVPFLgGhy+7VvFafMU2kXrbQp
+    xq/vFpFTyBJc25E/t3WuixDcTRWCrw+33C6QTILx7KT+JxN23Cu7vnaTua25J2Pg
+    PQateOWfZfV3vqwjUx5P0e+Gi4BOMV0CAwEAAaOBijCBhzAdBgNVHQ4EFgQUOU00
+    31cNeEHc2ewrPej9/Ga7nJMwHwYDVR0jBBgwFoAUOU0031cNeEHc2ewrPej9/Ga7
+    nJMwDwYDVR0RBAgwBocErBAoyTAPBgNVHRMBAf8EBTADAQH/MA4GA1UdDwEB/wQE
+    AwICpDATBgNVHSUEDDAKBggrBgEFBQcDATANBgkqhkiG9w0BAQsFAAOCAYEANh5D
+    G+v2jwKlCX82o9uhBTfz0LKb0tjEos0XECOIzl1WAzKjK3VoFMSeVf4H2qVL+JH1
+    65wNQytE0Y4Dzk7w9px85kafR5f5/cW0eD8kaZ67Tn6Y3ytj0XgW81YPaFMalClC
+    iK8ROyt4v0KJIg1LQ8hC9pdB0f/FrEDaVKw/Geyi+8dnVs3vD1pZMn6jUa9HWYwD
+    YD32Zn97Nlohcbjlg4cPkSjH7KLW/ZMwKTG9cOL6DBRGIUEIkNwJ/sGO7X5/MOm/
+    tIg3bntHh7qAHJL/ZidQmlgqxWo3nhICxMhV3oT9hWfh3VD40PHsCNxKuwNbr2oe
+    e9AtFH0QheimvYFQ3Wp3OONSa2mN6crzhzr/7rPP+LYkXcBwBOzWxAuIRbHPto0d
+    YzNDf6cgpjTQhXL9LjmCgBC8g2K8jjfZkW+ywf8yoKwWHhaQFp+k4pQbm/Ml0iLU
+    gk1Q4U8mxmSwN7m3r6eusXkhj52l+FfzHtFf3hRqQFHi1RGcPNPOS5WUMIi1
+    -----END CERTIFICATE-----
