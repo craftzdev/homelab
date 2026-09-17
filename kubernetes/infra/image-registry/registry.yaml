@@ -51,6 +51,13 @@ spec:
               value: /tls/tls.crt
             - name: REGISTRY_HTTP_TLS_KEY
               value: /tls/tls.key
+            # The registry has no authentication and every workload now pulls
+            # from Harbor. Read-only mode rejects pushes and deletes with 405
+            # so that nobody on the LAN or Tailnet can replace an image that
+            # Talos would trust. Remove the whole registry once Harbor
+            # recovery has been verified.
+            - name: REGISTRY_STORAGE_MAINTENANCE
+              value: '{"readonly": {"enabled": true}, "uploadpurging": {"enabled": false}}'
           ports:
             - name: https
               containerPort: 5000
