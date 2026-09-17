@@ -62,6 +62,16 @@ spec:
   # このポリシーは宅内への egress を拒否するだけで、何も許可しない。
   # enableDefaultDeny.egress: false により、選択した Endpoint の egress を
   # default-deny に切り替えることもしない。
+  #
+  # egress の許可範囲は、各 namespace の default-deny と allow ポリシーだけで
+  # 決まる。以前はここに `egress: toEntities: [all]` があり、Cilium が allow を
+  # 合成するため、各 namespace の egress 許可リストを公開 IP・他 namespace の
+  # Pod に対して無効化していた（2026-09 に namespace ごとに移行して撤去）。
+  #
+  # ⚠️ egress ポリシーを 1 つも持たない namespace（monitoring / tailscale /
+  #    image-registry / kubelet-serving-cert-approver）は、宅内 CIDR 以外へは
+  #    制限なく出られる。新しい namespace を作ったら、namespace-default-deny.yaml
+  #    の方針どおり default-deny と allow を必ず置くこと。
   # ---------------------------------------------------------------------------
   endpointSelector:
     matchExpressions:
@@ -101,83 +111,6 @@ spec:
         # 169.254.169.254 はクラウドのメタデータエンドポイントとして
         # 知られており、SSRF の常套手段。オンプレでも塞いでおく。
         - 169.254.0.0/16
-
----
-# ===========================================================================
-# 移行中の暫定措置: 宅内以外への egress を一律に許可する
-#
-# 以前は上の deny ポリシー自身が `egress: toEntities: [all]` を持っていた。
-# Cilium は全ポリシーの allow を合成するため、この 1 行が各 namespace の
-# CiliumNetworkPolicy に書いた egress 許可リストを、公開 IP・他 namespace の
-# Pod に対して無効化している。
-#
-# 一括で外すと、許可リストの書き漏れ（cloudflared の 7844/UDP など）で
-# 公開経路が止まる（2026-09-17 に moshitoku.com が 502 になった）。そこで
-# 許可だけをこの別ポリシーへ分け、namespace 単位で対象から外していく。
-#
-#   - namespace を移行するときは、下の NotIn に追加する。
-#     追加した namespace では、その namespace 自身の allow だけが効く。
-#   - Pod に `homelab.io/legacy-egress-allow: "false"` を付けると、
-#     その Pod だけを対象から外せる。新しい allow を本番の Pod に当てる前に
-#     検証用 Pod で確かめるために使う。
-#   - 全 namespace を移行し終えたら、このポリシーごと削除する。
-#
-# ⚠️ ここに書いた除外は「宅内以外へどこでも出られる」を取り消すだけで、
-#    宅内への deny は上のポリシーで常に効いている。
-# ===========================================================================
-apiVersion: cilium.io/v2
-kind: CiliumClusterwideNetworkPolicy
-metadata:
-  name: legacy-egress-allow-all
-  annotations:
-    # deny 側から allow を外すより先に、こちらが存在していなければならない。
-    argocd.argoproj.io/sync-wave: "-1"
-spec:
-  endpointSelector:
-    matchExpressions:
-      - key: io.kubernetes.pod.namespace
-        operator: NotIn
-        values:
-          # 宅内へ出る必要があり、上の deny からも外している namespace
-          - ceph-csi
-          - kube-system
-          - portal
-          - velero
-          # 自前の allow だけで動くことを確認済みの namespace。
-          # Hubble で全 egress（UDP を含む）を収集し、各 namespace の
-          # allow と突き合わせてから追加する。
-          - status
-          # 2026-09-18: 7844/QUIC と Gateway backend の許可を検証用 Pod で確認
-          - cloudflared
-          # 2026-09-18: 第 1 陣（観測した egress がすべて自前の allow に収まる）
-          - arc-builders
-          - arc-runners
-          - arc-systems
-          - argocd
-          - cert-manager
-          - cnpg-system
-          - default
-          - gateway
-          - harbor
-          - logging
-          - logging-audit
-          - longhorn-system
-          - security
-          # 2026-09-18: 第 2 陣（アプリ）。コードと manifest の通信先、
-          # scraper の実行時の通信、検証用 Pod での疎通を確認済み。
-          - ai-agent
-          - ai-control-plane
-          - ai-worker
-          - analytics
-          - moshitoku
-          - moshitoku-scraper
-      - key: homelab.io/legacy-egress-allow
-        operator: NotIn
-        values:
-          - "false"
-  egress:
-    - toEntities:
-        - all
 
 ---
 # ===========================================================================
