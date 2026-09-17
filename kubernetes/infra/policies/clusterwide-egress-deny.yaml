@@ -163,6 +163,14 @@ spec:
           - logging-audit
           - longhorn-system
           - security
+          # 2026-09-18: 第 2 陣（アプリ）。コードと manifest の通信先、
+          # scraper の実行時の通信、検証用 Pod での疎通を確認済み。
+          - ai-agent
+          - ai-control-plane
+          - ai-worker
+          - analytics
+          - moshitoku
+          - moshitoku-scraper
       - key: homelab.io/legacy-egress-allow
         operator: NotIn
         values:
