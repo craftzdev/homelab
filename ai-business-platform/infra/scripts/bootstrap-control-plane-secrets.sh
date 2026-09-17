@@ -4,6 +4,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 KUBECONFIG_PATH="${1:-${REPO_ROOT}/_out/kubeconfig}"
+
+# Secret は argv に載せず標準入力から渡す（lib/secrets.sh の apply_secret）。
+# shellcheck source=scripts/lib/secrets.sh
+source "${REPO_ROOT}/scripts/lib/secrets.sh"
+KUBECTL_SECRET_ARGS=(--kubeconfig "${KUBECONFIG_PATH}")
 DEPLOY_KEY_PATH="${CONTROL_PLANE_DEPLOY_KEY_PATH:-/Users/craftz/.ssh/argocd-ai-business-control-plane}"
 NAMESPACE=ai-control-plane
 RUNTIME_SECRET=ai-business-control-plane-runtime
@@ -41,15 +46,12 @@ gateway_token="$(read_keychain dev.craftz.ai-business-gateway.gateway-api-token)
 cf_client_id="$(read_keychain dev.craftz.ai-business-gateway.cloudflare-access-client-id)"
 cf_client_secret="$(read_keychain dev.craftz.ai-business-gateway.cloudflare-access-client-secret)"
 
-kubectl --kubeconfig "${KUBECONFIG_PATH}" -n "${NAMESPACE}" \
-  create secret generic "${RUNTIME_SECRET}" \
-  --from-literal=admin-token="${admin_token}" \
-  --from-literal=session-secret="${session_secret}" \
-  --from-literal=gateway-api-token="${gateway_token}" \
-  --from-literal=cf-access-client-id="${cf_client_id}" \
-  --from-literal=cf-access-client-secret="${cf_client_secret}" \
-  --dry-run=client -o yaml \
-  | kubectl --kubeconfig "${KUBECONFIG_PATH}" apply -f - >/dev/null
+apply_secret "${NAMESPACE}" "${RUNTIME_SECRET}" "" \
+  "admin-token=${admin_token}" \
+  "session-secret=${session_secret}" \
+  "gateway-api-token=${gateway_token}" \
+  "cf-access-client-id=${cf_client_id}" \
+  "cf-access-client-secret=${cf_client_secret}"
 
 kubectl --kubeconfig "${KUBECONFIG_PATH}" -n ai-worker get secret harbor-pull -o json \
   | jq 'del(.metadata.creationTimestamp,.metadata.resourceVersion,.metadata.uid,.metadata.ownerReferences,.metadata.managedFields) | .metadata.namespace="ai-control-plane"' \
@@ -57,14 +59,11 @@ kubectl --kubeconfig "${KUBECONFIG_PATH}" -n ai-worker get secret harbor-pull -o
 
 deploy_key="$(<"${DEPLOY_KEY_PATH}")"
 
-kubectl --kubeconfig "${KUBECONFIG_PATH}" -n argocd \
-  create secret generic ai-business-control-plane-repository \
-  --from-literal=type=git \
-  --from-literal=url=git@github.com:craftzdev/ai-business-control-plane.git \
-  --from-literal=project=ai-business \
-  --from-literal=sshPrivateKey="${deploy_key}" \
-  --dry-run=client -o yaml \
-  | kubectl --kubeconfig "${KUBECONFIG_PATH}" apply -f - >/dev/null
+apply_secret argocd ai-business-control-plane-repository "" \
+  "type=git" \
+  "url=git@github.com:craftzdev/ai-business-control-plane.git" \
+  "project=ai-business" \
+  "sshPrivateKey=${deploy_key}"
 kubectl --kubeconfig "${KUBECONFIG_PATH}" -n argocd label secret \
   ai-business-control-plane-repository \
   argocd.argoproj.io/secret-type=repository --overwrite >/dev/null

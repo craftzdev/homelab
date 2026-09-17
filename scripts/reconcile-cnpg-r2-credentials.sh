@@ -111,6 +111,10 @@ command -v op >/dev/null || die "1Password CLI (op) が見つかりません"
 op account list >/dev/null 2>&1 || die "op にサインインしていません（op signin）"
 
 k() { kubectl --kubeconfig "${KUBECONFIG_PATH}" "$@"; }
+# Secret は argv に載せず標準入力から渡す（lib/secrets.sh の apply_secret）。
+# shellcheck source=scripts/lib/secrets.sh
+source "${SCRIPT_DIR}/lib/secrets.sh"
+KUBECTL_SECRET_ARGS=(--kubeconfig "${KUBECONFIG_PATH}")
 
 for target in "${TARGETS[@]}"; do
   IFS='|' read -r namespace secret item <<<"${target}"
@@ -130,11 +134,9 @@ for target in "${TARGETS[@]}"; do
   fi
 
   if [[ "${APPLY}" == true ]]; then
-    k -n "${namespace}" create secret generic "${secret}" \
-      --from-literal=ACCESS_KEY_ID="${access_key}" \
-      --from-literal=ACCESS_SECRET_KEY="${secret_key}" \
-      --dry-run=client -o yaml \
-      | k apply -f - >/dev/null
+    apply_secret "${namespace}" "${secret}" "" \
+      "ACCESS_KEY_ID=${access_key}" \
+      "ACCESS_SECRET_KEY=${secret_key}"
     k -n "${namespace}" get secret "${secret}" -o jsonpath='{.data.ACCESS_KEY_ID}' >/dev/null \
       || die "${namespace}/${secret} の反映を確認できません"
     ok "  投入しました"

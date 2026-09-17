@@ -16,6 +16,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 KUBECONFIG_PATH="${KUBECONFIG:-${REPO_ROOT}/_out/kubeconfig}"
+# Secret は argv に載せず標準入力から渡す（lib/secrets.sh の apply_secret）。
+# shellcheck source=scripts/lib/secrets.sh
+source "${SCRIPT_DIR}/lib/secrets.sh"
+
 
 APP_NAMESPACE=moshitoku
 SCRAPER_NAMESPACE=moshitoku-scraper
@@ -100,11 +104,9 @@ INGEST_SOURCE_KEYS=(
 # クラスタを作り直しても同じパスワードでなければ、既存のデータディレクトリを
 # 復元したときに認証できなくなる。だから Keychain を情報源にしている。
 # ---------------------------------------------------------------------------
-kubectl -n "${APP_NAMESPACE}" create secret generic moshitoku-db-owner \
-  --type=kubernetes.io/basic-auth \
-  --from-literal=username=moshitoku \
-  --from-literal=password="${db_password}" \
-  --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+apply_secret "${APP_NAMESPACE}" moshitoku-db-owner kubernetes.io/basic-auth \
+  "username=moshitoku" \
+  "password=${db_password}"
 
 # 内部取り込み API の token 設定。{token: [許可する source_key, ...]} の JSON。
 # Web の Deployment が INGEST_TOKEN_CONFIG として読む。
@@ -114,20 +116,18 @@ ingest_token_config="$(
       "${ingest_token}"
 )"
 
-kubectl -n "${APP_NAMESPACE}" create secret generic moshitoku-runtime \
-  --from-literal=django-secret-key="${django_secret}" \
-  --from-literal=ingest-token-config="${ingest_token_config}" \
-  --from-literal=analytics-rate-hash-key="${analytics_rate_hash_key}" \
-  --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+apply_secret "${APP_NAMESPACE}" moshitoku-runtime "" \
+  "django-secret-key=${django_secret}" \
+  "ingest-token-config=${ingest_token_config}" \
+  "analytics-rate-hash-key=${analytics_rate_hash_key}"
 
 # バックアップ先の MinIO 資格情報。CNPG の ObjectStore が参照するため
 # moshitoku namespace に、MinIO 側のユーザー作成 Job が参照するため
 # logging namespace にも同じものを置く。
 for namespace in "${APP_NAMESPACE}" "${LOGGING_NAMESPACE}"; do
-  kubectl -n "${namespace}" create secret generic moshitoku-s3-credentials \
-    --from-literal=ACCESS_KEY_ID="${MINIO_ACCESS_KEY}" \
-    --from-literal=ACCESS_SECRET_KEY="${minio_secret}" \
-    --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+  apply_secret "${namespace}" moshitoku-s3-credentials "" \
+    "ACCESS_KEY_ID=${MINIO_ACCESS_KEY}" \
+    "ACCESS_SECRET_KEY=${minio_secret}"
 done
 
 ok "moshitoku database, runtime, and backup credentials are present"
@@ -153,9 +153,8 @@ ok "moshitoku database, runtime, and backup credentials are present"
 # Secret にする。受け取り側（moshitoku-runtime の ingest-token-config）と
 # 同じ値でなければ 401 になる。ここで同時に配るのはそのためである。
 # ---------------------------------------------------------------------------
-kubectl -n "${SCRAPER_NAMESPACE}" create secret generic moshitoku-scraper-ingest \
-  --from-literal=ingest-api-token="${ingest_token}" \
-  --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+apply_secret "${SCRAPER_NAMESPACE}" moshitoku-scraper-ingest "" \
+  "ingest-api-token=${ingest_token}"
 
 ok "internal ingest API token is present on both sides"
 
