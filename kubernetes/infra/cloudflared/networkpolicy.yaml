@@ -103,6 +103,14 @@ spec:
               protocol: TCP
             - port: "443"
               protocol: UDP  # QUIC
+            # Cloudflare Tunnel の実際の接続先ポート。protocol: quic では
+            # UDP、http2 へフォールバックすると TCP を使う。443 だけでは
+            # トンネルが張れない（以前はクラスタワイドの blanket allow が
+            # この穴を隠していた）。
+            - port: "7844"
+              protocol: UDP
+            - port: "7844"
+              protocol: TCP
 
     # --- Origin（Gateway）への転送 ---
     #
@@ -120,6 +128,23 @@ spec:
         - ports:
             - port: "80"
               protocol: TCP
+
+    # Gateway の Service（cilium-gateway-external）はセレクタを持たず、
+    # その ClusterIP への通信は Pod の identity ではなく CIDR として
+    # 評価される。Service CIDR の 80 番だけを許可する。セレクタを持つ
+    # 通常の Service は宛先 Pod の identity に変換されてから評価されるので、
+    # この許可で他の Service へ届くことはない。
+    - toCIDR:
+        - 10.96.0.0/12
+      toPorts:
+        - ports:
+            - port: "80"
+              protocol: TCP
+    - toEntities:
+        - ingress
+    # Envoy から backend への転送は reserved:ingress の identity で評価される
+    # （backend 側が fromEntities: ingress で受ける）。cloudflared から
+    # backend の Pod へ直接出る許可は与えない。
 
 ---
 # ---------------------------------------------------------------------------

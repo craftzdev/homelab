@@ -57,6 +57,12 @@ spec:
   #    宅内ネットワークへの到達を許すことを意味する。追加時は必ず
   #    その namespace 内で個別の allow ポリシーを書き、範囲を絞ること。
   # ---------------------------------------------------------------------------
+
+  # ---------------------------------------------------------------------------
+  # このポリシーは宅内への egress を拒否するだけで、何も許可しない。
+  # enableDefaultDeny.egress: false により、選択した Endpoint の egress を
+  # default-deny に切り替えることもしない。
+  # ---------------------------------------------------------------------------
   endpointSelector:
     matchExpressions:
       - key: io.kubernetes.pod.namespace
@@ -66,30 +72,10 @@ spec:
           - kube-system
           - portal
           - velero
-          # status だけは除外の理由が逆である。宅内へ出たいからではなく、
-          # 下の `egress: toEntities: all` を受け取りたくないために外す。
-          # Gatus には監視対象の FQDN へ出る以外の egress を与えない設計で、
-          # 対象のままだとその制限が公開 IP に対して効かなくなる。許可は
-          # kubernetes/infra/gatus/namespace-and-policy.yaml がすべて明示する。
-          - status
 
-  # A deny-only policy also turns on egress enforcement for every selected
-  # endpoint. Explicitly allow all non-denied destinations; egressDeny has
-  # precedence and remains the hard boundary below.
-  #
-  # ⚠️ この allow の副作用を理解しておくこと。Cilium は全ポリシーの allow を
-  #    合成するため、この 1 行は選択された全 namespace に「宅内 CIDR 以外は
-  #    どこへでも出てよい」を与える。つまり各 namespace の
-  #    CiliumNetworkPolicy に書いた egress 許可リストは、公開 IP や他の
-  #    namespace の Pod に対しては実質的に効いていない（宅内 CIDR への
-  #    deny と、宛先側の ingress ポリシーだけが実際の境界になる）。
-  #
-  #    egress を本当に閉じたい namespace は、上の endpointSelector から
-  #    除外したうえで、その namespace 内で必要な宛先をすべて明示する。
-  #    status namespace がその例である。
-  egress:
-    - toEntities:
-        - all
+  enableDefaultDeny:
+    egress: false
+    ingress: false
 
   egressDeny:
     - toCIDR:
@@ -115,6 +101,57 @@ spec:
         # 169.254.169.254 はクラウドのメタデータエンドポイントとして
         # 知られており、SSRF の常套手段。オンプレでも塞いでおく。
         - 169.254.0.0/16
+
+---
+# ===========================================================================
+# 移行中の暫定措置: 宅内以外への egress を一律に許可する
+#
+# 以前は上の deny ポリシー自身が `egress: toEntities: [all]` を持っていた。
+# Cilium は全ポリシーの allow を合成するため、この 1 行が各 namespace の
+# CiliumNetworkPolicy に書いた egress 許可リストを、公開 IP・他 namespace の
+# Pod に対して無効化している。
+#
+# 一括で外すと、許可リストの書き漏れ（cloudflared の 7844/UDP など）で
+# 公開経路が止まる（2026-09-17 に moshitoku.com が 502 になった）。そこで
+# 許可だけをこの別ポリシーへ分け、namespace 単位で対象から外していく。
+#
+#   - namespace を移行するときは、下の NotIn に追加する。
+#     追加した namespace では、その namespace 自身の allow だけが効く。
+#   - Pod に `homelab.io/legacy-egress-allow: "false"` を付けると、
+#     その Pod だけを対象から外せる。新しい allow を本番の Pod に当てる前に
+#     検証用 Pod で確かめるために使う。
+#   - 全 namespace を移行し終えたら、このポリシーごと削除する。
+#
+# ⚠️ ここに書いた除外は「宅内以外へどこでも出られる」を取り消すだけで、
+#    宅内への deny は上のポリシーで常に効いている。
+# ===========================================================================
+apiVersion: cilium.io/v2
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: legacy-egress-allow-all
+  annotations:
+    # deny 側から allow を外すより先に、こちらが存在していなければならない。
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  endpointSelector:
+    matchExpressions:
+      - key: io.kubernetes.pod.namespace
+        operator: NotIn
+        values:
+          # 宅内へ出る必要があり、上の deny からも外している namespace
+          - ceph-csi
+          - kube-system
+          - portal
+          - velero
+          # 自前の allow だけで動くことを確認済みの namespace
+          - status
+      - key: homelab.io/legacy-egress-allow
+        operator: NotIn
+        values:
+          - "false"
+  egress:
+    - toEntities:
+        - all
 
 ---
 # ===========================================================================
