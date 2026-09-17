@@ -3,7 +3,8 @@
   "extends": [
     "config:recommended",
     ":dependencyDashboard",
-    ":semanticCommits"
+    ":semanticCommits",
+    "helpers:pinGitHubActionDigests"
   ],
   "timezone": "Asia/Tokyo",
   "schedule": ["after 9am and before 6pm on saturday"],
@@ -34,18 +35,26 @@
     "description（機能には影響しない）か packageRules の description に書く。",
     "独自キーを足すと config warning issue が作成される。"
   ],
+  "vulnerabilityAlerts": {
+    "description": [
+      "セキュリティ修正はスケジュール外でも即座に PR を出す。",
+      "vulnerabilityAlerts は packageRules の中では効かない（トップレベル",
+      "専用のオブジェクトであり、2026-09 まで packageRules に置いていたため",
+      "機能していなかった）。",
+      "GitHub の Dependabot alerts を読むには App に Vulnerability alerts の",
+      "read 権限が要る。権限が無い環境でも効くよう osvVulnerabilityAlerts も",
+      "有効にし、OSV データベースからも検出させる。"
+    ],
+    "enabled": true,
+    "schedule": ["at any time"]
+  },
+  "osvVulnerabilityAlerts": true,
+
   "prHourlyLimit": 0,
   "prConcurrentLimit": 5,
   "branchConcurrentLimit": 5,
 
   "packageRules": [
-    {
-      "description": "セキュリティ修正は即座に PR を出す（スケジュール外でも）",
-      "matchDatasources": ["docker", "helm", "github-releases"],
-      "vulnerabilityAlerts": {
-        "enabled": true
-      }
-    },
     {
       "description": "パッチ更新はまとめて 1 つの PR にする（レビュー負荷の削減）",
       "matchUpdateTypes": ["patch"],
