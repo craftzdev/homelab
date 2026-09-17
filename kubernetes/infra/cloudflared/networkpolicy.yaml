@@ -142,13 +142,9 @@ spec:
               protocol: TCP
     - toEntities:
         - ingress
-
-    # Envoy から backend への転送も cloudflared の identity のまま
-    # egress として評価される。Gateway 経由の公開を許可された namespace
-    # （homelab.io/gateway-access=external）の Pod だけを宛先にできる。
-    - toEndpoints:
-        - matchLabels:
-            k8s:io.cilium.k8s.namespace.labels.homelab.io/gateway-access: external
+    # Envoy から backend への転送は reserved:ingress の identity で評価される
+    # （backend 側が fromEntities: ingress で受ける）。cloudflared から
+    # backend の Pod へ直接出る許可は与えない。
 
 ---
 # ---------------------------------------------------------------------------
