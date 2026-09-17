@@ -290,6 +290,9 @@ spec:
   policyTypes: [Egress]
 
 ---
+# monitoring 内の全 Pod に共通の最小限。scrape の広い許可は Prometheus だけに
+# 与える（下）。Grafana / Alertmanager / Operator / kube-state-metrics が
+# 侵害されても、クラスタ中の Pod やノードを探れないようにする。
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -309,23 +312,48 @@ spec:
             - port: "53"
               protocol: TCP
 
-    # Prometheus / kube-state-metrics / Operator / Grafana の API 参照
+    # Operator / kube-state-metrics / Grafana / Prometheus いずれも参照する。
     - toEntities:
         - kube-apiserver
 
-    # クラスタ内の scrape 先。ポートはコンポーネントごとに異なり、
-    # exporter を足すたびに変わるため、宛先ポートは絞らない。
+    # monitoring namespace 内（Prometheus ↔ Alertmanager ↔ Grafana、
+    # Alertmanager のクラスタ間通信）。
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: monitoring
+
+---
+# Prometheus だけがクラスタ全体を scrape する。
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: prometheus-scrape
+  namespace: monitoring
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: prometheus
+  egress:
+    # クラスタ内の scrape 先。exporter ごとにポートが異なり、追加のたびに
+    # 変わるため宛先ポートは絞らない。
     - toEndpoints:
         - {}
 
-    # kubelet（10250）と node-exporter（9100）。ノード上で動くため
-    # Pod ではなく host / remote-node として現れる。
+    # kubelet（10250）と node-exporter（9100）。ノード上で動くため Pod では
+    # なく host / remote-node として現れる。ポートを絞り、ノード上の他の
+    # サービスへは出られないようにする。
     - toEntities:
         - host
         - remote-node
+      toPorts:
+        - ports:
+            - port: "10250"
+              protocol: TCP
+            - port: "9100"
+              protocol: TCP
 
-    # VLAN40 上の node-exporter。Talos ノードと Business Gateway VM が
-    # ここに含まれる。
+    # VLAN40 上の node-exporter（Talos ノードと Business Gateway VM）。
+    # 宅内 CIDR ではないため clusterwide の deny では塞がれない。
     - toCIDR:
         - 172.16.40.0/24
       toPorts:
@@ -334,7 +362,9 @@ spec:
               protocol: TCP
 
 ---
-# Grafana だけは grafana.com へ出る（プラグインとバージョン確認）。
+# Grafana はプラグイン一覧とバージョン確認で grafana.com を参照する。
+# 公開 IP 全体ではなく FQDN で絞る（toFQDNs は DNS プロキシが名前解決を
+# 観測できることが前提なので、DNS ルールを同じ Pod に付ける）。
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -345,14 +375,22 @@ spec:
     matchLabels:
       app.kubernetes.io/name: grafana
   egress:
-    - toCIDRSet:
-        - cidr: 0.0.0.0/0
-          except:
-            - 10.0.0.0/8
-            - 100.64.0.0/10
-            - 169.254.0.0/16
-            - 172.16.0.0/12
-            - 192.168.0.0/16
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+          rules:
+            dns:
+              - matchPattern: "*"
+    - toFQDNs:
+        - matchName: grafana.com
+        - matchPattern: "*.grafana.com"
       toPorts:
         - ports:
             - port: "443"
