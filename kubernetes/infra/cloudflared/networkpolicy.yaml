@@ -129,22 +129,38 @@ spec:
             - port: "80"
               protocol: TCP
 
-    # Gateway の Service（cilium-gateway-external）はセレクタを持たず、
-    # その ClusterIP への通信は Pod の identity ではなく CIDR として
-    # 評価される。Service CIDR の 80 番だけを許可する。セレクタを持つ
-    # 通常の Service は宛先 Pod の identity に変換されてから評価されるので、
-    # この許可で他の Service へ届くことはない。
-    - toCIDR:
-        - 10.96.0.0/12
+    # --- Gateway から backend への転送 ---
+    #
+    # Cilium の Gateway（Envoy）は backend へ転送するとき、送信元 Pod
+    # （cloudflared）の egress ポリシーで L7 の可否を判定する。許可が無いと
+    # Envoy が 403 を返す（2026-09-18 に検証用 Pod で確認）。一方、Gateway の
+    # Service（ClusterIP）宛ての許可は不要だった。
+    #
+    # moshitoku の HTTPRoute に backend を増やしたら、ここにも同じ PR で
+    # 追加すること。現在の宛先は次の 3 つ。
+    - toEndpoints:
+        - matchExpressions:
+            - key: io.kubernetes.pod.namespace
+              operator: In
+              values:
+                - moshitoku
+            - key: app.kubernetes.io/name
+              operator: In
+              values:
+                - moshitoku-web
+                - moshitoku-analytics
       toPorts:
         - ports:
-            - port: "80"
+            - port: "8000"
               protocol: TCP
-    - toEntities:
-        - ingress
-    # Envoy から backend への転送は reserved:ingress の identity で評価される
-    # （backend 側が fromEntities: ingress で受ける）。cloudflared から
-    # backend の Pod へ直接出る許可は与えない。
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: analytics
+            app.kubernetes.io/name: umami
+      toPorts:
+        - ports:
+            - port: "3000"
+              protocol: TCP
 
 ---
 # ---------------------------------------------------------------------------
