@@ -336,8 +336,15 @@ spec:
   egress:
     # クラスタ内の scrape 先。exporter ごとにポートが異なり、追加のたびに
     # 変わるため宛先ポートは絞らない。
+    #
+    # ⚠️ toEndpoints の matchLabels に namespace を書かないと、Cilium は
+    #    「このポリシーと同じ namespace」だけを指す。`- {}` では monitoring
+    #    namespace 内しか許可されず、他 namespace の scrape が落ちる
+    #    （2026-09-18 に 78 ターゲット中 39 が down になった）。
     - toEndpoints:
-        - {}
+        - matchExpressions:
+            - key: io.kubernetes.pod.namespace
+              operator: Exists
 
     # kubelet（10250）と node-exporter（9100）。ノード上で動くため Pod では
     # なく host / remote-node として現れる。ポートを絞り、ノード上の他の
