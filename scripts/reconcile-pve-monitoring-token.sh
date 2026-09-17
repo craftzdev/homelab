@@ -12,6 +12,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Secret は argv に載せず標準入力から渡す（lib/secrets.sh の apply_secret）。
+# shellcheck source=scripts/lib/secrets.sh
+source "${SCRIPT_DIR}/lib/secrets.sh"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 PVE_HOST="${PVE_HOST:-172.16.10.11}"
 PVE_USER="${PVE_USER:-grafana@pve}"
@@ -109,9 +112,14 @@ grant_acl "/storage/${PVE_STORAGE}" 1 "${PVE_TOKEN_FULL}" tokens
 # Verify the exact credential against every endpoint the exporter calls, so a
 # too-narrow ACL surfaces here and not as a silent source failure in Grafana.
 probe() {
-  curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+  # API token は curl の引数に載せない（`ps` から読めるため）。設定を
+  # プロセス置換で渡す。printf は bash の組み込み。
+  curl --config <(
+    printf 'header = "Authorization: PVEAPIToken=%s=%s"\n' \
+      "${PVE_TOKEN_FULL}" "${pve_token_secret}"
+  ) \
+    --silent --show-error --output /dev/null --write-out '%{http_code}' \
     --cacert "${REPO_ROOT}/kubernetes/infra/homepage/pve-root-ca.pem" \
-    -H "Authorization: PVEAPIToken=${PVE_TOKEN_FULL}=${pve_token_secret}" \
     "https://${PVE_HOST}:8006/api2/json$1"
 }
 while read -r description path; do
@@ -130,11 +138,10 @@ kubectl "${kubectl_args[@]}" create namespace portal --dry-run=client -o yaml \
   | kubectl "${kubectl_args[@]}" apply -f - >/dev/null
 # A Secret of its own: reconcile-pbs-monitoring-token.py owns
 # pbs-observer-credentials, and applying a full Secret replaces its data.
-kubectl "${kubectl_args[@]}" -n portal create secret generic pbs-observer-pve-credentials \
-  --from-literal=PVE_TOKEN_ID="${PVE_TOKEN_FULL}" \
-  --from-literal=PVE_TOKEN_SECRET="${pve_token_secret}" \
-  --dry-run=client -o yaml \
-  | kubectl "${kubectl_args[@]}" apply -f - >/dev/null
+KUBECTL_SECRET_ARGS=("${kubectl_args[@]}")
+apply_secret portal pbs-observer-pve-credentials "" \
+  "PVE_TOKEN_ID=${PVE_TOKEN_FULL}" \
+  "PVE_TOKEN_SECRET=${pve_token_secret}"
 
 unset pve_token_secret users_json tokens_json
 ok "PBS observer's Proxmox identity is read-only, verified, and present in Kubernetes"

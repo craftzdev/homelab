@@ -7,6 +7,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+# Secret は argv に載せず標準入力から渡す（lib/secrets.sh の apply_secret）。
+# shellcheck source=scripts/lib/secrets.sh
+source "${SCRIPT_DIR}/lib/secrets.sh"
+
 PVE_HOST="${PVE_HOST:-172.16.10.11}"
 PVE_USER="${PVE_USER:-homepage@pve}"
 PVE_TOKEN_ID="${PVE_TOKEN_ID:-homepage}"
@@ -75,9 +79,13 @@ ssh "${ssh_options[@]}" root@"${PVE_HOST}" \
   "pveum acl modify / --tokens '${PVE_TOKEN_FULL}' --roles PVEAuditor --propagate 1"
 
 # Test the exact credential against Proxmox before publishing it to the Pod.
-http_code="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+# API token は curl の引数に載せない（`ps` から読めるため）。
+http_code="$(curl --config <(
+  printf 'header = "Authorization: PVEAPIToken=%s=%s"\n' \
+    "${PVE_TOKEN_FULL}" "${pve_token_secret}"
+) \
+  --silent --show-error --output /dev/null --write-out '%{http_code}' \
   --cacert "${REPO_ROOT}/kubernetes/infra/homepage/pve-root-ca.pem" \
-  -H "Authorization: PVEAPIToken=${PVE_TOKEN_FULL}=${pve_token_secret}" \
   "https://${PVE_HOST}:8006/api2/json/cluster/resources")"
 [[ "${http_code}" == 200 ]] || die "Proxmox token verification failed (HTTP ${http_code})"
 
@@ -85,11 +93,10 @@ kubectl_args=(--kubeconfig "${KUBECONFIG_PATH}" --request-timeout=120s)
 [[ -n "${KUBE_SERVER}" ]] && kubectl_args+=(--server="${KUBE_SERVER}")
 kubectl "${kubectl_args[@]}" create namespace portal --dry-run=client -o yaml \
   | kubectl "${kubectl_args[@]}" apply -f - >/dev/null
-kubectl "${kubectl_args[@]}" -n portal create secret generic homepage-integrations \
-  --from-literal=HOMEPAGE_VAR_PROXMOX_USERNAME="${PVE_TOKEN_FULL}" \
-  --from-literal=HOMEPAGE_VAR_PROXMOX_TOKEN="${pve_token_secret}" \
-  --dry-run=client -o yaml \
-  | kubectl "${kubectl_args[@]}" apply -f - >/dev/null
+KUBECTL_SECRET_ARGS=("${kubectl_args[@]}")
+apply_secret portal homepage-integrations "" \
+  "HOMEPAGE_VAR_PROXMOX_USERNAME=${PVE_TOKEN_FULL}" \
+  "HOMEPAGE_VAR_PROXMOX_TOKEN=${pve_token_secret}"
 
 unset pve_token_secret users_json tokens_json
 ok "Homepage Proxmox identity is read-only, verified, and present in Kubernetes"

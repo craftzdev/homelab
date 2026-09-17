@@ -4,6 +4,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 KUBECONFIG_PATH="${1:-${REPO_ROOT}/_out/kubeconfig}"
+
+# Secret は argv に載せず標準入力から渡す（lib/secrets.sh の apply_secret）。
+# shellcheck source=scripts/lib/secrets.sh
+source "${REPO_ROOT}/scripts/lib/secrets.sh"
+KUBECTL_SECRET_ARGS=(--kubeconfig "${KUBECONFIG_PATH}")
 ANALYTICS_NAMESPACE=analytics
 LOGGING_NAMESPACE=logging
 
@@ -36,28 +41,18 @@ minio_secret="$(ensure_generated_keychain_secret dev.craftz.umami.minio-secret-k
 minio_access=umami-cnpg
 database_url="postgresql://umami:${db_password}@umami-postgres-rw.analytics.svc.cluster.local:5432/umami?sslmode=verify-full&sslrootcert=/etc/umami/postgres-ca/ca.crt"
 
-kubectl --kubeconfig "${KUBECONFIG_PATH}" -n "${ANALYTICS_NAMESPACE}" \
-  create secret generic umami-db-owner \
-  --type=kubernetes.io/basic-auth \
-  --from-literal=username=umami \
-  --from-literal=password="${db_password}" \
-  --dry-run=client -o yaml \
-  | kubectl --kubeconfig "${KUBECONFIG_PATH}" apply -f - >/dev/null
+apply_secret "${ANALYTICS_NAMESPACE}" umami-db-owner kubernetes.io/basic-auth \
+  "username=umami" \
+  "password=${db_password}"
 
-kubectl --kubeconfig "${KUBECONFIG_PATH}" -n "${ANALYTICS_NAMESPACE}" \
-  create secret generic umami-runtime \
-  --from-literal=DATABASE_URL="${database_url}" \
-  --from-literal=APP_SECRET="${app_secret}" \
-  --dry-run=client -o yaml \
-  | kubectl --kubeconfig "${KUBECONFIG_PATH}" apply -f - >/dev/null
+apply_secret "${ANALYTICS_NAMESPACE}" umami-runtime "" \
+  "DATABASE_URL=${database_url}" \
+  "APP_SECRET=${app_secret}"
 
 for namespace in "${ANALYTICS_NAMESPACE}" "${LOGGING_NAMESPACE}"; do
-  kubectl --kubeconfig "${KUBECONFIG_PATH}" -n "${namespace}" \
-    create secret generic umami-s3-credentials \
-    --from-literal=ACCESS_KEY_ID="${minio_access}" \
-    --from-literal=ACCESS_SECRET_KEY="${minio_secret}" \
-    --dry-run=client -o yaml \
-    | kubectl --kubeconfig "${KUBECONFIG_PATH}" apply -f - >/dev/null
+  apply_secret "${namespace}" umami-s3-credentials "" \
+    "ACCESS_KEY_ID=${minio_access}" \
+    "ACCESS_SECRET_KEY=${minio_secret}"
 done
 
 unset db_password app_secret minio_secret database_url

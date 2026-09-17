@@ -416,13 +416,13 @@ remove_stale_tailnet_cluster_devices() {
   client_secret="$(jq -er '.data.client_secret | @base64d' <<<"${oauth_json}")"
 
   for tag in "${cleanup_tags[@]}"; do
-    token_json="$(curl -fsS -u "${client_id}:${client_secret}" \
+    token_json="$(curl_basic_auth "${client_id}:${client_secret}" -fsS \
       --data-urlencode 'grant_type=client_credentials' \
       --data-urlencode 'scope=devices:core' \
       --data-urlencode "tags=${tag}" \
       https://api.tailscale.com/api/v2/oauth/token)"
     access_token="$(jq -er '.access_token' <<<"${token_json}")"
-    devices_json="$(curl -fsS -H "Authorization: Bearer ${access_token}" \
+    devices_json="$(curl_bearer "${access_token}" -fsS \
       https://api.tailscale.com/api/v2/tailnet/-/devices)"
     if [[ "${tag}" == tag:ai-worker-trusted ]]; then
       # shellcheck disable=SC2016 # jq, not the shell, expands $worker_fqdn.
@@ -472,8 +472,8 @@ remove_stale_tailnet_cluster_devices() {
       || die "too many Tailnet devices matched ${tag}; refusing cleanup"
     while IFS= read -r device_id; do
       [[ -n "${device_id}" ]] || continue
-      delete_code="$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE \
-        -H "Authorization: Bearer ${access_token}" \
+      delete_code="$(curl_bearer "${access_token}" -sS -o /dev/null \
+        -w '%{http_code}' -X DELETE \
         "https://api.tailscale.com/api/v2/device/${device_id}")"
       [[ "${delete_code}" == 200 || "${delete_code}" == 204 ]] \
         || die "Tailnet device cleanup failed with HTTP ${delete_code}"
@@ -491,14 +491,14 @@ delete_tailnet_device_id() {
     "${BACKUP_DIR}/tailscale-oauth.secret.json.age")"
   client_id="$(jq -er '.data.client_id | @base64d' <<<"${oauth_json}")"
   client_secret="$(jq -er '.data.client_secret | @base64d' <<<"${oauth_json}")"
-  token_json="$(curl -fsS -u "${client_id}:${client_secret}" \
+  token_json="$(curl_basic_auth "${client_id}:${client_secret}" -fsS \
     --data-urlencode 'grant_type=client_credentials' \
     --data-urlencode 'scope=devices:core' \
     --data-urlencode "tags=${tag}" \
     https://api.tailscale.com/api/v2/oauth/token)"
   access_token="$(jq -er '.access_token' <<<"${token_json}")"
-  delete_code="$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE \
-    -H "Authorization: Bearer ${access_token}" \
+  delete_code="$(curl_bearer "${access_token}" -sS -o /dev/null \
+    -w '%{http_code}' -X DELETE \
     "https://api.tailscale.com/api/v2/device/${device_id}")"
   [[ "${delete_code}" == 200 || "${delete_code}" == 204 ]] \
     || die "transient Tailnet device cleanup failed with HTTP ${delete_code}"
@@ -589,6 +589,26 @@ restart_tailnet_proxy() {
   statefulset_name="$(jq -r '.items[0].metadata.name' <<<"${statefulsets_json}")"
   kubectl -n tailscale rollout restart "statefulset/${statefulset_name}" >/dev/null
   kubectl -n tailscale rollout status "statefulset/${statefulset_name}" --timeout=10m
+}
+
+# ---------------------------------------------------------------------------
+# curl に資格情報を引数で渡さない
+#
+# `-u user:pass` や `-H "Authorization: Bearer ..."` はプロセスの引数として
+# 同じホストの他プロセスから `ps` で読める。curl の設定ファイルをプロセス
+# 置換（/dev/fd）で渡せば、値はファイルにもプロセス引数にも現れない。
+# printf は bash の組み込みなので、ここでも新しいプロセスは作られない。
+# ---------------------------------------------------------------------------
+curl_basic_auth() {
+  local credential=$1
+  shift
+  curl --config <(printf 'user = "%s"\n' "${credential}") "$@"
+}
+
+curl_bearer() {
+  local token=$1
+  shift
+  curl --config <(printf 'header = "Authorization: Bearer %s"\n' "${token}") "$@"
 }
 
 restore_secret() {
