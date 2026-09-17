@@ -6,4 +6,7 @@ spec:
   nameserver:
     image:
       repo: tailscale/k8s-nameserver
-      tag: unstable
+      # ⚠️ 上流の例は unstable を使っているが、タグが動くため何が動いて
+      #    いるのか Git から分からなくなる。operator と同じ版に固定する。
+      #    tailscale-operator の values.yaml を上げるときは、ここも同じ版へ。
+      tag: v1.102.3

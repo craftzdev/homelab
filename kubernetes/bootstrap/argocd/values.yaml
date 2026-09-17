@@ -78,7 +78,9 @@ repoServer:
   # -------------------------------------------------------------------------
   initContainers:
     - name: install-ksops
-      image: viaductoss/ksops:v4.5.1
+      # このコンテナは age 秘密鍵を持つ repo-server の中で動く。タグでは
+      # なくダイジェストで固定する。
+      image: viaductoss/ksops:v4.5.1@sha256:4def9fdd4e2f850265740ebe9592c5455d19b76891e88e602df8b52d74b95334
       # ---------------------------------------------------------------------
       # ksops 公式が提供する install サブコマンドを使う。
       #
