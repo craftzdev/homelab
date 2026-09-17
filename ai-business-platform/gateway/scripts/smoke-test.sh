@@ -37,6 +37,14 @@ curl_auth() {
   ) "$@"
 }
 
+# Cloudflare Access を通らない相手（localhost の callback）向け。
+# Access の資格情報を無関係のサービスへ送らない。
+curl_bearer_only() {
+  local token=$1
+  shift
+  curl --config <(printf 'header = "Authorization: Bearer %s"\n' "$token") "$@"
+}
+
 test_id="smoke-$(date -u +%Y%m%d%H%M%S)"
 payload='{"action":"test.run","project_id":"worker-demo","environment":"research","parameters":{"operation":"self_test"},"limits":{"timeout_seconds":60}}'
 public_base=http://127.0.0.1:8080
@@ -46,7 +54,9 @@ if [[ ${CLOUDFLARE_ACCESS_REQUIRED:-false} == true ]]; then
   : "${CF_ACCESS_CLIENT_SECRET:?CF_ACCESS_CLIENT_SECRET is required}"
   public_base=https://gateway.craftz.dev
 
-  edge_rejection=$(curl_access_only -sS -o /dev/null -w '%{http_code}' \
+  # ここは Access の資格情報を **付けずに** 投げ、エッジが 403 を返すことを
+  # 確かめる検査である。ヘッダーを足してはならない。
+  edge_rejection=$(curl -sS -o /dev/null -w '%{http_code}' \
     -X POST "$public_base/v1/jobs" \
     -H 'Content-Type: application/json' \
     -H "Idempotency-Key: $test_id-no-access" \
@@ -102,7 +112,7 @@ event=$(printf '{"event_id":"%s-replay-check","gateway_job_id":"%s","dispatch_id
 
 # A new event must not rewrite a terminal job's approved evidence.
 # Exact callback replay idempotency is covered by the DB integration suite.
-terminal_rewrite_code=$(curl_auth "$WORKER_CALLBACK_TOKEN" -sS -o /dev/null \
+terminal_rewrite_code=$(curl_bearer_only "$WORKER_CALLBACK_TOKEN" -sS -o /dev/null \
   -w '%{http_code}' -X POST http://127.0.0.1:8081/v1/worker-events \
   -H 'Content-Type: application/json' \
   --data "$event")
