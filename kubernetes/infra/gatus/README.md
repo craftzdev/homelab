@@ -181,14 +181,10 @@ Tailnet・リンクローカル）と、DNS を監視対象の名前だけに絞
 
 いずれも今回の範囲外とし、限界を明示して運用する。
 
-⚠️ `status` は `clusterwide-egress-deny.yaml` の `endpointSelector` から
-**除外してある**。あの CCNP は宅内 CIDR を deny する一方、副作用として
-`toEntities: all`（それ以外どこへでも許可）を全対象 namespace に与える。
-対象のままだと、上の egress 許可リストは公開 IP に対して意味を持たない。
-
-除外すると宅内 CIDR の deny も失われるため、同じ deny を `gatus-rules` の
-`egressDeny` へ書き直してある。deny は allow と合成され、かつ allow より
-優先されるので、blanket allow を受け取らずに保険だけを取り戻せる。
+`status` は `clusterwide-egress-deny.yaml` の対象に含まれる。この CCNP は
+宅内 CIDR への deny を加えるだけで何も許可しない（`enableDefaultDeny.egress:
+false`）ため、上の egress 許可リストがそのまま上限になる。`gatus-rules` にも
+同じ宅内 CIDR の `egressDeny` を重ねて書いてある。
 `10.0.0.0/8` を deny に足してはならない（Pod / Service ネットワークであり、
 CoreDNS への問い合わせごと落ちる）。
 
