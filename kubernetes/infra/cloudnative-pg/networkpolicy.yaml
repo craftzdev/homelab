@@ -45,3 +45,14 @@ spec:
             io.kubernetes.pod.namespace: cnpg-system
         - matchLabels:
             io.kubernetes.pod.namespace: analytics
+    # The operator polls each instance manager's status endpoint. The
+    # moshitoku cluster already admits cnpg-system on its side; this is the
+    # matching egress rule, which the clusterwide blanket allow used to hide.
+    - toEndpoints:
+        - matchExpressions:
+            - key: io.kubernetes.pod.namespace
+              operator: In
+              values:
+                - moshitoku
+            - key: cnpg.io/cluster
+              operator: Exists

@@ -109,6 +109,11 @@ spec:
         - ports:
             - port: "443"
               protocol: TCP
+            # アプリ側リポジトリ（ai-business-* / moshitoku*）は
+            # git@github.com の SSH URL で取得している。以前はクラスタワイドの
+            # `toEntities: all` がこの穴を隠していた。
+            - port: "22"
+              protocol: TCP
 
   ingress:
     # --- argocd namespace 内 ---

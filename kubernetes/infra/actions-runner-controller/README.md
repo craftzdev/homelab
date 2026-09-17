@@ -9,15 +9,19 @@ daemon. Two repository-scoped scale sets build application images:
 - `ai-control-plane-builder` for `craftzdev/ai-business-control-plane`
 
 The builder Pods use ARC's ephemeral Docker-in-Docker mode and disappear after
-each job. Cilium permits them to reach public HTTPS plus
-`harbor.tailb6c7d.ts.net:443`; access to the Kubernetes API and home networks
-remains blocked.
+each job. Because the `dind` sidecar is privileged, the builders run in their
+own `arc-builders` namespace (Pod Security `privileged`). `arc-runners`, which
+holds the daemonless runners and the Harbor CI proxy, enforces `restricted`.
+Builders mount only the proxy's public certificate (ConfigMap `harbor-ci-ca`,
+identical to `talos/certs/harbor-registry-ca.crt`), never the private key.
+Cilium permits them to reach public HTTPS and the Harbor CI proxy; access to
+the Kubernetes API and home networks remains blocked.
 
-Every scale set has zero idle runners and allows at most one concurrent job.
-Runner Pods receive no Kubernetes ServiceAccount token.
+Every scale set has zero idle runners. Runner Pods receive no Kubernetes
+ServiceAccount token.
 
-ARC authenticates with the pre-created `arc-github-app` Secret in the
-`arc-runners` namespace. It must contain `github_app_id`,
+ARC authenticates with the pre-created `arc-github-app` Secret, which must
+exist in both the `arc-runners` and `arc-builders` namespaces. It must contain `github_app_id`,
 `github_app_installation_id`, and `github_app_private_key`. Never commit these
 values. The GitHub App needs repository `Administration: read and write` and
 `Metadata: read-only`. Every scale set is bound to one exact repository URL.
@@ -89,4 +93,5 @@ Check the installation with:
 ```bash
 kubectl -n arc-systems get deploy,pods
 kubectl -n arc-runners get autoscalingrunnersets,ephemeralrunnersets,pods
+kubectl -n arc-builders get autoscalingrunnersets,ephemeralrunnersets,pods
 ```

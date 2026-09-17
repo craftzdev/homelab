@@ -49,6 +49,16 @@ template:
         securityContext:
           privileged: true
         restartPolicy: Always
+        # BuildKit runs inside this container, so the build itself is charged
+        # here rather than to the runner. Observed peaks are about 0.4 CPU and
+        # 250Mi; the limits only stop a runaway build from starving the node.
+        resources:
+          requests:
+            cpu: 250m
+            memory: 512Mi
+          limits:
+            cpu: "4"
+            memory: 6Gi
         startupProbe:
           exec:
             command: ["docker", "info"]
@@ -73,6 +83,13 @@ template:
       - name: runner
         image: >-
           ghcr.io/actions/actions-runner@sha256:e5496277be5d09bc968b3d64911b74e219ac4a3f2edce956a3ecf9271bea1ef4
+        # The workflows use sudo to install the Harbor CA, so privilege
+        # escalation cannot be disabled here. The runner can already reach the
+        # privileged Docker daemon, which is why the whole Pod is isolated in
+        # arc-builders instead.
+        securityContext:
+          seccompProfile:
+            type: RuntimeDefault
         command: ["/home/runner/run.sh"]
         env:
           - name: DOCKER_HOST
@@ -104,6 +121,8 @@ template:
         emptyDir:
           medium: Memory
           sizeLimit: 1Gi
+      # Public certificate only. Secret/harbor-ci-proxy-tls also holds the
+      # private key that Talos trusts, and builders must never see it.
       - name: harbor-ci-cert
-        secret:
-          secretName: harbor-ci-proxy-tls
+        configMap:
+          name: harbor-ci-ca

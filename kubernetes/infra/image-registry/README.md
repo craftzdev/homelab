@@ -1,5 +1,11 @@
 # Internal image registry
 
+> **Read-only.** Every workload pulls from Harbor (`172.16.40.201:5000`). This
+> registry has no authentication, so it runs in read-only maintenance mode:
+> pushes and deletes return `405 Method Not Allowed`. It is kept only as a
+> fallback until Harbor recovery has been verified, and should then be removed
+> together with its `RegistryTLSConfig` in `tofu/10-proxmox-talos`.
+
 The Worker image is stored on a 20 GiB, three-replica Longhorn volume and is
 reachable only from the homelab LAN and cluster nodes at
 `172.16.40.200:5000`. Talos trusts the registry's self-signed CA through the

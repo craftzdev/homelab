@@ -73,7 +73,7 @@ alloy:
 
         rule {
           source_labels = ["__meta_kubernetes_namespace"]
-          regex         = "(ai-worker|arc-runners|arc-systems)"
+          regex         = "(ai-worker|arc-builders|arc-runners|arc-systems)"
           target_label  = "log_class"
           replacement  = "application"
         }

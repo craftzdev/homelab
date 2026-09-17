@@ -441,12 +441,17 @@ GitHub Appは`craftzdev/homelab`だけにインストールし、Repository perm
 秘密鍵をGitへ置かず、次のSecretをクラスタへ直接作成します。
 
 ```bash
-kubectl create namespace arc-runners --dry-run=client -o yaml | kubectl apply -f -
-kubectl -n arc-runners create secret generic arc-github-app \
-  --from-literal=github_app_id='<APP_ID>' \
-  --from-literal=github_app_installation_id='<INSTALLATION_ID>' \
-  --from-file=github_app_private_key='<DOWNLOADED_PRIVATE_KEY.pem>'
+for ns in arc-runners arc-builders; do
+  kubectl create namespace "${ns}" --dry-run=client -o yaml | kubectl apply -f -
+  kubectl -n "${ns}" create secret generic arc-github-app \
+    --from-literal=github_app_id='<APP_ID>' \
+    --from-literal=github_app_installation_id='<INSTALLATION_ID>' \
+    --from-file=github_app_private_key='<DOWNLOADED_PRIVATE_KEY.pem>'
+done
 ```
+
+特権 Docker-in-Docker を使うイメージビルダーは `arc-builders` に置き、
+`arc-runners` は Pod Security `restricted` のまま保ちます。
 
 通常のクラスタ全再構築では、このSecretもage暗号化された復旧セットへ退避し、
 ARCを同期する前に復元します。
@@ -454,6 +459,7 @@ ARCを同期する前に復元します。
 ```bash
 kubectl -n arc-systems get deploy,pods
 kubectl -n arc-runners get autoscalingrunnersets,ephemeralrunnersets,pods
+kubectl -n arc-builders get autoscalingrunnersets,ephemeralrunnersets,pods
 ```
 
 ### 3.9 AI Business WorkerのGitOps管理

@@ -32,9 +32,13 @@ spec:
         - ports:
             - port: "8001"
               protocol: TCP
+    # arc-runners hosts the Harbor CI proxy; arc-builders hosts the image builders.
     - fromEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: arc-runners
+            k8s:app.kubernetes.io/name: harbor-ci-proxy
+        - matchLabels:
+            io.kubernetes.pod.namespace: arc-builders
       toPorts:
         - ports:
             - port: "8080"

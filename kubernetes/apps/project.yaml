@@ -80,6 +80,8 @@ spec:
     - server: https://kubernetes.default.svc
       namespace: arc-runners
     - server: https://kubernetes.default.svc
+      namespace: arc-builders
+    - server: https://kubernetes.default.svc
       namespace: cnpg-system
     - server: https://kubernetes.default.svc
       namespace: analytics

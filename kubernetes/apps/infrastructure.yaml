@@ -471,6 +471,9 @@ spec:
 ---
 # Repository-scoped ephemeral image builders. They are separate from the
 # daemonless homelab validation runner and exist only while a CI job is active.
+# Their Docker-in-Docker sidecar is privileged, so they run in the dedicated
+# arc-builders namespace; arc-runners stays under the restricted Pod Security
+# Standard. The arc-github-app Secret must exist in arc-builders beforehand.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -495,7 +498,7 @@ spec:
       ref: values
   destination:
     server: https://kubernetes.default.svc
-    namespace: arc-runners
+    namespace: arc-builders
   syncPolicy:
     automated:
       prune: true
@@ -529,7 +532,7 @@ spec:
       ref: values
   destination:
     server: https://kubernetes.default.svc
-    namespace: arc-runners
+    namespace: arc-builders
   syncPolicy:
     automated:
       prune: true
@@ -563,7 +566,7 @@ spec:
       ref: values
   destination:
     server: https://kubernetes.default.svc
-    namespace: arc-runners
+    namespace: arc-builders
   syncPolicy:
     automated:
       prune: true
@@ -597,7 +600,7 @@ spec:
       ref: values
   destination:
     server: https://kubernetes.default.svc
-    namespace: arc-runners
+    namespace: arc-builders
   syncPolicy:
     automated:
       prune: true
@@ -1097,7 +1100,7 @@ spec:
       ref: values
   destination:
     server: https://kubernetes.default.svc
-    namespace: arc-runners
+    namespace: arc-builders
   syncPolicy:
     automated:
       prune: true

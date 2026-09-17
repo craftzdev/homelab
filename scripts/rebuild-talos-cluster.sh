@@ -597,6 +597,20 @@ restore_secret() {
     | kubectl --kubeconfig "${KUBECONFIG_PATH}" apply -f - >/dev/null
 }
 
+# The privileged image builders run in arc-builders and need the same GitHub
+# App credential as arc-runners. Copy it through a pipe so the key never lands
+# in argv or on disk.
+copy_arc_github_app_to_builders() {
+  kubectl --kubeconfig "${KUBECONFIG_PATH}" create namespace arc-builders \
+    --dry-run=client -o yaml \
+    | kubectl --kubeconfig "${KUBECONFIG_PATH}" apply -f - >/dev/null
+  kubectl --kubeconfig "${KUBECONFIG_PATH}" -n arc-runners \
+    get secret arc-github-app -o json \
+    | jq '{apiVersion, kind, type, data,
+        metadata: {name: .metadata.name, namespace: "arc-builders"}}' \
+    | kubectl --kubeconfig "${KUBECONFIG_PATH}" apply -f - >/dev/null
+}
+
 wait_for_control_plane_stability() {
   local deadline stable_checks=0 members
   deadline=$((SECONDS + 600))
@@ -725,6 +739,7 @@ restore_platform() {
   restore_secret "${BACKUP_DIR}/registry-tls.secret.json.age"
   restore_secret "${BACKUP_DIR}/tailscale-oauth.secret.json.age"
   restore_secret "${BACKUP_DIR}/arc-github-app.secret.json.age"
+  copy_arc_github_app_to_builders
   if [[ -s "${BACKUP_DIR}/ai-worker-repository.secret.json.age" ]]; then
     restore_secret "${BACKUP_DIR}/ai-worker-repository.secret.json.age"
   fi
