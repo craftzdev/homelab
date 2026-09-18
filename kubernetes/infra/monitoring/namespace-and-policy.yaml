@@ -38,7 +38,11 @@ spec:
         - matchLabels:
             io.kubernetes.pod.namespace: monitoring
 
-    # --- 宅内からの Grafana アクセス（LoadBalancer 経由）---
+    # --- ノードからの通信（kubelet の probe とメトリクス取得）---
+    #
+    # Grafana への Tailnet 経由のアクセスはここではなく、下の
+    # grafana-tailnet-ingress（tailscale namespace の proxy Pod からの
+    # 3000 番）で許可している。Grafana は LoadBalancer では公開していない。
     - fromEntities:
         - host
         - remote-node
