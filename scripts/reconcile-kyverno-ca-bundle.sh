@@ -27,6 +27,7 @@ KUBECONFIG_PATH="${KUBECONFIG:-${REPO_ROOT}/_out/kubeconfig}"
 SYSTEM_CA_BUNDLE="${SYSTEM_CA_BUNDLE:-/etc/ssl/cert.pem}"
 HARBOR_CA="${REPO_ROOT}/talos/certs/harbor-registry-ca.crt"
 
+info() { printf '  %s\n' "$*"; }
 ok() { printf 'OK  %s\n' "$*"; }
 die() { printf 'NG  %s\n' "$*" >&2; exit 1; }
 
@@ -53,6 +54,17 @@ else
   kubectl -n kyverno create configmap ca-bundle \
     --from-file=ca-certificates.crt="${bundle}" >/dev/null
 fi
+
+# subPath でマウントしたファイルは ConfigMap を更新しても差し替わらない。
+# 既に動いている Kyverno があれば作り直す（初回はまだ存在しない）。
+for deployment in kyverno-admission-controller kyverno-background-controller \
+  kyverno-reports-controller kyverno-cleanup-controller; do
+  if kubectl -n kyverno get deployment "${deployment}" >/dev/null 2>&1; then
+    kubectl -n kyverno rollout restart "deployment/${deployment}" >/dev/null
+    kubectl -n kyverno rollout status "deployment/${deployment}" --timeout=180s >/dev/null
+    info "${deployment} を再起動しました"
+  fi
+done
 
 count="$(grep -c 'BEGIN CERTIFICATE' "${bundle}")"
 ok "Kyverno の CA 束を配置しました（${count} 証明書 = 公開 CA + Harbor）"

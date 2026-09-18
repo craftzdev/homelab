@@ -756,6 +756,10 @@ restore_platform() {
   # Argo CD の同期前でも実行できる。PostgreSQL の CA だけは CloudNativePG が
   # クラスタを作った後でないと存在しないので、後段でもう一度実行する。
   "${SCRIPT_DIR}/bootstrap-moshitoku-secrets.sh"
+  # Kyverno の CA 束。Application が同期される前に置く必要がある
+  # （ConfigMap が無いと Pod が起動できない）。読み取り資格情報のほうは
+  # harbor-pull が復元されてからでないと作れないため、後段で実行する。
+  "${SCRIPT_DIR}/reconcile-kyverno-ca-bundle.sh"
   restore_secret "${BACKUP_DIR}/registry-tls.secret.json.age"
   restore_secret "${BACKUP_DIR}/tailscale-oauth.secret.json.age"
   restore_secret "${BACKUP_DIR}/arc-github-app.secret.json.age"

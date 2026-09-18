@@ -194,6 +194,16 @@ for app in logging-storage logging tracing; do
   wait_for_application "${app}"
 done
 
+# Kyverno は署名の検証に「公開 CA + Harbor の CA」の束と、Harbor の読み取り
+# 資格情報を必要とする。どちらも namespace さえあれば作れるので、
+# Application を再開する前に置く。無い場合は Pod が起動できない。
+"${SCRIPT_DIR}/reconcile-kyverno-ca-bundle.sh"
+"${SCRIPT_DIR}/reconcile-kyverno-registry-credentials.sh"
+for app in kyverno kyverno-policies; do
+  resume_application "${app}"
+  wait_for_application "${app}"
+done
+
 for app in arc-controller arc-runners; do
   resume_application "${app}"
   wait_for_application "${app}"
