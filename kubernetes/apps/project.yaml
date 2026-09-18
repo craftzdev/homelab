@@ -186,6 +186,10 @@ spec:
     - group: cert-manager.io
       kind: ClusterIssuer
 
+    # --- Kyverno（イメージ署名の検証ポリシー）---
+    - group: kyverno.io
+      kind: ClusterPolicy
+
     # --- Trivy Operator（クラスタスコープのレポート CRD）---
     - group: aquasecurity.github.io
       kind: ClusterComplianceReport
