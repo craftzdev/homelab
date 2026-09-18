@@ -1,0 +1,169 @@
+# ===========================================================================
+# Harbor のアプリイメージに署名があることを検証する
+#
+# ---------------------------------------------------------------------------
+# いまは Audit（記録のみ）
+# ---------------------------------------------------------------------------
+# failureAction: Audit なので、署名が無くても Pod は作成される。結果は
+# PolicyReport に残る。次のコマンドで確認できる。
+#
+#   kubectl get policyreport -A | grep -v "0 *0 *0"
+#   kubectl get clusterpolicyreport
+#
+# 全イメージが署名付きに入れ替わり、fail が出なくなったら Enforce へ
+# 変える。切り替えは failureAction を Enforce にするだけ。
+#
+# ---------------------------------------------------------------------------
+# 署名の取得先
+# ---------------------------------------------------------------------------
+# イメージ参照は 172.16.40.201:5000（自前 CA の LAN エンドポイント）だが、
+# 署名の取得はクラスタ内の Harbor（harbor.harbor.svc、HTTP）から行う。
+# Kyverno のコンテナに自前 CA を入れると Sigstore への TLS が壊れるためで、
+# 署名検証そのものは暗号的な検証なので取得経路の TLS には依存しない。
+#
+# ---------------------------------------------------------------------------
+# 何を信頼するのか
+# ---------------------------------------------------------------------------
+# keyless 署名なので、信頼するのは鍵ではなく「発行元（GitHub Actions の
+# OIDC issuer）」と「署名者の身元（どのリポジトリのどのワークフローか）」。
+# subject を main ブランチのワークフローに固定しているため、fork や別の
+# ブランチで作ったイメージは一致しない。
+# ===========================================================================
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: verify-harbor-images
+  annotations:
+    policies.kyverno.io/title: Verify Harbor application images
+    policies.kyverno.io/category: Supply Chain
+spec:
+  webhookConfiguration:
+    # Kyverno が落ちている間にクラスタが止まらないようにする。
+    failurePolicy: Ignore
+    timeoutSeconds: 30
+  # 既存 Pod も定期的に評価し、PolicyReport に反映させる。
+  background: true
+  rules:
+    - name: ai-business-agent
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces: [ai-agent]
+      verifyImages:
+        - imageReferences:
+            - "172.16.40.201:5000/ai-business/ai-business-agent*"
+          failureAction: Audit
+          required: true
+          verifyDigest: true
+          # マニフェストは既にダイジェストで固定してある。Kyverno に
+          # 書き換えさせない（書き換えにはイメージ本体への到達が要る）。
+          mutateDigest: false
+          repository: harbor.harbor.svc/ai-business/ai-business-agent
+          imageRegistryCredentials:
+            allowInsecureRegistry: true
+            secrets:
+              - harbor-pull-ai-business
+          attestors:
+            - entries:
+                - keyless:
+                    issuer: https://token.actions.githubusercontent.com
+                    subject: https://github.com/craftzdev/ai-business-agent/.github/workflows/container.yaml@refs/heads/main
+
+    - name: ai-business-worker
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces: [ai-worker]
+      verifyImages:
+        - imageReferences:
+            - "172.16.40.201:5000/ai-business/ai-business-worker*"
+          failureAction: Audit
+          required: true
+          verifyDigest: true
+          mutateDigest: false
+          repository: harbor.harbor.svc/ai-business/ai-business-worker
+          imageRegistryCredentials:
+            allowInsecureRegistry: true
+            secrets:
+              - harbor-pull-ai-business
+          attestors:
+            - entries:
+                - keyless:
+                    issuer: https://token.actions.githubusercontent.com
+                    subject: https://github.com/craftzdev/ai-business-worker/.github/workflows/container.yaml@refs/heads/main
+
+    - name: ai-business-control-plane
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces: [ai-control-plane]
+      verifyImages:
+        - imageReferences:
+            - "172.16.40.201:5000/ai-business/ai-business-control-plane*"
+          failureAction: Audit
+          required: true
+          verifyDigest: true
+          mutateDigest: false
+          repository: harbor.harbor.svc/ai-business/ai-business-control-plane
+          imageRegistryCredentials:
+            allowInsecureRegistry: true
+            secrets:
+              - harbor-pull-ai-business
+          attestors:
+            - entries:
+                - keyless:
+                    issuer: https://token.actions.githubusercontent.com
+                    subject: https://github.com/craftzdev/ai-business-control-plane/.github/workflows/container.yaml@refs/heads/main
+
+    - name: moshitoku
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces: [moshitoku]
+      verifyImages:
+        - imageReferences:
+            - "172.16.40.201:5000/moshitoku/moshitoku*"
+          skipImageReferences:
+            - "172.16.40.201:5000/moshitoku/moshitoku-scraper*"
+          failureAction: Audit
+          required: true
+          verifyDigest: true
+          mutateDigest: false
+          repository: harbor.harbor.svc/moshitoku/moshitoku
+          imageRegistryCredentials:
+            allowInsecureRegistry: true
+            secrets:
+              - harbor-pull-moshitoku
+          attestors:
+            - entries:
+                - keyless:
+                    issuer: https://token.actions.githubusercontent.com
+                    subject: https://github.com/craftzdev/moshitoku/.github/workflows/container.yml@refs/heads/main
+
+    - name: moshitoku-scraper
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces: [moshitoku-scraper]
+      verifyImages:
+        - imageReferences:
+            - "172.16.40.201:5000/moshitoku/moshitoku-scraper*"
+          failureAction: Audit
+          required: true
+          verifyDigest: true
+          mutateDigest: false
+          repository: harbor.harbor.svc/moshitoku/moshitoku-scraper
+          imageRegistryCredentials:
+            allowInsecureRegistry: true
+            secrets:
+              - harbor-pull-moshitoku
+          attestors:
+            - entries:
+                - keyless:
+                    issuer: https://token.actions.githubusercontent.com
+                    subject: https://github.com/craftzdev/moshitoku-scraper/.github/workflows/container.yml@refs/heads/main

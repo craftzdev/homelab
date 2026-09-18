@@ -945,6 +945,89 @@ spec:
 
 ---
 # ---------------------------------------------------------------------------
+# Kyverno — イメージ署名の検証
+#
+# アプリの CI（GitHub Actions）が cosign で付けた keyless 署名を admission で
+# 検証する。導入時点では ClusterPolicy 側が Audit で、何も拒否しない。
+#
+# ⚠️ 署名の読み取りには kyverno namespace の Secret が要る。
+#    scripts/reconcile-kyverno-registry-credentials.sh を先に実行すること。
+#    無い場合でも Audit なので Pod は作成でき、レポートに失敗が残るだけ。
+#
+# ⚠️ sync-wave はアプリより前（4）。webhook が後から入ると、既に動いている
+#    Pod の再評価が reports 側に偏る。
+# ---------------------------------------------------------------------------
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kyverno
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: infrastructure
+  sources:
+    - repoURL: https://kyverno.github.io/kyverno/
+      chart: kyverno
+      targetRevision: 3.9.1
+      helm:
+        releaseName: kyverno
+        valueFiles:
+          - $values/kubernetes/infra/kyverno/values.yaml
+    - repoURL: https://github.com/craftzdev/homelab.git
+      targetRevision: main
+      path: kubernetes/infra/kyverno
+      directory:
+        include: '{namespace.yaml,networkpolicy.yaml}'
+    - repoURL: https://github.com/craftzdev/homelab.git
+      targetRevision: main
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kyverno
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+
+---
+# ---------------------------------------------------------------------------
+# Kyverno の ClusterPolicy
+#
+# CRD が入ってからでないと同期できないため、Kyverno 本体より後ろの wave。
+# ---------------------------------------------------------------------------
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kyverno-policies
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "5"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: infrastructure
+  source:
+    repoURL: https://github.com/craftzdev/homelab.git
+    targetRevision: main
+    path: kubernetes/infra/kyverno/policies
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kyverno
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false
+
+---
+# ---------------------------------------------------------------------------
 # kubelet-serving-cert-approver
 #
 # ⚠️ sync-wave を早め（2）にしている理由:
