@@ -37,6 +37,7 @@ spec:
     - https://piraeus.io/helm-charts/
     - https://pkgs.tailscale.com/helmcharts
     - https://cloudnative-pg.github.io/charts
+    - https://kyverno.github.io/kyverno/
     - https://twin.github.io/helm-charts
     - ghcr.io/actions/actions-runner-controller-charts
 
@@ -80,6 +81,9 @@ spec:
       namespace: arc-runners
     - server: https://kubernetes.default.svc
       namespace: arc-builders
+    # Kyverno（イメージ署名の検証）
+    - server: https://kubernetes.default.svc
+      namespace: kyverno
     - server: https://kubernetes.default.svc
       namespace: cnpg-system
     - server: https://kubernetes.default.svc
@@ -180,6 +184,10 @@ spec:
     # --- cert-manager ---
     - group: cert-manager.io
       kind: ClusterIssuer
+
+    # --- Kyverno（イメージ署名の検証ポリシー）---
+    - group: kyverno.io
+      kind: ClusterPolicy
 
     # --- Trivy Operator（クラスタスコープのレポート CRD）---
     - group: aquasecurity.github.io

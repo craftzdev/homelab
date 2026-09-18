@@ -1,0 +1,101 @@
+# ===========================================================================
+# Kyverno — イメージ署名の検証（まずは audit のみ）
+#
+# ---------------------------------------------------------------------------
+# 何をするのか
+# ---------------------------------------------------------------------------
+# Harbor から取得するアプリのイメージに、アプリ側 CI（GitHub Actions）の
+# keyless 署名が付いているかを admission で検証する。
+#
+# 最初は ClusterPolicy 側を Audit にしてあり、**何も拒否しない**。
+# PolicyReport に結果だけが残る。全イメージが署名付きに入れ替わったのを
+# 確認してから Enforce へ切り替える。
+#
+# ---------------------------------------------------------------------------
+# 署名の取得先をクラスタ内の Harbor にしている理由
+# ---------------------------------------------------------------------------
+# イメージ参照は 172.16.40.201:5000（Harbor の LAN エンドポイント）だが、
+# その証明書は自前の CA で、公開 CA には連なっていない。Kyverno に CA を
+# 渡す仕組み（global.caCertificates）はコンテナの ca-certificates.crt を
+# 丸ごと置き換えるため、そこへ自前 CA だけを入れると Sigstore（Fulcio /
+# Rekor / TUF）への TLS が検証できなくなる。
+#
+# そこで ClusterPolicy 側で署名の取得先だけ harbor.harbor.svc（クラスタ内、
+# HTTP）へ向けている。署名の検証そのものは署名の中身に対する暗号的な検証
+# なので、取得経路が TLS でなくても強度は落ちない。資格情報もクラスタ内に
+# とどまる。
+# ===========================================================================
+
+# 署名の取得先（クラスタ内の Harbor、HTTP）と、それを読むための資格情報は、
+# 全体設定ではなく ClusterPolicy のルールごとに指定している
+# （policies/verify-harbor-images.yaml）。allowInsecureRegistry を
+# Kyverno のレジストリクライアント全体へ効かせないための選択である。
+#
+# 資格情報の Secret は kyverno namespace に置く。既存の読み取り専用ロボットから
+# scripts/reconcile-kyverno-registry-credentials.sh が作る。
+
+config:
+  # 除外しておかないと、Kyverno 自身や Cilium の再起動が policy 評価に
+  # 依存してしまい、障害時に復旧できなくなる。
+  webhooks:
+    namespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: NotIn
+          values:
+            - kube-system
+            - kyverno
+
+admissionController:
+  replicas: 2
+  nodeSelector:
+    homelab.craftz.dev/workload-plane: "true"
+  # ⚠️ 障害時に Pod が作れなくなる事態を避ける。Kyverno が落ちている間は
+  #    検証をせずに通す（Ignore）。Enforce へ移行しても、可用性より
+  #    「壊れたときにクラスタが止まらない」ことを優先する。
+  #    ここを Fail にするなら、Kyverno の冗長性を先に確認すること。
+  failurePolicy: Ignore
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 512Mi
+  serviceMonitor:
+    enabled: true
+
+backgroundController:
+  nodeSelector:
+    homelab.craftz.dev/workload-plane: "true"
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 384Mi
+  serviceMonitor:
+    enabled: true
+
+reportsController:
+  nodeSelector:
+    homelab.craftz.dev/workload-plane: "true"
+  resources:
+    requests:
+      cpu: 50m
+      memory: 192Mi
+    limits:
+      memory: 512Mi
+  serviceMonitor:
+    enabled: true
+
+cleanupController:
+  nodeSelector:
+    homelab.craftz.dev/workload-plane: "true"
+  resources:
+    requests:
+      cpu: 20m
+      memory: 64Mi
+    limits:
+      memory: 192Mi
+  serviceMonitor:
+    enabled: true
