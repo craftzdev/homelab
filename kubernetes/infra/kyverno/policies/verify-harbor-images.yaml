@@ -14,12 +14,19 @@
 # 変える。切り替えは failureAction を Enforce にするだけ。
 #
 # ---------------------------------------------------------------------------
-# 署名の取得先
+# 署名の取得先と allowInsecureRegistry
 # ---------------------------------------------------------------------------
-# イメージ参照は 172.16.40.201:5000（自前 CA の LAN エンドポイント）だが、
-# 署名の取得はクラスタ内の Harbor（harbor.harbor.svc、HTTP）から行う。
-# Kyverno のコンテナに自前 CA を入れると Sigstore への TLS が壊れるためで、
-# 署名検証そのものは暗号的な検証なので取得経路の TLS には依存しない。
+# 署名はイメージと同じ Harbor（172.16.40.201:5000）から取る。その証明書は
+# 自前 CA で、Kyverno のコンテナはそれを知らない。CA を渡す仕組み
+# （global.caCertificates）はコンテナの ca-certificates.crt を丸ごと
+# 置き換えるため、そこへ自前 CA だけを入れると Sigstore（Fulcio / Rekor /
+# TUF）への TLS が検証できなくなる。
+#
+# そこで allowInsecureRegistry をこのルールにだけ与える（Kyverno 全体には
+# 効かせない）。この宛先は LoadBalancer IP だが、Pod から出た通信は Cilium が
+# ノード内の harbor-ci-proxy へ直接渡すため、LAN には出ない。したがって
+# 経路上の盗聴・改ざんの相手はクラスタ内に限られる。署名の検証そのものは
+# 署名に対する暗号的な検証であり、取得経路の TLS には依存しない。
 #
 # ---------------------------------------------------------------------------
 # 何を信頼するのか
@@ -59,7 +66,6 @@ spec:
           # マニフェストは既にダイジェストで固定してある。Kyverno に
           # 書き換えさせない（書き換えにはイメージ本体への到達が要る）。
           mutateDigest: false
-          repository: harbor.harbor.svc/ai-business/ai-business-agent
           imageRegistryCredentials:
             allowInsecureRegistry: true
             secrets:
@@ -69,6 +75,8 @@ spec:
                 - keyless:
                     issuer: https://token.actions.githubusercontent.com
                     subject: https://github.com/craftzdev/ai-business-agent/.github/workflows/container.yaml@refs/heads/main
+                    rekor:
+                      url: https://rekor.sigstore.dev
 
     - name: ai-business-worker
       match:
@@ -83,7 +91,6 @@ spec:
           required: true
           verifyDigest: true
           mutateDigest: false
-          repository: harbor.harbor.svc/ai-business/ai-business-worker
           imageRegistryCredentials:
             allowInsecureRegistry: true
             secrets:
@@ -93,6 +100,8 @@ spec:
                 - keyless:
                     issuer: https://token.actions.githubusercontent.com
                     subject: https://github.com/craftzdev/ai-business-worker/.github/workflows/container.yaml@refs/heads/main
+                    rekor:
+                      url: https://rekor.sigstore.dev
 
     - name: ai-business-control-plane
       match:
@@ -107,7 +116,6 @@ spec:
           required: true
           verifyDigest: true
           mutateDigest: false
-          repository: harbor.harbor.svc/ai-business/ai-business-control-plane
           imageRegistryCredentials:
             allowInsecureRegistry: true
             secrets:
@@ -117,6 +125,8 @@ spec:
                 - keyless:
                     issuer: https://token.actions.githubusercontent.com
                     subject: https://github.com/craftzdev/ai-business-control-plane/.github/workflows/container.yaml@refs/heads/main
+                    rekor:
+                      url: https://rekor.sigstore.dev
 
     - name: moshitoku
       match:
@@ -133,7 +143,6 @@ spec:
           required: true
           verifyDigest: true
           mutateDigest: false
-          repository: harbor.harbor.svc/moshitoku/moshitoku
           imageRegistryCredentials:
             allowInsecureRegistry: true
             secrets:
@@ -143,6 +152,8 @@ spec:
                 - keyless:
                     issuer: https://token.actions.githubusercontent.com
                     subject: https://github.com/craftzdev/moshitoku/.github/workflows/container.yml@refs/heads/main
+                    rekor:
+                      url: https://rekor.sigstore.dev
 
     - name: moshitoku-scraper
       match:
@@ -157,7 +168,6 @@ spec:
           required: true
           verifyDigest: true
           mutateDigest: false
-          repository: harbor.harbor.svc/moshitoku/moshitoku-scraper
           imageRegistryCredentials:
             allowInsecureRegistry: true
             secrets:
@@ -167,3 +177,5 @@ spec:
                 - keyless:
                     issuer: https://token.actions.githubusercontent.com
                     subject: https://github.com/craftzdev/moshitoku-scraper/.github/workflows/container.yml@refs/heads/main
+                    rekor:
+                      url: https://rekor.sigstore.dev
