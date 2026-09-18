@@ -45,10 +45,20 @@ metadata:
   name: vlan40-l2-announcement
 spec:
   # ---------------------------------------------------------------------------
-  # 3 台は control-plane / worker 兼用なので、全ノードを広告候補にする。
-  # Lease により実際に ARP 応答するのは選出された 1 ノードだけになる。
+  # 広告候補はワークロードノードだけにする。
+  #
+  # ⚠️ LoadBalancer Service を externalTrafficPolicy: Local にすると、その IP は
+  #    backend を持つノードでしか転送できない。広告候補に control-plane を
+  #    含めると、Lease をそちらが取った瞬間に通信が落ちる（harbor-ci-proxy は
+  #    ワークロードノードにしか置いていない）。
+  #
+  # 現在 LB IP を持つ Service（image-registry / harbor-ci-proxy）はどちらも
+  # ワークロードノードで動く。control-plane にしか置けない Service を
+  # LB 公開する場合は、ここと Service の配置を合わせて見直すこと。
   # ---------------------------------------------------------------------------
-  nodeSelector: {}
+  nodeSelector:
+    matchLabels:
+      homelab.craftz.dev/workload-plane: "true"
 
   # ---------------------------------------------------------------------------
   # 広告を出すインタフェースを VLAN40 側に限定する。
