@@ -56,7 +56,11 @@ Proxmoxと補助VM用の余裕を残す。control-planeの既存Longhorn diskは
 
 | IP | サービス | 公開範囲 | 定義箇所 |
 | --- | --- | --- | --- |
-| 172.16.40.201 | Grafana | 宅内のみ | `kubernetes/infra/monitoring/values.yaml` |
+| 172.16.40.200 | 旧イメージレジストリ（読み取り専用） | 宅内のみ | `kubernetes/infra/image-registry/registry.yaml` |
+| 172.16.40.201 | Harbor の CI 用エンドポイント（nginx プロキシ） | 宅内のみ | `kubernetes/infra/actions-runner-controller/harbor-ci-proxy.yaml` |
+
+Grafana はここには載らない。LoadBalancer ではなく Tailscale operator の
+Ingress（`kubernetes/infra/tailscale-operator/`）で Tailnet にだけ出している。
 
 > **Gateway には LoadBalancer IP を割り当てていません。**
 > 当初は ingress-nginx を 172.16.40.200 で L2 公開していましたが、それは

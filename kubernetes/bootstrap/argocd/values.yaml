@@ -218,15 +218,20 @@ server:
   # これを踏まえた上で --insecure を維持する理由:
   #   1. ArgoCD の namespace に default-deny を敷き、
   #      到達できる送信元を限定した（kubernetes/infra/policies/）
-  #   2. Ingress を作らず、アクセスは port-forward のみ
-  #      （apiserver 経由なので TLS で保護される）
+  #   2. 到達経路は port-forward（apiserver 経由で TLS）と、
+  #      Tailscale operator の Ingress（Tailnet 内で TLS 終端）だけで、
+  #      インターネットにも宅内 LAN にも出していない
   #   3. TLS を有効にすると port-forward 時に自己署名証明書の
   #      エラーを毎回回避することになり、かえって
   #      「証明書警告を無視する習慣」を作る
   #
-  # ⚠️ ただしこれは「小規模で、UI を外部公開しない」前提の判断である。
-  #    ArgoCD を宅内 LAN へ公開する、あるいは複数人で使うようになったら
-  #    TLS を有効にし直すこと。
+  # ⚠️ 2026-09-10 に Tailnet の Ingress（tailscale-operator/argocd-ingress.yaml）
+  #    を足したため、「Ingress を作らない」という当初の前提は変わっている。
+  #    平文が流れるのは Tailscale proxy と argocd-server の間（クラスタ内）に
+  #    限られるが、同一ノードに載った Pod からは読める。
+  #
+  # ⚠️ 小規模で、UI を外部公開しない前提の判断である。ArgoCD を宅内 LAN へ
+  #    公開する、あるいは複数人で使うようになったら TLS を有効にし直すこと。
   # ---------------------------------------------------------------------------
   extraArgs:
     - --insecure
