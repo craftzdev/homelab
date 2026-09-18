@@ -12,27 +12,21 @@
 # 確認してから Enforce へ切り替える。
 #
 # ---------------------------------------------------------------------------
-# 署名の取得先をクラスタ内の Harbor にしている理由
+# 署名の取得と TLS
 # ---------------------------------------------------------------------------
-# イメージ参照は 172.16.40.201:5000（Harbor の LAN エンドポイント）だが、
-# その証明書は自前の CA で、公開 CA には連なっていない。Kyverno に CA を
-# 渡す仕組み（global.caCertificates）はコンテナの ca-certificates.crt を
-# 丸ごと置き換えるため、そこへ自前 CA だけを入れると Sigstore（Fulcio /
-# Rekor / TUF）への TLS が検証できなくなる。
+# 署名はイメージと同じ Harbor（172.16.40.201:5000）から取る。その証明書は
+# 自前 CA で、Kyverno のコンテナはそれを知らない。CA を渡す仕組み
+# （global.caCertificates）はコンテナの ca-certificates.crt を丸ごと
+# 置き換えるため、自前 CA だけを入れると Sigstore への TLS が壊れる。
 #
-# そこで ClusterPolicy 側で署名の取得先だけ harbor.harbor.svc（クラスタ内、
-# HTTP）へ向けている。署名の検証そのものは署名の中身に対する暗号的な検証
-# なので、取得経路が TLS でなくても強度は落ちない。資格情報もクラスタ内に
-# とどまる。
-# ===========================================================================
-
-# 署名の取得先（クラスタ内の Harbor、HTTP）と、それを読むための資格情報は、
-# 全体設定ではなく ClusterPolicy のルールごとに指定している
-# （policies/verify-harbor-images.yaml）。allowInsecureRegistry を
-# Kyverno のレジストリクライアント全体へ効かせないための選択である。
+# 代わりに allowInsecureRegistry を ClusterPolicy のルール単位で与えている
+# （policies/verify-harbor-images.yaml）。Kyverno のレジストリクライアント
+# 全体へ効かせないための選択である。経路は Cilium がノード内の
+# harbor-ci-proxy へ直接渡すため LAN には出ない。
 #
 # 資格情報の Secret は kyverno namespace に置く。既存の読み取り専用ロボットから
 # scripts/reconcile-kyverno-registry-credentials.sh が作る。
+# ===========================================================================
 
 config:
   # 除外しておかないと、Kyverno 自身や Cilium の再起動が policy 評価に

@@ -171,6 +171,9 @@ spec:
     - fromEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: arc-builders
+        # Kyverno は署名の検証でここから .sig を取得する。
+        - matchLabels:
+            io.kubernetes.pod.namespace: kyverno
       toPorts:
         - ports:
             - port: "5000"

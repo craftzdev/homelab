@@ -3,7 +3,7 @@
 #
 # 出ていく先は 3 つだけ。
 #   - kube-apiserver（policy と report の読み書き）
-#   - Harbor（クラスタ内の Service。署名の取得）
+#   - Harbor の CI プロキシ（署名の取得。経路はクラスタ内で完結する）
 #   - Sigstore の公開エンドポイント（Fulcio / Rekor / TUF）
 #
 # 宅内 CIDR への deny は clusterwide-egress-deny.yaml が担う。
@@ -40,15 +40,16 @@ spec:
     - toEntities:
         - kube-apiserver
 
-    # 署名の取得先（クラスタ内の Harbor）。
+    # 署名の取得先。イメージ参照と同じ 172.16.40.201:5000 だが、Pod から出た
+    # 通信は Cilium が harbor-ci-proxy の Pod へ直接渡すため、宛先は CIDR では
+    # なくこの Pod として評価される（LAN には出ない）。
     - toEndpoints:
         - matchLabels:
-            io.kubernetes.pod.namespace: harbor
-            k8s:app: harbor
-            k8s:component: nginx
+            io.kubernetes.pod.namespace: arc-runners
+            k8s:app.kubernetes.io/name: harbor-ci-proxy
       toPorts:
         - ports:
-            - port: "8080"
+            - port: "5000"
               protocol: TCP
 
     # Sigstore（Fulcio / Rekor / TUF）。宅内・クラスタ内は除外する。
