@@ -40,13 +40,21 @@ data:
     }
 
 ---
+# ---------------------------------------------------------------------------
+# DaemonSet である理由
+#
+# Service を externalTrafficPolicy: Local にすると、その LoadBalancer IP は
+# backend を持つノードでしか処理されない。Talos の containerd は各ノードから
+# 172.16.40.201 へ pull するため、全ワークロードノードに 1 つずつ必要になる。
+# Local にするのは送信元 IP を保つためで、そうしないと LAN / Tailnet からの
+# 接続もノード IP に SNAT され、ポリシーで区別できない。
+# ---------------------------------------------------------------------------
 apiVersion: apps/v1
-kind: Deployment
+kind: DaemonSet
 metadata:
   name: harbor-ci-proxy
   namespace: arc-runners
 spec:
-  replicas: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: harbor-ci-proxy
@@ -136,7 +144,10 @@ metadata:
 spec:
   type: LoadBalancer
   loadBalancerIP: 172.16.40.201
-  externalTrafficPolicy: Cluster
+  # 送信元 IP を保つ。Cluster だと LAN / Tailnet からの接続もノード IP へ
+  # SNAT され、CiliumNetworkPolicy の fromEntities: host / remote-node に
+  # 一致してしまい、「クラスタノードだけ」という意図が効かなくなる。
+  externalTrafficPolicy: Local
   selector:
     app.kubernetes.io/name: harbor-ci-proxy
   ports:
