@@ -29,15 +29,15 @@
 # scripts/reconcile-kyverno-registry-credentials.sh が作る。
 # ===========================================================================
 
+# ⚠️ caCertificates.volume は使わない。chart はそれを subPath なしで
+#    /etc/ssl/certs/ca-certificates.crt（ファイル）へマウントするため、
+#    ConfigMap（ディレクトリ）を渡すとコンテナが起動できない
+#    （"not a directory"）。代わりに普通のディレクトリとしてマウントし、
+#    SSL_CERT_FILE でそのファイルを指す。
 global:
-  caCertificates:
-    # 公開 CA ＋ Harbor の CA。ConfigMap は上記スクリプトが作る。
-    volume:
-      configMap:
-        name: ca-bundle
-        items:
-          - key: ca-certificates.crt
-            path: ca-certificates.crt
+  extraEnvVars:
+    - name: SSL_CERT_FILE
+      value: /etc/kyverno/ca/ca-certificates.crt
 
 config:
   # 除外しておかないと、Kyverno 自身や Cilium の再起動が policy 評価に
@@ -52,6 +52,14 @@ config:
             - kyverno
 
 admissionController:
+  extraVolumes:
+    - name: ca-bundle
+      configMap:
+        name: ca-bundle
+  extraVolumeMounts:
+    - name: ca-bundle
+      mountPath: /etc/kyverno/ca
+      readOnly: true
   replicas: 2
   nodeSelector:
     homelab.craftz.dev/workload-plane: "true"
@@ -70,6 +78,14 @@ admissionController:
     enabled: true
 
 backgroundController:
+  extraVolumes:
+    - name: ca-bundle
+      configMap:
+        name: ca-bundle
+  extraVolumeMounts:
+    - name: ca-bundle
+      mountPath: /etc/kyverno/ca
+      readOnly: true
   nodeSelector:
     homelab.craftz.dev/workload-plane: "true"
   resources:
@@ -82,6 +98,14 @@ backgroundController:
     enabled: true
 
 reportsController:
+  extraVolumes:
+    - name: ca-bundle
+      configMap:
+        name: ca-bundle
+  extraVolumeMounts:
+    - name: ca-bundle
+      mountPath: /etc/kyverno/ca
+      readOnly: true
   nodeSelector:
     homelab.craftz.dev/workload-plane: "true"
   resources:
@@ -94,6 +118,14 @@ reportsController:
     enabled: true
 
 cleanupController:
+  extraVolumes:
+    - name: ca-bundle
+      configMap:
+        name: ca-bundle
+  extraVolumeMounts:
+    - name: ca-bundle
+      mountPath: /etc/kyverno/ca
+      readOnly: true
   nodeSelector:
     homelab.craftz.dev/workload-plane: "true"
   resources:
