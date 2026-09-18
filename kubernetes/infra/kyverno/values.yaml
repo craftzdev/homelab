@@ -14,19 +14,30 @@
 # ---------------------------------------------------------------------------
 # 署名の取得と TLS
 # ---------------------------------------------------------------------------
-# 署名はイメージと同じ Harbor（172.16.40.201:5000）から取る。その証明書は
-# 自前 CA で、Kyverno のコンテナはそれを知らない。CA を渡す仕組み
-# （global.caCertificates）はコンテナの ca-certificates.crt を丸ごと
-# 置き換えるため、自前 CA だけを入れると Sigstore への TLS が壊れる。
+# 署名はイメージと同じ Harbor（172.16.40.201:5000）から HTTPS で取る。その
+# 証明書は自前 CA で、Kyverno のコンテナはそれを知らない。
 #
-# 代わりに allowInsecureRegistry を ClusterPolicy のルール単位で与えている
-# （policies/verify-harbor-images.yaml）。Kyverno のレジストリクライアント
-# 全体へ効かせないための選択である。経路は Cilium がノード内の
-# harbor-ci-proxy へ直接渡すため LAN には出ない。
+# caCertificates はコンテナの ca-certificates.crt を **丸ごと置き換える**
+# ため、自前 CA だけを入れると Sigstore（Fulcio / Rekor / TUF）への TLS が
+# 検証できなくなる。そこで「公開 CA ＋ 自前 CA」を束ねた ConfigMap を
+# 渡している。中身は scripts/reconcile-kyverno-ca-bundle.sh が作る。
 #
-# 資格情報の Secret は kyverno namespace に置く。既存の読み取り専用ロボットから
+# ⚠️ allowInsecureRegistry は使わない。あれは TLS 検証の省略ではなく平文
+#    HTTP への切り替えで、Harbor は HTTPS しか受けないため 400 になる。
+#
+# 資格情報の Secret も kyverno namespace に置く。既存の読み取り専用ロボットから
 # scripts/reconcile-kyverno-registry-credentials.sh が作る。
 # ===========================================================================
+
+global:
+  caCertificates:
+    # 公開 CA ＋ Harbor の CA。ConfigMap は上記スクリプトが作る。
+    volume:
+      configMap:
+        name: ca-bundle
+        items:
+          - key: ca-certificates.crt
+            path: ca-certificates.crt
 
 config:
   # 除外しておかないと、Kyverno 自身や Cilium の再起動が policy 評価に

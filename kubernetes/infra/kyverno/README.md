@@ -26,28 +26,34 @@ scripts/reconcile-kyverno-registry-credentials.sh
 ```
 
 作られるのは `kyverno` namespace の次の 2 つで、いずれも既存ロボットの
-資格情報をクラスタ内ホスト名（`harbor.harbor.svc`）向けに置き換えたもの。
+資格情報を署名取得先のホスト名（`172.16.40.201:5000`）向けに置き換えたもの。
+資格情報はレジストリのホスト名で選ばれるため、ここが ClusterPolicy の
+参照先と一致していないと匿名アクセスになり署名を読めない。
 
 - `harbor-pull-ai-business`（`ai-agent/harbor-pull` 由来）
 - `harbor-pull-moshitoku`（`moshitoku/harbor-pull` 由来）
 
-## なぜ `allowInsecureRegistry` を使うのか
+## 前提となる CA 束
 
-署名はイメージと同じ Harbor（`172.16.40.201:5000`）から取る。その証明書は
-自前 CA で、Kyverno のコンテナはそれを知らない。CA を渡す仕組み
-（`global.caCertificates`）はコンテナの `ca-certificates.crt` を丸ごと
-置き換えるため、自前 CA だけを入れると Sigstore（Fulcio / Rekor / TUF）への
-TLS が検証できなくなる。
+Kyverno は署名を Harbor から HTTPS で取る。自前 CA を知らないため、
+「公開 CA ＋ Harbor の CA」を束ねた ConfigMap を渡している。
 
-そこで `allowInsecureRegistry` をこのルールにだけ与えている。宛先は
-LoadBalancer IP だが、Pod から出た通信は Cilium がノード内の
-`harbor-ci-proxy` へ直接渡すため LAN には出ない（Hubble でも
-`kyverno/... -> arc-runners/harbor-ci-proxy-...:5000` として見える）。
-署名の検証は署名そのものに対する暗号的な検証であり、取得経路の TLS には
-依存しない。
+```bash
+scripts/reconcile-kyverno-ca-bundle.sh
+```
 
-なお keyless の attestor には Rekor の URL が必須で、無いと Kyverno の
-webhook がポリシーを拒否する。
+`caCertificates` はコンテナの `ca-certificates.crt` を丸ごと置き換えるので、
+自前 CA だけを入れると Sigstore への TLS が壊れる。公開 CA は管理用 Mac の
+システム束（`/etc/ssl/cert.pem`）から取っている。
+
+`allowInsecureRegistry` は使わない。あれは TLS 検証の省略ではなく平文 HTTP への
+切り替えで、Harbor は HTTPS しか受けないため 400 になる。
+
+## 署名の形式（cosign 2 系）
+
+Kyverno 1.19 が読めるのは `sha256-<digest>.sig` タグに付いた署名まで。
+cosign 3 の既定（OCI 1.1 の referrer + sigstore bundle）は読めず、
+検証が `no signatures found` になる。アプリ側の CI は cosign 2 系に固定してある。
 
 ## Enforce への切り替え手順
 

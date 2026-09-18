@@ -14,19 +14,15 @@
 # 変える。切り替えは failureAction を Enforce にするだけ。
 #
 # ---------------------------------------------------------------------------
-# 署名の取得先と allowInsecureRegistry
+# 署名の取得先
 # ---------------------------------------------------------------------------
-# 署名はイメージと同じ Harbor（172.16.40.201:5000）から取る。その証明書は
-# 自前 CA で、Kyverno のコンテナはそれを知らない。CA を渡す仕組み
-# （global.caCertificates）はコンテナの ca-certificates.crt を丸ごと
-# 置き換えるため、そこへ自前 CA だけを入れると Sigstore（Fulcio / Rekor /
-# TUF）への TLS が検証できなくなる。
+# 署名はイメージと同じ Harbor から HTTPS で取る。Kyverno には「公開 CA ＋
+# Harbor の CA」を束ねた信頼ストアを渡してある（values.yaml と
+# scripts/reconcile-kyverno-ca-bundle.sh）。
 #
-# そこで allowInsecureRegistry をこのルールにだけ与える（Kyverno 全体には
-# 効かせない）。この宛先は LoadBalancer IP だが、Pod から出た通信は Cilium が
-# ノード内の harbor-ci-proxy へ直接渡すため、LAN には出ない。したがって
-# 経路上の盗聴・改ざんの相手はクラスタ内に限られる。署名の検証そのものは
-# 署名に対する暗号的な検証であり、取得経路の TLS には依存しない。
+# ⚠️ 署名は cosign 2 系が付ける sha256-<digest>.sig タグを読む。cosign 3 の
+#    既定（OCI 1.1 の referrer + sigstore bundle）は Kyverno 1.19 が読めず、
+#    「no signatures found」になる。アプリ側の CI は 2 系に固定してある。
 #
 # ---------------------------------------------------------------------------
 # 何を信頼するのか
@@ -66,8 +62,9 @@ spec:
           # マニフェストは既にダイジェストで固定してある。Kyverno に
           # 書き換えさせない（書き換えにはイメージ本体への到達が要る）。
           mutateDigest: false
+          # OCI 1.1 の referrer も見る（署名は cosign 2 のタグ側に付く）。
+          cosignOCI11: true
           imageRegistryCredentials:
-            allowInsecureRegistry: true
             secrets:
               - harbor-pull-ai-business
           attestors:
@@ -91,8 +88,9 @@ spec:
           required: true
           verifyDigest: true
           mutateDigest: false
+          # OCI 1.1 の referrer も見る（署名は cosign 2 のタグ側に付く）。
+          cosignOCI11: true
           imageRegistryCredentials:
-            allowInsecureRegistry: true
             secrets:
               - harbor-pull-ai-business
           attestors:
@@ -116,8 +114,9 @@ spec:
           required: true
           verifyDigest: true
           mutateDigest: false
+          # OCI 1.1 の referrer も見る（署名は cosign 2 のタグ側に付く）。
+          cosignOCI11: true
           imageRegistryCredentials:
-            allowInsecureRegistry: true
             secrets:
               - harbor-pull-ai-business
           attestors:
@@ -143,8 +142,9 @@ spec:
           required: true
           verifyDigest: true
           mutateDigest: false
+          # OCI 1.1 の referrer も見る（署名は cosign 2 のタグ側に付く）。
+          cosignOCI11: true
           imageRegistryCredentials:
-            allowInsecureRegistry: true
             secrets:
               - harbor-pull-moshitoku
           attestors:
@@ -168,8 +168,9 @@ spec:
           required: true
           verifyDigest: true
           mutateDigest: false
+          # OCI 1.1 の referrer も見る（署名は cosign 2 のタグ側に付く）。
+          cosignOCI11: true
           imageRegistryCredentials:
-            allowInsecureRegistry: true
             secrets:
               - harbor-pull-moshitoku
           attestors:
