@@ -5,20 +5,20 @@
 # ---------------------------------------------------------------------------
 # なぜ既存の Secret をそのまま使えないのか
 # ---------------------------------------------------------------------------
-# アプリの namespace にある harbor-pull は、レジストリのホスト名が
-# 172.16.40.201:5000 と harbor.tailb6c7d.ts.net になっている。Kyverno は
-# 署名をクラスタ内の Harbor（harbor.harbor.svc）から取るため、同じロボットの
-# 資格情報を「そのホスト名で」持った Secret が要る。
-#
-# 新しいロボットは作らない。既存の読み取り専用ロボットを、宛先ホスト名だけ
-# 変えて複製する。値はパイプで渡し、プロセスの引数には載せない。
+# 既存の harbor-pull はアプリの namespace にあり、Kyverno からは読めない。
+# 新しいロボットは作らず、同じ読み取り専用ロボットの資格情報を kyverno
+# namespace へ複製する。値はパイプで渡し、プロセスの引数には載せない。
 # ===========================================================================
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 KUBECONFIG_PATH="${KUBECONFIG:-${REPO_ROOT}/_out/kubeconfig}"
-HARBOR_IN_CLUSTER_HOST="${HARBOR_IN_CLUSTER_HOST:-harbor.harbor.svc}"
+# Kyverno が署名を取りに行く先。ClusterPolicy はイメージ参照と同じ
+# エンドポイントを使う（policies/verify-harbor-images.yaml）。資格情報は
+# レジストリのホスト名で選ばれるため、ここが一致していないと匿名アクセスに
+# なり、署名を読めない。
+HARBOR_SIGNATURE_HOST="${HARBOR_SIGNATURE_HOST:-172.16.40.201:5000}"
 
 info() { printf '  %s\n' "$*"; }
 ok() { printf 'OK  %s\n' "$*"; }
@@ -33,7 +33,7 @@ export KUBECONFIG="${KUBECONFIG_PATH}"
 kubectl create namespace kyverno --dry-run=client -o yaml \
   | kubectl apply -f - >/dev/null
 
-# 既存の読み取り専用ロボットを、クラスタ内ホスト名向けに複製する。
+# 既存の読み取り専用ロボットを、署名取得先のホスト名向けに複製する。
 copy_pull_secret() {
   local source_namespace="$1" target_name="$2"
 
@@ -43,7 +43,7 @@ copy_pull_secret() {
   kubectl -n "${source_namespace}" get secret harbor-pull \
     -o jsonpath='{.data.\.dockerconfigjson}' \
     | base64 --decode \
-    | jq --arg host "${HARBOR_IN_CLUSTER_HOST}" --arg name "${target_name}" '
+    | jq --arg host "${HARBOR_SIGNATURE_HOST}" --arg name "${target_name}" '
         (.auths | to_entries | map(select(.value.auth != null)) | first) as $entry
         | if $entry == null then
             error("harbor-pull に auth がありません")
@@ -60,7 +60,7 @@ copy_pull_secret() {
           end' \
     | kubectl apply -f - >/dev/null
 
-  info "${target_name} <- ${source_namespace}/harbor-pull（${HARBOR_IN_CLUSTER_HOST} 向け）"
+  info "${target_name} <- ${source_namespace}/harbor-pull（${HARBOR_SIGNATURE_HOST} 向け）"
 }
 
 copy_pull_secret ai-agent harbor-pull-ai-business
