@@ -62,3 +62,4 @@
 | 1 | DB のクラスタ外バックアップ | ✅ **完了** — CNPG → Cloudflare R2。復元検証済み（[ADR-0012](adr/0012-backup-strategy-revisited.md)） |
 | 1b | Longhorn 全体の外部バックアップ | **採らない判断**。DB 以外は再構築可能なデータで、PBS の VM イメージで足りる（[ADR-0012](adr/0012-backup-strategy-revisited.md)） |
 | 2 | Git 履歴に残る平文 SSH パスワードの除去 | **未着手**（公開前に必須） |
+| 3 | PBS の datastore をルートFSから分離する | **未着手**（ディスク増設が要る）。満杯になると prune も GC も書けず自己回復できない。2026-09-19 の障害の一因（[pbs-capacity-2026-09-19.md §7-1](pbs-capacity-2026-09-19.md)） |

@@ -609,17 +609,50 @@ spec:
               確認: ssh root@172.16.10.51 'df -h /; tune2fs -l /dev/mapper/pbs-root | grep -i reserved'
 
         - alert: PBSDatastoreFillingUp
+          # しきい値を 15% → 30% に上げた（2026-09-19）。
+          #
+          # 15% では猶予がゼロだったためである。実測では 09-17 00:30 に
+          # 98.8 GiB（22%）あった空きが、1 回のバックアップで 06:30 に
+          # 1.9 GiB（0.4%）になった。15% = 65 GiB は 1 晩ぶん（当時 97 GiB）に
+          # 満たず、**このアラートが警告として機能する時間帯が存在しなかった。**
+          # 発報はしたが、そのときには既に手遅れだった。
+          #
+          # 30% = 129 GiB。worker scsi0 を外したあとの 1 晩 49.9 GiB に対して
+          # 約 2.6 晩ぶんにあたる。週末を挟んでも気づける幅を優先する。
           expr: |
             pbs_observer_datastore_avail_bytes
-              / pbs_observer_datastore_total_bytes < 0.15
+              / pbs_observer_datastore_total_bytes < 0.30
           for: 1h
           labels:
             severity: warning
           annotations:
-            summary: "PBS データストア {{ $labels.datastore }} の空きが 15% 未満です"
+            summary: "PBS データストア {{ $labels.datastore }} の空きが 30% 未満です"
             description: |
               保持ポリシーと GC の結果を確認する。
               確認: ssh root@172.16.10.51 'proxmox-backup-manager prune-job list'
+              増加の原因を切り分ける: scripts/pbs-chunk-growth.py を PBS へ送って実行する
+
+        - alert: PBSDatastoreWillFill
+          # しきい値ではなく傾きで見る。
+          #
+          # PBS の使用量は「じわじわ増える」のではなく、02:30 のジョブで
+          # 1 晩ぶんが階段状に乗る。静的なしきい値はこの形と相性が悪く、
+          # 1 段で跨いでしまうと警告の意味を成さない（上の 15% がそれだった）。
+          # 6 時間の傾きから 36 時間後を予測し、次の 1 晩が入らないと
+          # 分かった時点で鳴らす。予防的に効かせたいので warning ではなく
+          # critical にしている — 空になってからでは prune も動かないため。
+          expr: |
+            predict_linear(pbs_observer_datastore_avail_bytes[6h], 36 * 3600) < 0
+          for: 30m
+          labels:
+            severity: critical
+          annotations:
+            summary: "PBS データストア {{ $labels.datastore }} は 36 時間以内に満杯になる見込みです"
+            description: |
+              今の増加ペースが続くと次回以降のバックアップが ENOSPC で失敗する。
+              満杯になると prune も GC も書き込めず自己回復できないため、
+              **空く前に手を打つこと。**
+              対処の手順: docs/pbs-capacity-2026-09-19.md §対処
 
         - alert: PBSBackupTaskFailing
           # 直近の vzdump タスクが失敗した状態。日次ジョブなので

@@ -83,6 +83,33 @@ resource "proxmox_virtual_environment_vm" "node" {
   #    各ノードで確認する。
   # ---------------------------------------------------------------------------
   # --- OS ディスク ---
+  #
+  # backup: worker では PBS のバックアップ対象から外す。
+  #    このディスクは Talos の EPHEMERAL（/var）で、中身はコンテナイメージ・
+  #    Pod ログ・emptyDir である。いずれも再取得できる。worker の
+  #    代替不能なデータは Longhorn 側（scsi1）にあり、そちらは取り続ける。
+  #
+  #    ⚠️ 外す理由は「優先度が低いから」ではなく、**取ると PBS が破綻するから**
+  #    である。2026-09-19 の実測（docs/pbs-capacity-2026-09-19.md）:
+  #
+  #      - EPHEMERAL は LUKS2 で暗号化されている（talos/patches/*.tftpl の
+  #        systemDiskEncryption、鍵は nodeID＝ノードごとに別）。このため
+  #        同じコンテナイメージでもノード間で完全に別のチャンクになり、
+  #        PBS の重複排除が効かない。圧縮も効かない（ZFS compressratio 1.00x）
+  #      - 4 MiB チャンク内の 1 セクタが変わるだけで全体が新規チャンクになる。
+  #        実測で毎晩 OS ディスクの 40〜62% が新規チャンクになっていた
+  #      - 結果、worker 3 台の scsi0 だけで 1 世代 89.1 GiB、毎晩 +47 GiB。
+  #        データストア全体 428 GiB のうち 166.9 GiB をこれが占めていた
+  #
+  #    復旧経路は変わらない。worker が壊れたら tofu で作り直して
+  #    talosctl apply-config で再参加させ、Longhorn が他の 2 台から
+  #    レプリカを再構築する（scripts/rebuild-talos-cluster.sh）。
+  #    5 日前の EPHEMERAL イメージを書き戻すより、そちらの方が速く確実である。
+  #
+  #    control-plane では取り続ける。etcd のデータが /var/lib/etcd にあり、
+  #    1 世代 16.6 GiB と安い。ADR-0012 のとおり etcd スナップショットは
+  #    別途取っていないため、ここが唯一のコピーになる。
+  # ---------------------------------------------------------------------------
   disk {
     datastore_id = each.value.role == "controlplane" ? var.controlplane_os_datastore_id : var.vm_datastore_id
     interface    = "scsi0"
@@ -95,6 +122,7 @@ resource "proxmox_virtual_environment_vm" "node" {
     # I/O を専用スレッドで処理し、他の VM の影響を受けにくくする
     iothread = true
     cache    = "none"
+    backup   = each.value.role == "controlplane"
   }
 
   # ---------------------------------------------------------------------------
@@ -119,8 +147,17 @@ resource "proxmox_virtual_environment_vm" "node" {
   #    （worker.yaml.tftpl の node.longhorn.io/create-default-disk ラベル）、
   #    control のこのディスクは実使用 816K の空ディスクである。
   #    バックアップしても得るものが無い。worker 側は Longhorn データの
-  #    唯一のクラスタ外コピーなので必ず含める（ADR-0008 の階層3。
-  #    階層2の Velero が未導入のため、PBS が S5/S6 を単独で受けている）。
+  #    唯一のクラスタ外コピーなので必ず含める（ADR-0012 の階層3。
+  #    Velero を採らない判断をしたため、PBS が S5/S6 を単独で受けている）。
+  #
+  #    ⚠️ ここが PBS の容量の大半を占める。Longhorn は同じデータを 3 レプリカ
+  #    持つが、レプリカのファイル配置がノードごとに違うため PBS から見ると
+  #    別データであり、ノード間の重複排除が効かない（2026-09-19 の実測で
+  #    3 ワーカー間の共有は 99.3 GiB 中 0.06 GiB ＝ 0.06%）。
+  #    つまり **同じデータを 3 重に保存している**。1 世代 99.3 GiB、毎晩 +41.5 GiB。
+  #    うち約 6 割は Prometheus の TSDB（30.5 GiB × 3 レプリカ）である。
+  #    保持世代を増やせない根本要因はここにある。
+  #    詳細は docs/pbs-capacity-2026-09-19.md を参照。
   # ---------------------------------------------------------------------------
   disk {
     datastore_id = var.vm_datastore_id
