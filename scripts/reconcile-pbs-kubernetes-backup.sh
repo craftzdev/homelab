@@ -27,10 +27,18 @@ BW_LIMIT_KIB="${BW_LIMIT_KIB:-51200}"
 #   1 世代 115.9 GiB ＋ 1 晩あたり 49.9 GiB
 #   daily=3 → 約 216 GiB (50%) / daily=5 → 約 316 GiB (73%)
 #
-# ⚠️ 現在 daily=3 なのは移行措置である。worker の scsi0 を含む古い世代
-#    （〜2026-09-16）が残っている間は 5 世代が入らない。それらが prune され
-#    GC が回ったあと（2026-09-23 以降）に daily=5 へ上げること。
-#    条件の確認: ssh root@172.16.10.51 'df -h /' が 55% 未満であること。
+# ⚠️ daily=3 は移行措置ではなく、当面の定常値である。
+#
+#    daily=5 にすると空きが 27% になり、PBSDatastoreFillingUp（空き 30% 未満）が
+#    恒常的に発報する。鳴りっぱなしの警告は読まれなくなる — それは 15% の
+#    しきい値が機能しなかったのと同じ失敗である。1 晩が全体の 11.6% を占める
+#    この構成では、**保持世代を増やすことと容量警告が機能することは両立しない。**
+#
+#    上げたければ先に 1 晩あたりの増分を減らすこと（Prometheus が Longhorn の
+#    6 割を占めている。docs/pbs-capacity-2026-09-19.md §7-2）。
+#
+# ⚠️ 値は keep-daily だけにすること。PBS の prune オプションは加算で、
+#    keep-last=5,keep-daily=5 は 10 世代になる（同文書 §6-1）。
 PRUNE_BACKUPS="${PRUNE_BACKUPS:-keep-daily=3}"
 APPLY=false
 
