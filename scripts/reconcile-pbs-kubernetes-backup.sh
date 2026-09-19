@@ -103,6 +103,22 @@ for vmid in "${vmids[@]}"; do
 done
 ok "対象VMを確認: ${VM_IDS}"
 
+# このジョブは --remove 1 を設定する。「バックアップ後に保持ポリシーを適用する」
+# 設定で、PBS のトークンに Datastore.Prune を要求する。
+#
+# ⚠️ 既定の DatastoreBackup ロールには Datastore.Prune が無い。その場合、
+#    バックアップ自体は成功し、**その後の prune だけが静かに失敗し続ける。**
+#    PRUNE_BACKUPS に何を書いても効かず、使用量が伸び続ける。
+#    2026-09-20 に発覚した（docs/pbs-capacity-2026-09-19.md §8）。
+#
+# 直近のタスクログに痕跡が残っていれば警告する。PBS へは SSH しないので
+# 権限そのものは確認できない。
+if pve "grep -rlF --include='*vzdump*' 'Datastore.Prune on /datastore' /var/log/pve/tasks 2>/dev/null | head -1 | grep -q ."; then
+  warn "直近のバックアップで prune が権限不足により失敗しています"
+  warn "PBS トークンに Datastore.Prune がありません。--remove 1 が効いていません"
+  warn "対処: docs/pbs-capacity-2026-09-19.md §8-1"
+fi
+
 if pve "pvesh get /cluster/backup/${JOB_ID} >/dev/null 2>&1"; then
   action="set"
   info "既存ジョブを更新します: ${JOB_ID}"

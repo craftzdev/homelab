@@ -7,6 +7,11 @@
 
 本書は「なぜ空けても空けてもすぐ埋まるのか」を計測で特定した記録である。
 
+> ⚠️ **§8（2026-09-20 の追記）を先に読むこと。**
+> 本書の対処を入れた翌日、保持ポリシーが **vzdump 側では一度も適用されて
+> いなかった**ことが分かった。PBS トークンに `Datastore.Prune` が無い。
+> 容量の設計（§1〜§6）はそのまま有効だが、**それが効く前提が欠けていた。**
+
 ## 結論（先に）
 
 | | |
@@ -463,14 +468,75 @@ worker scsi1 の 99.3 GiB／世代のうち大半が Prometheus TSDB（30.5 GiB 
 
 ADR-0012 が「監視データは再取得可能」と位置づけている以上、
 どちらも取り得る。**今回は実施しない**（バックアップ再開を優先する）。
-`keep-daily=5` で運用してみて、それでも窮屈なら検討する。
+ここを削るのが、保持世代を 3 より増やすための唯一の道である（§6-3）。
 
-### 7-3. ランサムウェア対策の遡及窓が 5 日になる
+### 7-3. ランサムウェア対策の遡及窓が 3 日になる
 
 ADR-0012 の S6 は「PBS のみで受容する」としている。その PBS の遡及窓が
-daily 7 + weekly 4 + monthly 3（名目上 3 か月）から **実質 5 日**になる。
+daily 7 + weekly 4 + monthly 3（名目上 3 か月）から **実質 3 日**になる。
 
 名目が実態と違っていたのは元からである（7 世代すら入っていなかった）。
-**5 日は、初めて実際に保持できている数字である。**
+**3 日は、初めて実際に保持できている数字である。**
 窓を伸ばしたければ 7-1 のディスク増設か 7-2 が要る。
 ADR-0012 の更新が必要になった時点で本書を参照すること。
+
+## 8. 追記（2026-09-20）— 保持が 1 度も適用されていなかった
+
+再開した初回のバックアップ（09-20 02:30）で、6 台すべてが PBS 側では
+`OK` で完了したにもかかわらず、**Proxmox 側のジョブは `job errors` で終わった。**
+使用率は 79% → 94%（空き 27 GB）に戻り、保持は 3 世代のはずが 4 世代に増えていた。
+
+```
+INFO: prune older backups with retention: keep-daily=3
+INFO: running 'proxmox-backup-client prune' for 'vm/1101'
+ERROR: prune 'vm/1101': proxmox-backup-client failed: Error: permission check failed
+       - missing Datastore.Modify|Datastore.Prune on /datastore/gateway-backup
+ERROR: Backup of VM 1101 failed - error pruning backups - check log
+```
+
+**Proxmox が使う PBS トークンに prune の権限が無い。**
+
+```
+pve-backup@pbs      /datastore/gateway-backup   DatastoreBackup
+pve-backup@pbs!pve  /datastore/gateway-backup   DatastoreBackup
+```
+
+`DatastoreBackup` は `Datastore.Backup` しか持たない。vzdump の `--remove 1`
+（バックアップ後に保持ポリシーを適用する設定）は `Datastore.Prune` を要求する。
+
+つまり **`prune-backups` に何を書いても、vzdump 側では一度も効いていなかった。**
+これまで気づかなかったのは、PBS 側の prune ジョブ（`root@pam` で動く）が
+日次で別に走っており、そちらが保持を効かせていたためである。
+バックアップが毎日成功していた頃は 1 日遅れで辻褄が合っていた。
+
+> ⚠️ ADR-0012 が記録した「PBS 側の prune ジョブに保持条件が 1 つも
+> 設定されていなかった」時期は、**両方の prune が効いていなかった**ことになる。
+> 2026-09-11 からの 5 夜連続 ENOSPC の背景はこれである。
+
+### 8-1. 対処
+
+トークンの権限はユーザ権限との**積**になるため、ユーザとトークンの両方に付ける。
+
+```sh
+ssh root@172.16.10.51 \
+  'proxmox-backup-manager acl update /datastore/gateway-backup DatastorePowerUser \
+     --auth-id "pve-backup@pbs" --propagate true'
+ssh root@172.16.10.51 \
+  'proxmox-backup-manager acl update /datastore/gateway-backup DatastorePowerUser \
+     --auth-id "pve-backup@pbs!pve" --propagate true'
+ssh root@172.16.10.51 'proxmox-backup-manager acl list'
+```
+
+`DatastorePowerUser` は `Datastore.Backup` と `Datastore.Prune` を持つ。
+既存の `DatastoreBackup` は**消さずに残す**こと。権限は和集合として効くため
+害は無く、消して `Datastore.Backup` を失うとバックアップ自体が止まる。
+
+### 8-2. 監視はこれを捕まえていた
+
+`PBSBackupTaskFailing` が 3 ノードすべてで発報していた。
+exporter は PBS のスナップショットではなく **Proxmox の vzdump タスクの
+status** を見ている（`kubernetes/infra/homepage/pbs-exporter/exporter.py`）ため、
+PBS 側が `OK` でもジョブが `job errors` なら 0 になる。**設計どおりである。**
+
+`PBSDatastoreFillingUp` と `PBSDatastoreWillFill` も同時に発報していた。
+**3 種類が同時に鳴っている状態を放置しないこと。**
