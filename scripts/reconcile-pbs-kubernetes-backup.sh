@@ -111,12 +111,20 @@ ok "対象VMを確認: ${VM_IDS}"
 #    PRUNE_BACKUPS に何を書いても効かず、使用量が伸び続ける。
 #    2026-09-20 に発覚した（docs/pbs-capacity-2026-09-19.md §8）。
 #
-# 直近のタスクログに痕跡が残っていれば警告する。PBS へは SSH しないので
-# 権限そのものは確認できない。
-if pve "grep -rlF --include='*vzdump*' 'Datastore.Prune on /datastore' /var/log/pve/tasks 2>/dev/null | head -1 | grep -q ."; then
-  warn "直近のバックアップで prune が権限不足により失敗しています"
+# PBS へは SSH しないので権限そのものは確認できない。代わりに、
+# **最新のジョブ 1 件**のログに痕跡が無いかを見る。
+#
+# 全ログを grep してはいけない。一度でも失敗があれば、権限を直したあとも
+# ログが消えるまで警告が鳴り続ける。鳴りっぱなしの警告は読まれなくなる
+# ——それは本件で直したばかりの失敗そのものである（同文書 §4）。
+# 最新の 1 件だけを見れば、次の成功で自動的に収まる。
+# shellcheck disable=SC2016  # $log はリモート側のシェルで展開させる
+if pve 'log=$(ls -t /var/log/pve/tasks/*/*vzdump::* 2>/dev/null | head -1);
+        [ -n "$log" ] && grep -qF "Datastore.Prune on /datastore" "$log"'; then
+  warn "直近のバックアップジョブで prune が権限不足により失敗しています"
   warn "PBS トークンに Datastore.Prune がありません。--remove 1 が効いていません"
   warn "対処: docs/pbs-capacity-2026-09-19.md §8-1"
+  warn "付与済みなら、次回のジョブが成功した時点でこの警告は消えます"
 fi
 
 if pve "pvesh get /cluster/backup/${JOB_ID} >/dev/null 2>&1"; then
