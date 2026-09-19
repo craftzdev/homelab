@@ -9,7 +9,29 @@ JOB_ID="${JOB_ID:-kubernetes-daily-pbs}"
 VM_IDS="${VM_IDS:-1001,1002,1003,1101,1102,1103}"
 SCHEDULE="${SCHEDULE:-02:30}"
 BW_LIMIT_KIB="${BW_LIMIT_KIB:-51200}"
-PRUNE_BACKUPS="${PRUNE_BACKUPS:-keep-daily=7,keep-weekly=4,keep-monthly=3}"
+# 保持ポリシー。2026-09-19 に daily=7,weekly=4,monthly=3 から変更した。
+#
+# 変更の理由は「7 世代が容量に入らなかった」ではなく、**一度も入ったことが
+# 無かった**ことである。PBS は暗号化された EPHEMERAL と Longhorn の 3 レプリカを
+# 重複排除できず（ノード間の共有はそれぞれ 0.1 GiB / 0.06%）、1 晩あたり
+# 新規チャンクが 97 GiB 積み上がっていた。datastore に使える領域は 431 GiB
+# しかないため、daily=7 だけで 680 GiB 必要という算術的に不可能な設定だった。
+# 2026-09-06 の運用開始から片道で埋まり続け、09-18 に上限へ到達して
+# 5 夜ぶんのバックアップが ENOSPC で失敗した（docs/incidents/2026-09-19-moshitoku-outage.md）。
+#
+# weekly / monthly を残さないのも同じ理由である。重複排除が効かないため
+# 1 世代前の weekly は今日とほとんどチャンクを共有せず、**1 世代ごとに
+# ほぼフルコピー（約 116 GiB）** を要求する。daily の差分より高くつく。
+#
+# worker の scsi0 を対象外にした（tofu/10-proxmox-talos/vms.tf）あとの実測値:
+#   1 世代 115.9 GiB ＋ 1 晩あたり 49.9 GiB
+#   daily=3 → 約 216 GiB (50%) / daily=5 → 約 316 GiB (73%)
+#
+# ⚠️ 現在 daily=3 なのは移行措置である。worker の scsi0 を含む古い世代
+#    （〜2026-09-16）が残っている間は 5 世代が入らない。それらが prune され
+#    GC が回ったあと（2026-09-23 以降）に daily=5 へ上げること。
+#    条件の確認: ssh root@172.16.10.51 'df -h /' が 55% 未満であること。
+PRUNE_BACKUPS="${PRUNE_BACKUPS:-keep-daily=3}"
 APPLY=false
 
 readonly C_RED=$'\033[0;31m' C_GREEN=$'\033[0;32m' C_YELLOW=$'\033[0;33m'
