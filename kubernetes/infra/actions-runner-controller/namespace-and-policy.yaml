@@ -254,6 +254,26 @@ spec:
         - ports:
             - port: "8080"
               protocol: TCP
+    # moshitoku's publish workflow asks Argo CD to sync after it pins the new
+    # image digest, then waits for the rollout to become healthy. Without the
+    # wait, nothing reports whether the change actually reached production.
+    #
+    # The Tailnet name is unreachable from here: the rule above excludes
+    # 100.64.0.0/10. This is the cleartext in-cluster listener; TLS is
+    # terminated by the Tailscale proxy for human traffic and never reaches
+    # this hop.
+    #
+    # The token the job carries is limited to get/sync on the single moshitoku
+    # Application. These builders already decide which image that app runs, so
+    # this grants reach, not authority.
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: argocd
+            k8s:app.kubernetes.io/name: argocd-server
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
 
 ---
 # The public half of Secret/harbor-ci-proxy-tls, identical to
