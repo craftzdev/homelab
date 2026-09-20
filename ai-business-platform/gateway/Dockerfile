@@ -11,6 +11,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app ./app
 
 RUN useradd --system --uid 10001 --create-home gateway
+RUN mkdir -p /data/videos && chown gateway:gateway /data/videos
 USER gateway
 
 EXPOSE 8080

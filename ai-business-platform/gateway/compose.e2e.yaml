@@ -1,0 +1,41 @@
+# The Workflow Controller from the Agent repository, driving this Gateway.
+# Both implementations run their real code, so a contract they disagree about
+# fails here instead of in the cluster.
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: gateway_test
+      POSTGRES_USER: gateway_test
+      POSTGRES_HOST_AUTH_METHOD: trust
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gateway_test -d gateway_test"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+  e2e:
+    image: python:3.12-slim
+    working_dir: /src
+    volumes:
+      - .:/src:ro
+      # The Agent repository is a sibling checkout; only its application code is
+      # needed, read-only.
+      - ../../../ai-business-agent:/agent:ro
+    environment:
+      TEST_DATABASE_URL: postgresql://gateway_test@db:5432/gateway_test
+      AGENT_APP_PATH: /agent
+      PYTHONDONTWRITEBYTECODE: "1"
+    depends_on:
+      db:
+        condition: service_healthy
+    command:
+      - /bin/sh
+      - -ec
+      # The Gateway's own dependencies, plus the two libraries the Agent's
+      # registry needs. Its pinned FastAPI is deliberately not installed: the
+      # Gateway's version serves both applications in this one process.
+      - pip install --quiet --no-cache-dir -r requirements-dev.txt jsonschema==4.25.1
+        PyYAML==6.0.2 && python -m pytest -q -p no:cacheprovider
+        tests/test_controller_e2e.py

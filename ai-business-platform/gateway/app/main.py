@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import hashlib
+import asyncio
 import hmac
 import json
 import os
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from contextlib import asynccontextmanager
@@ -14,7 +16,7 @@ from functools import lru_cache
 from typing import Any, Literal
 
 import jwt
-from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, status
+from fastapi import Depends, FastAPI, Header, HTTPException, status
 from jwt import PyJWKClient
 from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
@@ -23,7 +25,9 @@ from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, FileResponse
+
+from app import configuration, internal_api, scheduler, task_api, tasks, video
 
 API_SURFACE = os.environ.get("API_SURFACE", "public")
 DATABASE_URL = os.environ["DATABASE_URL"]
@@ -42,6 +46,17 @@ CLOUDFLARE_ACCESS_TEAM_DOMAIN = (
     .rstrip("/")
 )
 CLOUDFLARE_ACCESS_AUD = os.environ.get("CLOUDFLARE_ACCESS_AUD", "")
+
+# Principals are still one shared Gateway credential, so a request's recorded
+# actor and source say which surface proved it, never what the client claimed.
+# Separate credentials per human, bot and service arrive with the command API.
+REST_PRINCIPAL = "credential:gateway-token"
+MCP_PRINCIPAL = "credential:gateway-token#mcp"
+CONTROLLER_PRINCIPAL = "credential:controller-token"
+# The Workflow Controller advances work, which the public surface may not. It has
+# its own credential and is expected to reach the Gateway over the internal
+# network only; an unset token disables the internal API entirely.
+CONTROLLER_API_TOKEN = os.environ.get("CONTROLLER_API_TOKEN", "")
 
 pool = ConnectionPool(
     DATABASE_URL,
@@ -186,11 +201,29 @@ async def lifespan(_: FastAPI):
     pool.wait()
     with pool.connection() as connection:
         connection.execute(SCHEMA_SQL)
+        tasks.ensure_schema(connection)
+        connection.execute(configuration.SCHEMA_SQL)
         connection.commit()
+    runner = None
+    if API_SURFACE == "public" and video.configured():
+        runner = video.VideoRunner(pool)
+        runner.thread.start()
+    dispatcher = None
+    delivery = scheduler.Delivery(WORKER_BASE_URL, WORKER_API_TOKEN)
+    if API_SURFACE == "public" and delivery.configured():
+        # Also runnable as its own process; an advisory lock keeps one active.
+        dispatcher = scheduler.Scheduler(pool, delivery)
+        dispatcher.thread.start()
     try:
         async with mcp_http_app.router.lifespan_context(mcp_http_app):
             yield
     finally:
+        if runner:
+            runner.stop.set()
+            await asyncio.to_thread(runner.thread.join)
+        if dispatcher:
+            dispatcher.stop.set()
+            await asyncio.to_thread(dispatcher.thread.join)
         pool.close()
 
 
@@ -295,6 +328,18 @@ def require_callback_token(authorization: str | None = Header(default=None)) -> 
     _verify_bearer(authorization, WORKER_CALLBACK_TOKEN)
 
 
+def require_controller_token(authorization: str | None = Header(default=None)) -> None:
+    # Served only by the internal surface, which is reachable on the Tailnet and
+    # never through the public ingress that Grok and the browser use.
+    require_surface("internal")
+    if not CONTROLLER_API_TOKEN:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="the internal workflow API is not configured",
+        )
+    _verify_bearer(authorization, CONTROLLER_API_TOKEN)
+
+
 def require_human_approval_token(
     human_approval_token: str | None = Header(
         default=None, alias="X-Human-Approval-Token"
@@ -378,6 +423,7 @@ class ProjectAnalyticsUpdate(BaseModel):
 
 class JobCreate(BaseModel):
     action: Literal[
+        "video.generate",
         "product.plan",
         "qa.review",
         "growth.plan",
@@ -398,8 +444,25 @@ class JobCreate(BaseModel):
     parameters: dict[str, Any] = Field(default_factory=dict)
     limits: dict[str, int] = Field(default_factory=dict)
 
+    @model_validator(mode="after")
+    def limits_must_be_enforced(self):
+        unknown = sorted(set(self.limits) - set(tasks.EXECUTION_LIMITS))
+        if unknown:
+            raise ValueError(
+                f"these limits are not enforced by any execution: {', '.join(unknown)}"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_video(self):
+        if self.action == "video.generate":
+            self.parameters = video.VideoParameters.model_validate(self.parameters).model_dump()
+            self.limits = video.VideoLimits.model_validate(self.limits).model_dump()
+        return self
+
 
 MCPAction = Literal[
+    "video.generate",
     "product.plan",
     "qa.review",
     "growth.plan",
@@ -424,6 +487,9 @@ class WorkerEvent(BaseModel):
     data: dict[str, Any] = Field(default_factory=dict)
 
 
+# A job that has not reached one of these is still capable of changing evidence.
+TERMINAL_JOB_STATES = ("SUCCEEDED", "FAILED_FINAL", "CANCELLED")
+
 WORKER_ENDPOINTS = {
     "product.plan": "planning",
     "qa.review": "qa",
@@ -441,92 +507,65 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def qa_project_state(event_data: dict[str, Any]) -> str:
-    """Map a completed QA report to the business workflow state."""
-    report = event_data.get("report")
-    verdict = report.get("verdict") if isinstance(report, dict) else None
-    if verdict == "pass":
+def qa_project_state(result: dict[str, Any] | None) -> str:
+    """Map a completed QA report to the legacy business workflow state.
+
+    A pass must at least carry the acceptance criteria it judged; the review's
+    binding to the build it verified is checked separately when a release
+    candidate is registered. The Task ledger applies the stricter per-criterion
+    rule, and reports the difference rather than rewriting either verdict.
+    """
+    report = (result or {}).get("report")
+    if not isinstance(report, dict):
+        return "QA_REVIEW_REQUIRED"
+    verdict = report.get("verdict")
+    criteria = report.get("acceptance_criteria")
+    if verdict == "pass" and isinstance(criteria, list) and criteria:
         return "QA_PASSED"
     if verdict == "fail":
         return "QA_FAILED"
     return "QA_REVIEW_REQUIRED"
 
 
-def dispatch_job(job_id: uuid.UUID, request: JobCreate) -> None:
-    """Dispatch a persisted Gateway job to one typed Worker endpoint."""
+def queue_dispatch(connection: Any, job_id: uuid.UUID, request: JobCreate) -> None:
+    """Queue this Job's delivery in the transaction that registered it.
+
+    Nothing is sent from here: the durable scheduler owns delivery, so the
+    execution survives the end of this request and every retry reuses the same
+    dispatch id.
+    """
+    if request.action == "video.generate":
+        return  # The video runner owns these end to end.
     endpoint = WORKER_ENDPOINTS.get(request.action)
     if endpoint is None:
-        with pool.connection() as connection:
-            connection.execute(
-                "UPDATE jobs SET state = 'FAILED_FINAL', result = %s, updated_at = %s "
-                "WHERE id = %s AND state = 'QUEUED'",
-                (
-                    json.dumps({"error": "action has no enabled worker executor"}),
-                    utcnow(),
-                    job_id,
-                ),
-            )
-            connection.commit()
-        return
-
-    if not WORKER_BASE_URL or not WORKER_API_TOKEN:
-        error = "worker dispatch is not configured"
-    else:
-        dispatch_id = f"gateway:{job_id}:1"
-        body = json.dumps(
-            {
-                "gateway_job_id": str(job_id),
-                "dispatch_id": dispatch_id,
-                "action": request.action,
-                "project_id": request.project_id,
-                "parameters": request.parameters,
-                "limits": request.limits,
-            }
-        ).encode()
-        worker_request = urllib.request.Request(
-            f"{WORKER_BASE_URL}/v1/jobs/{endpoint}",
-            data=body,
-            method="POST",
-            headers={
-                "Authorization": f"Bearer {WORKER_API_TOKEN}",
-                "Content-Type": "application/json",
-            },
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="action has no enabled worker executor",
         )
-        try:
-            with urllib.request.urlopen(worker_request, timeout=20) as response:
-                if response.status != status.HTTP_202_ACCEPTED:
-                    raise RuntimeError(f"worker returned HTTP {response.status}")
-                worker_response = json.load(response)
-            worker_job_id = worker_response["worker_job_id"]
-            with pool.connection() as connection:
-                connection.execute(
-                    """
-                    UPDATE jobs
-                       SET state = CASE WHEN state = 'QUEUED' THEN 'DISPATCHED' ELSE state END,
-                           worker_job_id = %s,
-                           updated_at = %s
-                     WHERE id = %s
-                    """,
-                    (worker_job_id, utcnow(), job_id),
-                )
-                connection.commit()
-            return
-        except (
-            urllib.error.URLError,
-            TimeoutError,
-            RuntimeError,
-            KeyError,
-            ValueError,
-        ):
-            error = "worker dispatch failed"
-
-    with pool.connection() as connection:
-        connection.execute(
-            "UPDATE jobs SET state = 'FAILED_FINAL', result = %s, updated_at = %s "
-            "WHERE id = %s AND state = 'QUEUED'",
-            (json.dumps({"error": error}), utcnow(), job_id),
-        )
-        connection.commit()
+    dispatch_id = f"gateway:{job_id}:1"
+    payload = {
+        "gateway_job_id": str(job_id),
+        "dispatch_id": dispatch_id,
+        "action": request.action,
+        "project_id": request.project_id,
+        "parameters": request.parameters,
+        "limits": request.limits,
+    }
+    tasks.enqueue_dispatch(
+        connection,
+        job_id=job_id,
+        dispatch_id=dispatch_id,
+        endpoint=endpoint,
+        payload=payload,
+        request_hash=hashlib.sha256(
+            json.dumps(payload, sort_keys=True).encode()
+        ).hexdigest(),
+    )
+    # Bound the callback to this delivery before it can arrive.
+    connection.execute(
+        "UPDATE jobs SET dispatch_id = %s, updated_at = %s WHERE id = %s",
+        (dispatch_id, utcnow(), job_id),
+    )
 
 
 def _public_job(row: dict[str, Any]) -> dict[str, Any]:
@@ -538,16 +577,56 @@ def _public_job(row: dict[str, Any]) -> dict[str, Any]:
         "state": row["state"],
         "worker_job_id": row["worker_job_id"],
         "result": row["result"],
+        # Every accepted job belongs to a Task, so one execution can be followed
+        # from the board as well as from its job id.
+        "task_id": str(row["task_id"]) if row.get("task_id") else None,
+        "attempt_id": str(row["attempt_id"]) if row.get("attempt_id") else None,
         "created_at": row["created_at"].isoformat(),
         "updated_at": row["updated_at"].isoformat(),
     }
 
 
-def _persist_job(
-    request: JobCreate, idempotency_key: str
+def _validate_source_references(
+    connection: Any, request: JobCreate
+) -> None:
+    """A referenced execution must belong to the project the job runs in.
+
+    Knowing a worker job id is not access to it: QA must not be pointed at
+    another project's workspace.
+    """
+    reference = request.parameters.get("source_worker_job_id")
+    if not isinstance(reference, str) or not reference:
+        return
+    owner = connection.execute(
+        "SELECT project_id FROM jobs WHERE worker_job_id = %s "
+        "ORDER BY created_at DESC LIMIT 1",
+        (reference,),
+    ).fetchone()
+    if owner is None:
+        raise HTTPException(
+            status_code=422, detail="source_worker_job_id is not a known execution"
+        )
+    if owner["project_id"] != request.project_id:
+        raise HTTPException(
+            status_code=403,
+            detail="source_worker_job_id belongs to another project",
+        )
+
+
+def insert_job(
+    connection: Any,
+    request: JobCreate,
+    idempotency_key: str,
+    *,
+    orchestration_mode: str = "legacy",
 ) -> tuple[dict[str, Any], bool]:
-    """Persist a job once and return the existing row on an idempotent replay."""
-    if request.environment == "production" or request.action not in WORKER_ENDPOINTS:
+    """Insert one job inside the caller's transaction, without committing.
+
+    Sharing this with Task creation keeps a Task, its Attempt and its Job in a
+    single commit: an executed job can never exist without the ledger row that
+    reports it.
+    """
+    if request.environment == "production" or request.action not in {*WORKER_ENDPOINTS, "video.generate"}:
         raise HTTPException(
             status_code=403, detail="production/irreversible execution is disabled"
         )
@@ -558,36 +637,88 @@ def _persist_job(
         json.dumps(payload, sort_keys=True).encode()
     ).hexdigest()
 
+    # One lock order everywhere: project, then Task, then Run, then execution
+    # capacity and the rows beneath them. A Controller proposal takes the same
+    # order before it reaches this function (runs._locked_run_and_task).
+    connection.execute(
+        "SELECT id FROM projects WHERE id = %s FOR UPDATE",
+        (request.project_id,),
+    ).fetchone()
+    _validate_source_references(connection, request)
+    if request.action == "video.generate":
+        if not video.configured():
+            raise HTTPException(status_code=503, detail="video generation is not configured")
+        # Serialize admission, but permit exact idempotent replays even at capacity.
+        connection.execute("SELECT pg_advisory_xact_lock(734859203)")
+        existing = connection.execute(
+            "SELECT * FROM jobs WHERE idempotency_key=%s", (idempotency_key,)
+        ).fetchone()
+        if existing:
+            if existing["input"]["sha256"] != payload_hash:
+                raise ValueError("idempotency key already used with a different request")
+            return existing, False
+        count = connection.execute(
+            "SELECT count(*) AS n FROM jobs WHERE action='video.generate' "
+            "AND state IN ('QUEUED','VIDEO_SUBMITTING','RUNNING')"
+        ).fetchone()["n"]
+        if count >= 8:
+            raise HTTPException(status_code=429, detail="video queue is full")
+    row = connection.execute(
+        """
+        INSERT INTO jobs (
+            id, idempotency_key, project_id, action, environment,
+            state, input, created_at, updated_at
+        ) VALUES (%s, %s, %s, %s, %s, 'QUEUED', %s, %s, %s)
+        RETURNING *
+        """,
+        (
+            job_id,
+            idempotency_key,
+            request.project_id,
+            request.action,
+            request.environment,
+            json.dumps({"payload": payload, "sha256": payload_hash}),
+            now,
+            now,
+        ),
+    ).fetchone()
+    # A directly submitted build or QA replaces the project's single build/QA
+    # evidence, so a candidate bound to the old evidence must not survive it.
+    # A Workflow Task keeps its evidence in its own Run, and only invalidates a
+    # candidate when that candidate's own evidence changes.
+    if orchestration_mode == "legacy" and request.action in {
+        "code.build",
+        "code.fix",
+        "qa.review",
+    }:
+        _invalidate_approvals(connection, request.project_id, "new_build_or_qa")
+    queue_dispatch(connection, row["id"], request)
+    return row, True
+
+
+def _persist_job(
+    request: JobCreate,
+    idempotency_key: str,
+    *,
+    actor: str = REST_PRINCIPAL,
+    source: str = "api",
+) -> tuple[dict[str, Any], bool]:
+    """Persist a job once and return the existing row on an idempotent replay."""
+    payload_hash = hashlib.sha256(
+        json.dumps(request.model_dump(mode="json"), sort_keys=True).encode()
+    ).hexdigest()
     with pool.connection() as connection:
         try:
-            # All workflow writers lock project before jobs/approvals.
-            connection.execute(
-                "SELECT id FROM projects WHERE id = %s FOR UPDATE",
-                (request.project_id,),
-            ).fetchone()
-            row = connection.execute(
-                """
-                INSERT INTO jobs (
-                    id, idempotency_key, project_id, action, environment,
-                    state, input, created_at, updated_at
-                ) VALUES (%s, %s, %s, %s, %s, 'QUEUED', %s, %s, %s)
-                RETURNING *
-                """,
-                (
-                    job_id,
-                    idempotency_key,
-                    request.project_id,
-                    request.action,
-                    request.environment,
-                    json.dumps({"payload": payload, "sha256": payload_hash}),
-                    now,
-                    now,
-                ),
-            ).fetchone()
-            if request.action in {"code.build", "code.fix", "qa.review"}:
-                _invalidate_approvals(connection, request.project_id, "new_build_or_qa")
+            row, created = insert_job(connection, request, idempotency_key)
+            if created:
+                attached = tasks.attach_legacy_job(
+                    connection, job=row, actor=actor, source=source
+                )
+                row = dict(row)
+                row["task_id"] = attached["task"]["id"]
+                row["attempt_id"] = attached["attempt_id"]
             connection.commit()
-            return row, True
+            return row, created
         except UniqueViolation:
             connection.rollback()
             row = connection.execute(
@@ -639,12 +770,26 @@ def _public_project(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _project_event(
-    connection: Any, project_id: str, event_type: str, payload: dict[str, Any]
+    connection: Any,
+    project_id: str,
+    event_type: str,
+    payload: dict[str, Any],
+    *,
+    actor: str = "gateway",
 ) -> None:
     connection.execute(
         "INSERT INTO project_events (id, project_id, event_type, payload, created_at) "
         "VALUES (%s, %s, %s, %s, %s)",
         (uuid.uuid4(), project_id, event_type, json.dumps(payload), utcnow()),
+    )
+    # Same transaction, so a consumer rebuilding from snapshot plus feed learns
+    # about project, candidate and approval changes as well as Tasks.
+    tasks.record_project_event(
+        connection,
+        project_id=project_id,
+        event_type=event_type,
+        payload=payload,
+        actor=actor,
     )
 
 
@@ -687,10 +832,12 @@ def _validate_candidate_jobs(
         raise HTTPException(
             status_code=409, detail="candidate does not match current build/QA"
         )
+    # Anything that has not reached a terminal state may still change the
+    # evidence, including an execution whose delivery outcome is unknown.
     active = connection.execute(
         "SELECT id FROM jobs WHERE project_id = %s AND action IN ('code.build','code.fix','qa.review') "
-        "AND state IN ('QUEUED','DISPATCHED','ACCEPTED','RUNNING') LIMIT 1",
-        (project["id"],),
+        "AND state <> ALL(%s) LIMIT 1",
+        (project["id"], list(TERMINAL_JOB_STATES)),
     ).fetchone()
     if active:
         raise HTTPException(status_code=409, detail="build or QA is still running")
@@ -718,7 +865,7 @@ def _validate_candidate_jobs(
     )
     if not source or source != build["worker_job_id"]:
         raise HTTPException(status_code=409, detail="QA did not review this build")
-    qa_state = qa_project_state(qa["result"] or {})
+    qa_state = qa_project_state(qa["result"])
     if qa_state == "QA_FAILED":
         raise HTTPException(status_code=409, detail="QA failed")
     return qa_state
@@ -895,11 +1042,14 @@ def get_project(
         row = connection.execute(
             "SELECT * FROM projects WHERE id = %s", (project_id,)
         ).fetchone()
-    if row is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="project not found"
-        )
-    return _public_project(row)
+        if row is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="project not found"
+            )
+        # Aggregate the Project's Tasks rather than letting the newest callback
+        # decide what the whole Project is doing.
+        summary = tasks.project_summary(connection, project_id)
+    return {**_public_project(row), "tasks": summary}
 
 
 @app.put("/v1/projects/{project_id}/repository")
@@ -1198,19 +1348,16 @@ def record_project_analytics(
 @app.post("/v1/jobs", status_code=status.HTTP_202_ACCEPTED)
 def create_job(
     request: JobCreate,
-    background: BackgroundTasks,
     _: None = Depends(require_gateway_token),
     idempotency_key: str = Header(min_length=8, max_length=200),
 ) -> dict[str, Any]:
     try:
-        row, created = _persist_job(request, idempotency_key)
+        row, _created = _persist_job(request, idempotency_key)
     except ValueError as error:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail=str(error)
         ) from error
-
-    if created:
-        background.add_task(dispatch_job, row["id"], request)
+    # Accepted means registered and queued for delivery, not yet dispatched.
     return _public_job(row)
 
 
@@ -1226,16 +1373,33 @@ def get_job(
     return _public_job(row)
 
 
+@app.get("/v1/jobs/{job_id}/video")
+def get_video(job_id: uuid.UUID, _: None = Depends(require_gateway_token)):
+    row = _load_job(job_id)
+    if row is None or row["action"] != "video.generate" or row["state"] != "SUCCEEDED":
+        raise HTTPException(status_code=404, detail="video not available")
+    artifact = video.artifact_path(job_id)
+    if artifact.is_symlink() or not artifact.is_file():
+        raise HTTPException(status_code=410, detail="video expired or unavailable")
+    return FileResponse(artifact, media_type="video/mp4", filename=f"{job_id}.mp4",
+                        content_disposition_type="inline",
+                        headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
+
+
 @app.post("/v1/worker-events", status_code=status.HTTP_202_ACCEPTED)
 def receive_worker_event(
     event: WorkerEvent, _: None = Depends(require_callback_token)
 ) -> dict[str, Any]:
+    callback_job = _load_job(event.gateway_job_id)
+    if callback_job and callback_job["action"] == "video.generate":
+        raise HTTPException(status_code=409, detail="video jobs do not accept worker callbacks")
     state_map = {
         "accepted": "ACCEPTED",
         "started": "RUNNING",
         "progress": "RUNNING",
         "completed": "SUCCEEDED",
-        "failed": "FAILED_FINAL",
+        # A stop the Gateway asked for is reported as cancelled, not as a failure.
+        "failed": "CANCELLED" if event.data.get("cancelled") else "FAILED_FINAL",
     }
     now = utcnow()
 
@@ -1255,13 +1419,26 @@ def receive_worker_event(
                 detail="event id already used with different event metadata",
             )
 
-        # Same lock order as submission, candidate changes, and approval consumption.
+        # One lock order everywhere: project, then Task, and only then the job
+        # rows, Attempts and Run beneath it — a Controller proposal takes the same
+        # two first (runs._locked_run_and_task). The exception is a Run's lease,
+        # which is claimed and renewed on the Run row alone and takes nothing else,
+        # so it cannot be one side of a cycle.
+        if callback_job is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="job not found"
+            )
         connection.execute(
             "SELECT id FROM projects WHERE id = (SELECT project_id FROM jobs WHERE id = %s) FOR UPDATE",
             (event.gateway_job_id,),
         ).fetchone()
+        if callback_job.get("task_id"):
+            connection.execute(
+                "SELECT id FROM tasks WHERE id = %s FOR UPDATE",
+                (callback_job["task_id"],),
+            ).fetchone()
         job = connection.execute(
-            "SELECT last_event_sequence, action, project_id, state FROM jobs WHERE id = %s FOR UPDATE",
+            "SELECT * FROM jobs WHERE id = %s FOR UPDATE",
             (event.gateway_job_id,),
         ).fetchone()
         if job is None:
@@ -1269,12 +1446,23 @@ def receive_worker_event(
                 status_code=status.HTTP_404_NOT_FOUND, detail="job not found"
             )
 
+        # Provenance, not just ordering: an event must come from the delivery and
+        # the Worker execution this job was actually handed to.
+        mismatch = _callback_binding_error(job, event)
+        if mismatch is not None:
+            # Record the quarantine on this connection, then roll the business
+            # transaction back by raising. Opening a second pooled connection
+            # while holding this one can exhaust the pool under load.
+            _quarantine_callback(connection, job, event, mismatch)
+            connection.commit()
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=mismatch)
+
         if event.sequence <= job["last_event_sequence"]:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="event sequence must advance monotonically",
             )
-        if job["state"] in {"SUCCEEDED", "FAILED_FINAL"}:
+        if job["state"] in TERMINAL_JOB_STATES:
             raise HTTPException(
                 status_code=409, detail="terminal job evidence is immutable"
             )
@@ -1319,7 +1507,33 @@ def receive_worker_event(
                     event.gateway_job_id,
                 ),
             )
-            if event.event_type == "completed":
+            if (
+                event.event_type not in {"completed", "failed"}
+                and job.get("task_id")
+                and event.worker_job_id
+            ):
+                # A stop can be asked for before anything is known to stop. This
+                # event is the other way the execution's id becomes known — the
+                # dispatch response is not the only one — so the requested stop is
+                # queued here too, rather than waiting for a response that may
+                # never arrive. The Task row is already locked above.
+                stopping = connection.execute(
+                    "SELECT control_state FROM tasks WHERE id = %s",
+                    (job["task_id"],),
+                ).fetchone()
+                if stopping and stopping["control_state"] == "CANCEL_REQUESTED":
+                    tasks.enqueue_worker_command(
+                        connection,
+                        job_id=job["id"],
+                        worker_job_id=event.worker_job_id,
+                        kind="cancel",
+                        actor="gateway",
+                    )
+            # A Workflow Task keeps its evidence in its own Run and artifacts.
+            # Only directly submitted jobs still write the Project's single
+            # build/QA/PRD fields, so sibling Tasks cannot overwrite each other.
+            legacy_projection = _is_legacy_job(connection, job)
+            if event.event_type == "completed" and legacy_projection:
                 if job["action"] in {"code.build", "code.fix", "qa.review"}:
                     _invalidate_approvals(
                         connection, job["project_id"], "build_or_qa_evidence_changed"
@@ -1358,20 +1572,38 @@ def receive_worker_event(
                         f"{job['action']}.completed",
                         {
                             "gateway_job_id": str(event.gateway_job_id),
+                            # The verdict the report states. The Task event
+                            # carries the verdict its evidence supports.
                             **(
-                                {"verdict": event.data.get("report", {}).get("verdict")}
+                                {
+                                    "reported_verdict": (
+                                        event.data.get("report", {}) or {}
+                                    ).get("verdict")
+                                }
                                 if job["action"] == "qa.review"
                                 and isinstance(event.data.get("report"), dict)
                                 else {}
                             ),
                         },
                     )
-            elif event.event_type == "failed":
+            elif event.event_type == "failed" and legacy_projection:
                 next_state = "QA_FAILED" if job["action"] == "qa.review" else "FAILED"
                 connection.execute(
                     "UPDATE projects SET state = %s, updated_at = %s WHERE id = %s",
                     (next_state, now, job["project_id"]),
                 )
+            # Project the same evidence onto this job's own Attempt. Keyed on the
+            # Attempt, so a sibling Task in the same Project keeps its own state.
+            ledger_job = connection.execute(
+                "SELECT * FROM jobs WHERE id = %s", (event.gateway_job_id,)
+            ).fetchone()
+            tasks.project_worker_event(
+                connection,
+                job=ledger_job,  # noqa: E501 - same row, now carrying the worker id
+                event_type=event.event_type,
+                data=event.data,
+                occurred_at=event.occurred_at,
+            )
             connection.commit()
         except UniqueViolation:
             connection.rollback()
@@ -1381,6 +1613,49 @@ def receive_worker_event(
             )
 
     return {"accepted": True, "event_id": event.event_id, "duplicate": False}
+
+
+def _callback_binding_error(job: dict[str, Any], event: WorkerEvent) -> str | None:
+    """Reject an event that does not match the recorded delivery."""
+    recorded_dispatch = job.get("dispatch_id")
+    if recorded_dispatch and event.dispatch_id != recorded_dispatch:
+        return "event does not belong to this job's dispatch"
+    recorded_worker_job = job.get("worker_job_id")
+    if recorded_worker_job and event.worker_job_id != recorded_worker_job:
+        return "event does not belong to this job's worker execution"
+    return None
+
+
+def _quarantine_callback(
+    connection: Any, job: dict[str, Any], event: WorkerEvent, reason: str
+) -> None:
+    """Keep the rejected callback as audit evidence, changing no business state."""
+    tasks.record_event(
+        connection,
+        aggregate_type="job",
+        aggregate_id=str(job["id"]),
+        type="job.callback_quarantined",
+        actor="worker",
+        payload={
+            "reason": reason,
+            "event_id": event.event_id,
+            "claimed_dispatch_id": event.dispatch_id,
+            "claimed_worker_job_id": event.worker_job_id,
+            "recorded_dispatch_id": job.get("dispatch_id"),
+            "recorded_worker_job_id": job.get("worker_job_id"),
+        },
+        causation_id=str(job["id"]),
+    )
+
+
+def _is_legacy_job(connection: Any, job: dict[str, Any]) -> bool:
+    """Whether this job's progress still drives the old Project fields."""
+    if not job.get("task_id"):
+        return True
+    row = connection.execute(
+        "SELECT orchestration_mode FROM tasks WHERE id = %s", (job["task_id"],)
+    ).fetchone()
+    return row is None or row["orchestration_mode"] == "legacy"
 
 
 def _parse_job_id(job_id: str) -> uuid.UUID:
@@ -1393,7 +1668,10 @@ def _parse_job_id(job_id: str) -> uuid.UUID:
 @mcp.tool(
     name="submit_job",
     description=(
-        "Submit one bounded research, analysis, build, fix, or test job. "
+        "Submit one bounded research, analysis, build, fix, test, or video job. "
+        "For video.generate use parameters {prompt: string, seed?: integer}; "
+        "fixed fasth3-5s-v1 workflow, 896x512, 124 frames at 24 fps. "
+        "Poll get_job for result.artifact (authenticated download) and result.review (Tailnet). "
         "Only research and preview environments are accepted. Reuse the same "
         "idempotency_key when retrying the same request."
     ),
@@ -1418,11 +1696,10 @@ def mcp_submit_job(
         parameters=parameters or {},
         limits=limits or {},
     )
-    row, created = _persist_job(request, key)
-    if created:
-        dispatch_job(row["id"], request)
-        row = _load_job(row["id"]) or row
-    response = _public_job(row)
+    row, created = _persist_job(
+        request, key, actor=MCP_PRINCIPAL, source="grok"
+    )
+    response = _public_job(_load_job(row["id"]) or row)
     response["idempotency_key"] = key
     response["idempotent_replay"] = not created
     return response
@@ -1473,7 +1750,7 @@ def mcp_wait_for_job(
 @mcp.tool(
     name="get_review_url",
     description=(
-        "Return the signed Tailnet-only review URL from a completed job when one "
+        "Return the Tailnet-only review URL from a completed job when one "
         "is available. The URL is intended for the human operator."
     ),
     structured_output=True,
@@ -1538,6 +1815,110 @@ def mcp_request_production_approval(
 def mcp_get_production_approval(approval_id: str) -> dict[str, Any]:
     return get_approval(uuid.UUID(approval_id), None)
 
+
+def _build_job_request(
+    *,
+    action: str,
+    project_id: str,
+    environment: str,
+    parameters: dict[str, Any],
+    limits: dict[str, int],
+) -> JobCreate:
+    return JobCreate(
+        action=action,
+        project_id=project_id,
+        environment=environment,
+        parameters=parameters,
+        limits=limits,
+    )
+
+
+def _create_attempt_job(
+    *,
+    connection: Any,
+    action: str,
+    project_id: str,
+    environment: str,
+    parameters: dict[str, Any],
+    limits: dict[str, int],
+    idempotency_key: str,
+) -> dict[str, Any]:
+    """Insert the Job for one Workflow Attempt inside the caller's transaction."""
+    request = JobCreate(
+        action=action,
+        project_id=project_id,
+        environment=environment,
+        parameters=parameters,
+        limits=limits,
+    )
+    row, created = insert_job(
+        connection, request, idempotency_key, orchestration_mode="workflow-v1"
+    )
+    if not created:
+        # The same step and cycle was already dispatched; the ledger's unique
+        # step/cycle constraint means this is a duplicate proposal.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="this attempt was already created",
+        )
+    return row
+
+
+TASK_JOB_BRIDGE = task_api.JobBridge(
+    build_request=_build_job_request,
+    insert=insert_job,
+    actions=tuple(sorted({*WORKER_ENDPOINTS, "video.generate"})),
+)
+
+def _human_principal(token: str | None) -> str:
+    """Verify the separate human credential and return that person's identity."""
+    require_human_approval_token(token)
+    if not HUMAN_APPROVAL_ACTOR or len(HUMAN_APPROVAL_ACTOR) > 200:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="human approval actor is not configured",
+        )
+    return f"human:{HUMAN_APPROVAL_ACTOR}"
+
+
+def _config_principal(token: str | None) -> str:
+    expected = os.environ.get("CONFIG_ADMIN_TOKEN", "")
+    actor = os.environ.get("CONFIG_ADMIN_ACTOR", "").strip()
+    if len(expected) < 32 or not actor or len(actor) > 200:
+        raise HTTPException(status_code=503, detail="configuration editing is not configured")
+    if not token or not hmac.compare_digest(token, expected):
+        raise HTTPException(status_code=401, detail="configuration editor credential required")
+    return f"config-editor:{actor}"
+
+
+app.include_router(configuration.build_router(pool=pool, auth=require_gateway_token, config_principal=_config_principal))
+
+app.include_router(
+    task_api.build_router(
+        pool=pool,
+        auth=require_gateway_token,
+        jobs=TASK_JOB_BRIDGE,
+        actor_resolver=lambda: (REST_PRINCIPAL, "api"),
+        human_principal=_human_principal,
+    )
+)
+
+app.include_router(
+    internal_api.build_router(
+        pool=pool,
+        auth=require_controller_token,
+        job_factory=_create_attempt_job,
+        actor=CONTROLLER_PRINCIPAL,
+    )
+)
+
+task_api.register_mcp(
+    mcp,
+    pool=pool,
+    jobs=TASK_JOB_BRIDGE,
+    actor=MCP_PRINCIPAL,
+    source="grok",
+)
 
 # Keep the MCP mount last so the explicit REST and health routes above retain
 # precedence. The mounted SDK app serves Streamable HTTP at /mcp.

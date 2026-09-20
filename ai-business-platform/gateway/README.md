@@ -6,14 +6,43 @@ Phase 1 の最小Gateway実装。PostgreSQLをSystem of Recordとし、Job登録
 
 - Public API: `127.0.0.1:8080`
 - Worker callback: `127.0.0.1:8081`
+- Internal workflow API: `127.0.0.1:8082`
 
-Public APIはcloudflared、callback APIはTailscale Serveからのみproxyする。
+Public APIはcloudflared、callback APIとinternal workflow APIはTailscale Serveからのみ
+proxyする。internal surfaceは Workflow Controller 専用で、`CONTROLLER_API_TOKEN` を
+持つ主体だけが `/internal/v1/...` を使える。Grok とブラウザが通る public ingress には
+出さない。
 
 The public listener intentionally remains on loopback. The deployed Cloudflare
 Tunnel exposes it at `https://gateway.craftz.dev`; the application Bearer token
 and Cloudflare Access Service Auth are active. The Gateway validates the Access
 JWT again at the application boundary. Do not bind port 8080 to a LAN address
 as a workaround.
+
+## Tests
+
+```sh
+docker compose -f compose.test.yaml run --rm tests     # this repository
+docker compose -f compose.e2e.yaml run --rm e2e        # with the Agent's own code
+```
+
+The second one mounts the sibling `ai-business-agent` checkout and runs its real
+Workflow Controller and its real dispatch service against this Gateway: one
+request goes from start to human acceptance, and every handoff the Controller
+builds is admitted by the Gateway and then validated by the Agent's registry and
+JSON schemas before delivery. What these three exchange on that path therefore
+fails here rather than in the cluster. It walks one path only: other actions,
+other field sizes and other refusals are covered — where they are covered — by
+each repository's own tests. It skips when that checkout is not present.
+
+What it does not establish: the Worker is a double, so nothing here proves Codex
+execution, the Worker's own durability, or the Control Plane's read model. The
+Worker's and the Control Plane's own suites cover their logic — the Worker's
+executor tests drive a stand-in `codex` program. **No test, and no run recorded in
+this repository, has exercised the real Codex CLI through this Workflow.** The
+manual run in `docs/task-ledger.md` used a Worker double as well. What that leaves
+unproven is the agent execution itself; everything around it — admission,
+progression, verification binding, delivery, cancellation — is covered.
 
 ## Grok Bot MCP
 
@@ -35,6 +64,19 @@ The MCP surface intentionally exposes only these tools:
 - `get_project`
 - `request_production_approval`
 - `get_production_approval`
+- `list_capabilities`
+- `list_workflows`
+- `create_task`
+- `get_task`
+- `list_tasks`
+- `request_task_action`
+- `add_task_instruction`
+
+Task tools share the Job state machine: every accepted job belongs to a Task, and
+`submit_job` now returns `task_id` alongside `job_id`. Configuration editing,
+Harness permissions, Worker capability changes and human-only decisions are not
+exposed. See [Task 台帳](docs/task-ledger.md) for the implemented scope and the
+guarantees that are explicitly not in place yet.
 
 `submit_job` accepts only the Agent/Worker-backed actions `product.plan`,
 `code.build`, `code.fix`, `test.run`, `qa.review`, `analytics.read`,
@@ -120,3 +162,8 @@ Infrastructure policy tracked in this repository:
 
 Deployment evidence and outstanding production gates are recorded in
 `docs/ai-business-platform/deployment-2026-09-06.md`.
+
+## Video generation
+
+REST `/v1/jobs` and MCP `submit_job` accept `video.generate` using a fixed,
+bounded FastH3 workflow. See [API usage and operational limits](docs/video-generation.md).
