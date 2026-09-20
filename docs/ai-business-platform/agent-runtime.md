@@ -36,6 +36,10 @@ Agent の Git リポジトリは `craftzdev/ai-business-agent`、Worker は
 - Tailscale Ingress の既存証明書とホスト名を共有し、`/agent/` を Agent edge へ、
   `/` を Worker へルーティングする。
 - Agent 本体と Worker 本体の通信は Kubernetes ClusterIP と Cilium の許可ルールに限定する。
+- Gateway が Worker に届く経路は Agent だけなので、在庫（`GET /v1/status`）と
+  drain/resume（`POST /v1/runtime/accepting`）も同じ `/agent` を通る。Agent は
+  この 2 つを Worker へ中継し、Worker の 4xx はその status のまま返す
+  （拒否は判断であり、到達不能として扱うと Gateway が無駄に再送する）。
 
 ## Agent プロファイルと Skills
 

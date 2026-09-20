@@ -1,50 +1,17 @@
 """Approval invariants against disposable PostgreSQL, not a mocked SQL engine."""
 
 import json
-import os
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 
 import pytest
-from fastapi.testclient import TestClient
-from psycopg.conninfo import conninfo_to_dict
-
-# Refuse to run destructive fixtures against any non-test database.
-TEST_DSN = os.environ["TEST_DATABASE_URL"]
-if conninfo_to_dict(TEST_DSN).get("dbname") != "gateway_test":
-    raise RuntimeError("tests require the dedicated gateway_test database")
-os.environ.update(
-    DATABASE_URL=TEST_DSN,
-    GATEWAY_API_TOKEN="test-gateway-credential",
-    WORKER_CALLBACK_TOKEN="test-callback-credential",
-    HUMAN_APPROVAL_TOKEN="test-human-credential",
-    HUMAN_APPROVAL_ACTOR="craftz",
-    CLOUDFLARE_ACCESS_REQUIRED="false",
-    API_SURFACE="public",
-)
 from app import main as gateway
 
 BOT = {"Authorization": "Bearer test-gateway-credential"}
 HUMAN = {**BOT, "X-Human-Approval-Token": "test-human-credential"}
 SHA = "a" * 40
 DIGEST = "sha256:" + "b" * 64
-
-
-@pytest.fixture(scope="session")
-def client():
-    with TestClient(gateway.app) as client:
-        yield client
-
-
-@pytest.fixture(autouse=True)
-def clean_database(client, monkeypatch):
-    with gateway.pool.connection() as db:
-        db.execute(
-            "TRUNCATE worker_events, approvals, project_events, jobs, projects CASCADE"
-        )
-    # Never call real Workers in tests.
-    monkeypatch.setattr(gateway, "dispatch_job", lambda *args: None)
 
 
 def execute(sql, args=(), *, one=False):
@@ -75,7 +42,17 @@ def seed(project_id="test-product", verdict="pass"):
                 qa_id,
                 "qa.review",
                 {"source_worker_job_id": "worker-build-1"},
-                {"report": {"verdict": verdict}},
+                {
+                    "report": {
+                        "verdict": verdict,
+                        "summary": "QA report",
+                        # The QA executor requires these fields in its report.
+                        "acceptance_criteria": [
+                            {"criterion": "CSV を取り込める", "verdict": verdict}
+                        ],
+                        "risks": [],
+                    }
+                },
                 "worker-qa-1",
             ),
         ):
@@ -483,6 +460,15 @@ def test_mcp_discovery_and_readback(client):
         "get_project",
         "request_production_approval",
         "get_production_approval",
+        # Task surface. Configuration editing, Harness permissions and
+        # human-only decisions stay off the bot surface.
+        "list_capabilities",
+        "list_workflows",
+        "create_task",
+        "get_task",
+        "list_tasks",
+        "request_task_action",
+        "add_task_instruction",
     }
 
 

@@ -48,6 +48,7 @@ async def main() -> None:
                 submit_tool = next(tool for tool in tools.tools if tool.name == "submit_job")
                 properties = submit_tool.input_schema.get("properties", {})
                 if set(properties.get("action", {}).get("enum", [])) != {
+                    "video.generate",
                     "product.plan",
                     "qa.review",
                     "growth.plan",
