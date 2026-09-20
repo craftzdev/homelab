@@ -259,6 +259,22 @@ configs:
     # -----------------------------------------------------------------------
     kustomize.buildOptions: "--enable-alpha-plugins --enable-exec"
 
+    # -----------------------------------------------------------------------
+    # moshitoku の CI が同期を依頼するための API 専用アカウント
+    #
+    # moshitoku の publish container が、イメージのダイジェストを固定して
+    # main へ戻したあと、Argo CD へ同期を依頼して健全になるまで待つ。
+    # 待たないと「本番へ届いたか」がどこにも出ない。
+    #
+    # ⚠️ apiKey だけにして login は与えない。CI に要るのは API を叩くこと
+    #    だけであり、Web UI へログインできる必要は無い。パスワードを持たない
+    #    アカウントは、漏れても UI からは何もできない。
+    #
+    # 権限は下の rbac で moshitoku/moshitoku の get と sync だけに絞る。
+    # 既定は policy.default の role:readonly である。
+    # -----------------------------------------------------------------------
+    accounts.moshitoku-ci: apiKey
+
     # アプリケーションの自動同期でリソースが消える事故を防ぐ
     application.resourceTrackingMethod: annotation
 
@@ -351,6 +367,21 @@ configs:
 
       # admin アカウントに管理者ロールを付与
       g, admin, role:homelab-admin
+
+      # -------------------------------------------------------------------
+      # moshitoku の CI
+      #
+      # 与えるのは moshitoku の Application 1 つに対する get と sync だけ。
+      # ワイルドカードを使わない。Argo CD は実質クラスタの管理権限そのもの
+      # であり、他のアプリまで同期できる鍵を CI へ置かない。
+      #
+      # create / delete / override / action も与えない。CI がするのは
+      # 「git に書いたものを反映させる」ことだけで、git を介さずに状態を
+      # 変える手段を持たせない。
+      # -------------------------------------------------------------------
+      p, role:moshitoku-ci, applications, get,  moshitoku/moshitoku, allow
+      p, role:moshitoku-ci, applications, sync, moshitoku/moshitoku, allow
+      g, moshitoku-ci, role:moshitoku-ci
     scopes: "[groups]"
 
   # -------------------------------------------------------------------------

@@ -158,6 +158,37 @@ spec:
               protocol: TCP
 
 ---
+# The way in for moshitoku's CI sync.
+#
+# The builders cannot use the Tailnet name: arc-builders' egress excludes
+# 100.64.0.0/10 along with every RFC1918 range, so argocd.<tailnet>.ts.net is
+# unreachable from a job Pod by design. They reach the cleartext in-cluster
+# listener instead, exactly like the Tailscale proxy one rule above.
+#
+# The token those jobs carry is limited to get/sync on the single moshitoku
+# Application (see configs.rbac in the argocd values). This rule adds the
+# network path; it does not add authority.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: argocd-moshitoku-ci
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: argocd-server
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: arc-builders
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+
+---
 # ---------------------------------------------------------------------------
 # cert-manager
 # ---------------------------------------------------------------------------
