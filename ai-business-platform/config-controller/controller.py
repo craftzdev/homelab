@@ -245,11 +245,13 @@ def main():
     from kubernetes_api import Kubernetes
     from runtime_trial import Trials
     from rollout import Rollouts
+    from chat_runtime import ChatJobs, tick_chat
     github = HTTP("https://api.github.com", GitHubAuth([target['repository'] for target in targets.values()]))
     kube = Kubernetes()
     with open(os.environ['TRIAL_SETTINGS_FILE']) as stream:
         trial_settings = json.load(stream)
     gitops = GitOps(github, targets, trials=Trials(kube, gateway, github, trial_settings), rollouts=Rollouts(kube, github))
+    chat_runner = ChatJobs(kube, gateway, None, trial_settings)
     while True:
         try:
             tick(gateway, gitops)
@@ -257,6 +259,10 @@ def main():
             logging.warning("Gateway work feed unavailable; retrying next tick")
             if args.once:
                 raise SystemExit(1)
+        try:
+            tick_chat(gateway, chat_runner)
+        except (OSError, ValueError, KeyError, TypeError):
+            logging.warning("Configuration assistant unavailable; retrying next tick")
         if args.once:
             break
         time.sleep(15)
