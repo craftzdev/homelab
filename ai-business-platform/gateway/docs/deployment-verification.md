@@ -42,7 +42,7 @@ GitHub Actions → テスト → build → Harbor → Sigstore 署名 → digest
 - profile、schema、2つの SKILL.md、共通ハーネスのハッシュを結果と configuration.json に記録。
 - 終了後は受付中、running / queued / not_stopped / callback_backlog はすべて0。
 
-## 残っている接続
+## 初回検証時に残っていた接続
 
 専用 GitHub App または repository 限定 token の選択・設定が未完了のため、
 設定配布 Controller は常駐させていない。candidate PR の config-runtime-trial も
@@ -83,7 +83,72 @@ Controller: 25 passed, including candidate recovery, immutable evidence, rollout
 restricted network policy, fixed upstream destinations, and sanitized errors.
 Codex 0.153.4 also completed a local mock SSE response through the custom provider with no auth file or Authorization header.
 
-The dedicated GitHub App and trial-provider credential are **not provisioned**. Neither the configuration controller nor
+At this earlier validation point, the dedicated GitHub App and trial-provider credential were **not provisioned**. Neither the configuration controller nor
 the trial broker has been started. No candidate has been sent to the real model or automatically promoted in this validation.
 The credential-mount issue found in #67 was corrected before activation: only the separate broker Pod can mount provider auth;
 candidate Pods have no provider credential and no direct Internet/DNS egress.
+
+
+## Dedicated App and isolated provider activation — 2026-09-21
+
+GitHub App `craftz-ai-config-controller` (App ID `5017561`, installation `163414060`) was installed
+on exactly `craftzdev/ai-business-agent` and `craftzdev/ai-business-worker`. The installation token's
+repository inventory also returns exactly those two repositories. Permissions are Contents/Pull requests
+write and Actions/Checks/Metadata read. The App key is root-owned, service-group readable at mode 0640;
+registration-time local secrets were removed after verifying the installed key.
+
+The broker in `ai-config-trial` uses only the current Worker's access token and account ID.
+No refresh token or ID token is copied. The bootstrap Secret had a revoked token and must not be the
+source of credential reuse. The current access token expires at 2026-10-01 14:16 JST and can be invalidated
+earlier by session changes; it needs an operator resync when expired/revoked. Broker failures stop candidate
+promotion. This setup does not refresh the Worker's shared OAuth session.
+
+Live validation found and fixed five integration problems: the kubelet TCP readiness probe was blocked
+by the restricted ingress policy; stale bootstrap credentials were revoked; valid upstream SSE lacked a
+Content-Type header; the production inventory serialized absent source mappings as null; the rollout observer
+needed to select the named Deployment from a multi-document YAML containing a Service. The VM also
+needed python3-venv and an outbound firewall exception limited to the Kubernetes API at 172.16.40.10:6443.
+Other workload/management/Ceph VLAN denies remain in place.
+
+- Controller tests: 30 passed; CI runs both controller contracts and repository validation.
+- Real provider smoke: `broker-smoke-477d9e5a9a`, succeeded with Codex 0.153.4 and the supplied
+  software profile, schema, two skills, and harness. No provider credential was mounted into the trial Pod.
+- Negative network check: broker reachable; direct public Internet, Kubernetes API and DNS blocked;
+  `/auth/auth.json` absent. The separate installation smoke resources were removed after verification.
+- Controller is enabled as an independent systemd service on `ai-gateway-01`. Its App token is refreshed
+  in memory and its Kubernetes token belongs to the scoped controller ServiceAccount. Live authorization
+  checks allow trial Job creation and named Deployment reads, and deny production Deployment writes
+  and Secret reads (both trial and production namespaces).
+- Production UI shows the immutable candidate, automatic-promotion choice, CI/trial evidence, diff and history.
+
+### Candidate delivery
+
+Candidate `a7c9e089-961e-4dc8-a15e-5055789b36a9` removes only the redundant final blank line from
+`profiles/software-engineer-v1.md`; it changes no role instructions. It was created and validated through
+the management API with automatic promotion explicitly enabled for this candidate.
+
+- [App-created PR #8](https://github.com/craftzdev/ai-business-agent/pull/8)
+- Candidate head: `1d5a966f6bf452b2ab2f16349e8c56b050b7bd0b`
+- Content SHA-256: `d0b5881572f6eaa1dc4ec4e33550be37b5a00d111303bcd303f4ba164270fe36`
+- Dedicated trial Job: `config-a7c9e089-1d5a966f6bf452b2`, succeeded.
+- Trial configuration SHA-256: `4fb3399c9426abb3b664acd8934b376aad143397e403f1db0b9dc7415cfcfa66`
+- Runtime SHA-256: `80652ec34129d4ccea2c33b48c2cda456a13106e5998c531e6367e63301fabfd`
+- [config-check](https://github.com/craftzdev/ai-business-agent/actions/runs/35569715959) passed.
+- The controller recorded VERIFIED, the Gateway emitted PROMOTE_REQUESTED using the candidate's
+  prior authorization, and the dedicated App merged revision `cae1fee6ed2c47e37809322509c7dbc06e42855f`.
+- [Signed image workflow](https://github.com/craftzdev/ai-business-agent/actions/runs/35570028109).
+
+The candidate's receipt is from its own execution, not the installation smoke or an older production job.
+This verifies actual model connectivity and configuration supply, not arbitrary business-task quality.
+
+Final result: **DEPLOYED** at `2026-09-21T06:56:12Z` (15:56 JST). The production UI shows 配布完了,
+all target deployments observed, and matching installed/loaded profile hashes. Argo CD automatically
+synced Git revision `f54417eb67634247224dc1dcf1508506a08e8c51`; no manual sync or direct deployment write was used.
+
+| Deployment | Observed generation | Available replicas |
+|---|---|---|
+| ai-business-agent | 13 | 1/1 |
+| ai-business-workflow-controller | 5 | 1/1 |
+| ai-business-agent-edge | 10 | 1/1 |
+
+Image: `172.16.40.201:5000/ai-business/ai-business-agent@sha256:9879e909d0b95f889aded7bba0ab41a09a6efa1f26feebeb8ad152e6a61ee281`.

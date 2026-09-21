@@ -69,14 +69,20 @@ class Broker(BaseHTTPRequestHandler):
             request = upstream_request(raw, json.loads(self.auth_path.read_text()))
             Broker.calls.append(started)
             with self.opener.open(request, timeout=90) as response:
-                if response.status != 200 or 'text/event-stream' not in response.headers.get('Content-Type', ''):
+                # The Codex account endpoint can omit Content-Type. Validate
+                # actual SSE framing before returning any provider bytes. A
+                # JSON/HTML error with status 200 must still stay private.
+                prefix = response.readline(65_537)
+                if response.status != 200 or len(prefix) > 65_536 or not prefix.lstrip().startswith((b'event:', b'data:', b':')):
                     raise ValueError('invalid upstream response')
                 self.send_response(200)
                 self.send_header('Content-Type', 'text/event-stream')
                 self.send_header('Cache-Control', 'no-store')
                 self.end_headers()
                 sent = True
-                total = 0
+                self.wfile.write(prefix)
+                self.wfile.flush()
+                total = len(prefix)
                 while time.monotonic() - started < 90:
                     chunk = response.read1(16_384)
                     if not chunk:

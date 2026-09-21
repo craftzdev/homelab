@@ -53,7 +53,7 @@ def broker_resources(image, script):
                              'securityContext': {'allowPrivilegeEscalation': False, 'readOnlyRootFilesystem': True, 'capabilities': {'drop': ['ALL']}},
                              'env': [{'name': 'PYTHONDONTWRITEBYTECODE', 'value': '1'}],
                              'resources': {'requests': {'cpu': '50m', 'memory': '64Mi'}, 'limits': {'cpu': '1', 'memory': '256Mi'}},
-                             'readinessProbe': {'tcpSocket': {'port': 8080}, 'periodSeconds': 5},
+                             'readinessProbe': {'exec': {'command': ['python', '-c', "import socket; socket.create_connection(('127.0.0.1', 8080), timeout=2).close()"]}, 'timeoutSeconds': 3, 'periodSeconds': 5},
                              'volumeMounts': [{'name': 'code', 'mountPath': '/broker', 'readOnly': True}, {'name': 'auth', 'mountPath': '/auth', 'readOnly': True}]}],
                          'volumes': [{'name': 'code', 'configMap': {'name': 'config-trial-broker'}}, {'name': 'auth', 'secret': {'secretName': 'config-trial-codex-auth', 'defaultMode': 288}}]}}}}
     ]

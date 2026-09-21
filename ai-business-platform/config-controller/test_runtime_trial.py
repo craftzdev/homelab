@@ -46,7 +46,8 @@ def test_failed_job_never_becomes_success():
     with pytest.raises(Blocked,match='failed'):trial.reconcile(RELEASE,PROOF,{})
 
 
-def test_created_job_is_recovered_and_receipt_must_match_candidate():
+@pytest.mark.parametrize('source_mapping', [None, {}])
+def test_created_job_is_recovered_and_receipt_must_match_candidate(source_mapping):
     stored = {}
     receipt = {}
     writes = []
@@ -68,7 +69,7 @@ def test_created_job_is_recovered_and_receipt_must_match_candidate():
             raise urllib.error.HTTPError(path, 404, 'absent', {}, None)
         return deepcopy(stored[path])
     github = lambda *a: {'type': 'file', 'encoding': 'base64', 'content': base64.b64encode(b'old').decode()}
-    trial = Trials(kube, lambda *a: {'documents': [SOURCE]}, github, SETTINGS)
+    trial = Trials(kube, lambda *a: {'documents': [{**SOURCE, 'source_mapping': source_mapping}]}, github, SETTINGS)
     target = {'component': 'agent', 'repository': 'owner/repo'}
     assert trial.reconcile(RELEASE, PROOF, target)['status'] == 'RUNNING'
     assert len(writes) == 2

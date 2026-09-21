@@ -12,7 +12,10 @@ import subprocess
 import sys
 import time
 
-from resources import NAMESPACE, resources, broker_resources
+if __package__:
+    from .resources import NAMESPACE, resources, broker_resources
+else:
+    from resources import NAMESPACE, resources, broker_resources
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -46,6 +49,18 @@ print('Controller installed and started')
 '''
 
 
+def broker_auth(raw):
+    parsed = json.loads(raw)
+    if parsed.get('OPENAI_API_KEY'):
+        return json.dumps({'OPENAI_API_KEY': parsed['OPENAI_API_KEY']}).encode()
+    tokens = parsed.get('tokens', {})
+    if not isinstance(tokens, dict) or not tokens.get('access_token') or not tokens.get('account_id'):
+        raise ValueError('trial auth.json requires an API key or a Codex access token with account ID')
+    # The relay must never refresh shared OAuth credentials and invalidate the
+    # Worker's session. Refresh and ID tokens never enter the broker Secret.
+    return json.dumps({'tokens': {k: tokens[k] for k in ('access_token','account_id')}}).encode()
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--kubeconfig',required=True)
@@ -75,10 +90,14 @@ def main():
     capabilities=gateway('GET','/v1/config/contract')['capabilities']
     if not {'automatic_promotion','deployment_observation'} <= set(capabilities):
         raise ValueError('deploy the automatic-promotion Gateway API before starting this controller')
-    trial_auth = args.trial_auth_file.read_bytes() if args.trial_auth_file else base64.b64decode(kub_json('-n','ai-worker','get','secret','ai-business-worker-codex-auth','-o','json')['data']['auth.json'])
-    parsed_auth=json.loads(trial_auth)
-    if not parsed_auth.get('OPENAI_API_KEY') and not (isinstance(parsed_auth.get('tokens'),dict) and parsed_auth['tokens'].get('access_token') and parsed_auth['tokens'].get('account_id')):
-        raise ValueError('trial auth.json requires an API key or a Codex access token with account ID')
+    if args.trial_auth_file:
+        trial_auth = args.trial_auth_file.read_bytes()
+    else:
+        # Worker rotates its writable runtime cache; the bootstrap Secret can
+        # already be revoked. Read the current cache without invoking Codex.
+        trial_auth = subprocess.check_output(kub+['-n','ai-worker','exec','deployment/ai-business-worker','-c','worker','--','python','-c',
+            'from pathlib import Path; import os,sys; sys.stdout.buffer.write((Path(os.environ.get("CODEX_HOME","/home/worker/.codex"))/"auth.json").read_bytes())'],stderr=subprocess.PIPE)
+    trial_auth = broker_auth(trial_auth)
     if args.check:
         print('App repository access, Gateway contract, and trial credential input validated; no changes made')
         return

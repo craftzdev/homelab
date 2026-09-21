@@ -53,7 +53,7 @@ class Trials:
                 # The tested component must exactly match the PR's base. Testing
                 # installed files from an older, un-deployed main is not evidence.
                 if doc['component'] == target['component']:
-                    path = doc.get('source_mapping', {}).get('path', doc['path'])
+                    path = (doc.get('source_mapping') or {}).get('path', doc['path'])
                     item = self.github('GET', '/repos/' + target['repository'] + '/contents/' + path + '?ref=' + proof['base_sha'])
                     if item.get('type') != 'file' or item.get('encoding') != 'base64':
                         raise Blocked('trial baseline is not a regular Git file')
