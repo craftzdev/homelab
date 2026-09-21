@@ -4,7 +4,7 @@ from copy import deepcopy
 import urllib.error
 import pytest
 from controller import Blocked
-from runtime_trial import Trials, sha
+from runtime_trial import Trials, sha, runtime_digest
 
 SETTINGS={'namespace':'trial','broker_url':'http://10.96.0.10:8080/v1','agent_image':'registry/agent@sha256:'+'a'*64,'worker_image':'registry/worker@sha256:'+'b'*64}
 SOURCE={'id':'source','component':'agent','kind':'profile','path':'profiles/example.md','sha256':sha('old'),'content':'old','loaded_sha256':sha('old')}
@@ -27,7 +27,7 @@ def test_job_has_ephemeral_storage_and_no_gateway_or_github_credentials():
 
 def test_success_is_bound_to_head_content_baseline_and_no_repeated_model_runs():
     baseline=sha(json.dumps({'source':SOURCE['sha256']},sort_keys=True))
-    runtime=sha(json.dumps(SETTINGS,sort_keys=True))
+    runtime=runtime_digest(SETTINGS)
     receipt={'passed':True,'scope':'runtime_smoke','head_sha':PROOF['head_sha'],'content_sha256':RELEASE['content_sha256'],'baseline_sha256':baseline,'runtime_sha256':runtime,'probes':[{'profile':'example'}]}
     def no_kube(*args,**kwargs):raise AssertionError('a passed immutable trial must not re-run')
     trial=Trials(no_kube,lambda *a:{'documents':[SOURCE]},None,SETTINGS)

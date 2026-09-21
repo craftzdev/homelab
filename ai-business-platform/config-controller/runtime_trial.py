@@ -12,6 +12,11 @@ def sha(value):
     return hashlib.sha256(value.encode()).hexdigest()
 
 
+def runtime_digest(settings):
+    code = {name: sha(Path(__file__).with_name(name).read_text()) for name in ('trial_prepare.py', 'trial_run.py', 'trial_broker.py')}
+    return sha(json.dumps({'settings': settings, 'code': code}, sort_keys=True))
+
+
 class Trials:
     def __init__(self, kube, gateway, github, settings):
         self.kube, self.gateway, self.github, self.settings = kube, gateway, github, settings
@@ -23,7 +28,7 @@ class Trials:
         from controller import Blocked
         inventory = self.gateway('GET', '/v1/config/inventory')
         baseline = sha(json.dumps({doc['id']: doc['sha256'] for doc in inventory['documents']}, sort_keys=True))
-        runtime_version = sha(json.dumps(self.settings, sort_keys=True))
+        runtime_version = runtime_digest(self.settings)
         prior = proof.get('runtime_trial', {})
         if prior.get('passed') is True:
             if (prior.get('head_sha') != proof['head_sha'] or prior.get('content_sha256') != release['content_sha256']

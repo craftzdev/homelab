@@ -37,6 +37,9 @@ def test_merge_or_image_build_alone_does_not_mean_deployed():
     live['spec']['template']['metadata']['annotations']['ai-business/source-revision']='old'
     assert o.reconcile(RELEASE,TARGET)[0]=='DEPLOYING'
     live['spec']['template']['metadata']['annotations']['ai-business/source-revision']=SHA
+    live['status']['terminatingReplicas']=1
+    assert o.reconcile(RELEASE,TARGET)[0]=='DEPLOYING'
+    live['status']['terminatingReplicas']=0
     state,proof=o.reconcile(RELEASE,TARGET)
     assert state=='DEPLOYED' and proof['deployment']['resources'][0]['generation']==2
 

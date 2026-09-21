@@ -62,6 +62,7 @@ class Rollouts:
             ready = (count > 0 and expected == actual and all('@sha256:' in image for image in expected.values())
                      and live['spec'].get('replicas', 1) == count
                      and status.get('observedGeneration') == live['metadata']['generation']
+                     and status.get('terminatingReplicas', 0) == 0
                      and status.get('updatedReplicas', 0) == status.get('availableReplicas', 0) == status.get('replicas', 0) == count)
             if not ready:
                 failed = any(c.get('type') == 'Progressing' and c.get('status') == 'False' for c in status.get('conditions', []))
