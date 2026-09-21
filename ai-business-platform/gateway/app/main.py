@@ -27,7 +27,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from starlette.requests import Request
 from starlette.responses import JSONResponse, FileResponse
 
-from app import config_releases, configuration, internal_api, scheduler, task_api, tasks, video
+from app import config_chat, config_releases, configuration, internal_api, scheduler, task_api, tasks, video
 
 API_SURFACE = os.environ.get("API_SURFACE", "public")
 DATABASE_URL = os.environ["DATABASE_URL"]
@@ -204,6 +204,7 @@ async def lifespan(_: FastAPI):
         tasks.ensure_schema(connection)
         connection.execute(configuration.SCHEMA_SQL)
         connection.execute(config_releases.SCHEMA_SQL)
+        connection.execute(config_chat.SCHEMA_SQL)
         connection.commit()
     runner = None
     if API_SURFACE == "public" and video.configured():
@@ -1894,12 +1895,13 @@ def _config_principal(token: str | None) -> str:
 
 app.include_router(configuration.build_router(pool=pool, auth=require_gateway_token, config_principal=_config_principal))
 app.include_router(config_releases.build_router(pool=pool, auth=require_gateway_token, config_principal=_config_principal))
+app.include_router(config_chat.build_router(pool=pool, auth=require_gateway_token, config_principal=_config_principal))
 
 
 @app.get("/v1/config/contract", dependencies=[Depends(require_gateway_token)])
 def configuration_contract():
     return {"api_version": "1.0", "schema_url": "/v1/config/openapi.json",
-            "capabilities": ["drafts", "immutable_releases", "ci_evidence", "human_promotion", "worker_intake", "automatic_promotion", "deployment_observation"],
+            "capabilities": ["drafts", "immutable_releases", "ci_evidence", "human_promotion", "worker_intake", "automatic_promotion", "deployment_observation", "configuration_chat"],
             "compatibility": "Additive fields and new states may be introduced in v1. Clients must preserve unknown states and use available_commands."}
 
 
