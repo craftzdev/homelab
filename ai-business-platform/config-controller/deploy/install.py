@@ -12,7 +12,7 @@ import subprocess
 import sys
 import time
 
-from resources import NAMESPACE, resources
+from resources import NAMESPACE, resources, broker_resources
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -84,6 +84,7 @@ def main():
         return
     # These resources grant job creation only in the isolated trial namespace,
     # and read-only access to the four named production Deployments.
+    settings=json.loads((ROOT/'trial-settings.example.json').read_text())
     for resource in resources():
         kub_json('apply','-f','-','-o','json',body=resource)
     def apply_secret(name,data,kind='Opaque'):
@@ -91,6 +92,11 @@ def main():
     apply_secret('config-trial-codex-auth',{'auth.json':base64.b64encode(trial_auth).decode()})
     pull=kub_json('-n','ai-worker','get','secret','harbor-pull','-o','json')
     apply_secret('harbor-pull',pull['data'],pull['type'])
+    for resource in broker_resources(settings['worker_image'], (ROOT/'trial_broker.py').read_text()):
+        kub_json('apply','-f','-','-o','json',body=resource)
+    broker=kub_json('-n',NAMESPACE,'get','service','config-trial-broker','-o','json')
+    settings['broker_url']='http://'+broker['spec']['clusterIP']+':8080/v1'
+    subprocess.run(kub+['-n',NAMESPACE,'rollout','status','deployment/config-trial-broker','--timeout=120s'],check=True,capture_output=True)
     for _ in range(30):
         token=kub_json('-n',NAMESPACE,'get','secret','config-controller-api','-o','json').get('data',{})
         if token.get('token'):break
@@ -105,7 +111,7 @@ def main():
          'KUBERNETES_API_SERVER':server,'KUBERNETES_TOKEN_FILE':'/etc/ai-config-controller/kubernetes.token','KUBERNETES_CA_FILE':'/etc/ai-config-controller/kubernetes-ca.crt','TRIAL_SETTINGS_FILE':'/etc/ai-config-controller/trial-settings.json'}
     encoded=lambda value:base64.b64encode(value if isinstance(value,bytes) else value.encode()).decode()
     config={'runtime.env':encoded('\n'.join(k+'='+json.dumps(v) for k,v in env.items())+'\n'),'github-app.pem':encoded(key),'kubernetes.token':token['token'],'kubernetes-ca.crt':token['ca.crt'],
-            'targets.json':encoded((ROOT/'targets.example.json').read_bytes()),'trial-settings.json':encoded((ROOT/'trial-settings.example.json').read_bytes())}
+            'targets.json':encoded((ROOT/'targets.example.json').read_bytes()),'trial-settings.json':encoded(json.dumps(settings))}
     payload={'code':{name:encoded((ROOT/name).read_bytes()) for name in FILES},'config':config,'unit':(ROOT/'deploy/config-controller.service').read_text()}
     result=subprocess.run(['ssh','-o','BatchMode=yes',args.host,'sudo python3 -c '+shlex.quote(REMOTE_INSTALL)],input=json.dumps(payload).encode(),capture_output=True)
     if result.returncode:

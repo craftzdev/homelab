@@ -6,7 +6,7 @@ import pytest
 from controller import Blocked
 from runtime_trial import Trials, sha
 
-SETTINGS={'namespace':'trial','agent_image':'registry/agent@sha256:'+'a'*64,'worker_image':'registry/worker@sha256:'+'b'*64}
+SETTINGS={'namespace':'trial','broker_url':'http://10.96.0.10:8080/v1','agent_image':'registry/agent@sha256:'+'a'*64,'worker_image':'registry/worker@sha256:'+'b'*64}
 SOURCE={'id':'source','component':'agent','kind':'profile','path':'profiles/example.md','sha256':sha('old'),'content':'old','loaded_sha256':sha('old')}
 RELEASE={'id':'12345678-abcd','source':SOURCE,'content':'new','content_sha256':sha('new'),'base_content':'old'}
 PROOF={'head_sha':'a'*40,'base_sha':'b'*40}
@@ -18,7 +18,8 @@ def test_job_has_ephemeral_storage_and_no_gateway_or_github_credentials():
     pod=job['spec']['template']['spec']
     assert pod['automountServiceAccountToken'] is False
     assert all('persistentVolumeClaim' not in v and 'hostPath' not in v for v in pod['volumes'])
-    assert not any(v['name']=='codex-auth' for v in pod['initContainers'][0]['volumeMounts'])
+    assert not any('secret' in v for v in pod['volumes'])
+    assert not any(v['mountPath']=='/auth' for c in pod['containers']+pod['initContainers'] for v in c['volumeMounts'])
     assert all(c['securityContext']['readOnlyRootFilesystem'] for c in pod['containers']+pod['initContainers'])
     assert all('GATEWAY' not in v['name'] and 'GITHUB' not in v['name'] for c in pod['containers'] for v in c['env'])
     assert job['spec']['backoffLimit']==0 and job['spec']['activeDeadlineSeconds']==1800
