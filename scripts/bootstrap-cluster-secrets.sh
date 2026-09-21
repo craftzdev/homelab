@@ -287,6 +287,9 @@ done
 # Project-scoped moshitoku credentials must survive rebuilds without reverting
 # to the unrelated ai-business robot. Reconcile them with reconcile-moshitoku-harbor.py.
 for namespace in moshitoku moshitoku-scraper; do
+  # The Harbor robot account's own name contains a literal '$'; single quotes are
+  # what keeps it from being read as a variable.
+  # shellcheck disable=SC2016
   apply_harbor_pull_secret "${namespace}" 'dev.craftz.homelab.harbor-moshitoku-k8s-pull' 'robot$moshitoku+k8s-pull'
 done
 ok "Harbor project-scoped read-only pull credentials reconciled"
