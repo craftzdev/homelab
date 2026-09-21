@@ -46,7 +46,16 @@ class Rollouts:
                 return pending('signed image pipeline failed', failed=True)
         resources = []
         for item in target['deployments']:
-            desired = yaml.safe_load(content(item['path'], head))
+            # Edge manifests also contain a Service. Select the configured
+            # Deployment by identity instead of assuming a single YAML document.
+            documents = yaml.safe_load_all(content(item['path'], head))
+            matches = [doc for doc in documents if isinstance(doc, dict)
+                       and doc.get('apiVersion') == 'apps/v1' and doc.get('kind') == 'Deployment'
+                       and doc.get('metadata', {}).get('name') == item['name']
+                       and doc.get('metadata', {}).get('namespace') in (None, item['namespace'])]
+            if len(matches) != 1:
+                return pending('configured Deployment is missing or ambiguous in ' + item['path'], failed=True)
+            desired = matches[0]
             live = self.kube('GET', '/apis/apps/v1/namespaces/' + item['namespace'] + '/deployments/' + item['name'])
             def images(deployment):
                 spec = deployment['spec']['template']['spec']
