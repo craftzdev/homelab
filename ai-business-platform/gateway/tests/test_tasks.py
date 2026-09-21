@@ -2084,7 +2084,9 @@ class IntakeWorker:
         }
 
 
-def test_draining_a_worker_is_asked_for_here_and_applied_there(client):
+def test_draining_a_worker_is_asked_for_here_and_applied_there(client, monkeypatch):
+    monkeypatch.setenv("CONFIG_ADMIN_TOKEN", "c" * 64)
+    monkeypatch.setenv("CONFIG_ADMIN_ACTOR", "operator")
     worker = IntakeWorker()
     scheduler.poll_worker(gateway.pool, worker)
     assert client.get("/v1/workers", headers=BOT).json()["can_execute"] is True
@@ -2092,7 +2094,7 @@ def test_draining_a_worker_is_asked_for_here_and_applied_there(client):
     drained = client.post(
         "/v1/workers/ai-business-worker/commands",
         json={"type": "drain", "reason": "メンテナンス"},
-        headers=BOT,
+        headers={**BOT, "X-Config-Admin-Token": "c" * 64},
     )
     assert drained.status_code == 202
     assert drained.json()["desired_accepting_jobs"] is False
@@ -2116,14 +2118,16 @@ def test_draining_a_worker_is_asked_for_here_and_applied_there(client):
     client.post(
         "/v1/workers/ai-business-worker/commands",
         json={"type": "resume"},
-        headers=BOT,
+        headers={**BOT, "X-Config-Admin-Token": "c" * 64},
     )
     scheduler.poll_worker(gateway.pool, worker)
     assert worker.applied[-1]["accepting_jobs"] is True
     assert client.get("/v1/workers", headers=BOT).json()["can_execute"] is True
 
 
-def test_an_unapplied_drain_stays_visible_as_unapplied(client):
+def test_an_unapplied_drain_stays_visible_as_unapplied(client, monkeypatch):
+    monkeypatch.setenv("CONFIG_ADMIN_TOKEN", "c" * 64)
+    monkeypatch.setenv("CONFIG_ADMIN_ACTOR", "operator")
     class RefusingWorker(IntakeWorker):
         def set_intake(self, **_kwargs):
             raise scheduler.Unknown("worker did not answer the intake change")
@@ -2133,7 +2137,7 @@ def test_an_unapplied_drain_stays_visible_as_unapplied(client):
     client.post(
         "/v1/workers/ai-business-worker/commands",
         json={"type": "drain"},
-        headers=BOT,
+        headers={**BOT, "X-Config-Admin-Token": "c" * 64},
     )
     scheduler.poll_worker(gateway.pool, worker)
     inventory = client.get("/v1/workers", headers=BOT).json()["workers"][0]
@@ -2143,11 +2147,13 @@ def test_an_unapplied_drain_stays_visible_as_unapplied(client):
     assert inventory["intake_applied"] is False
 
 
-def test_a_worker_command_is_recorded_as_an_event(client):
+def test_a_worker_command_is_recorded_as_an_event(client, monkeypatch):
+    monkeypatch.setenv("CONFIG_ADMIN_TOKEN", "c" * 64)
+    monkeypatch.setenv("CONFIG_ADMIN_ACTOR", "operator")
     client.post(
         "/v1/workers/ai-business-worker/commands",
         json={"type": "drain", "reason": "点検"},
-        headers=BOT,
+        headers={**BOT, "X-Config-Admin-Token": "c" * 64},
     )
     events = [
         event

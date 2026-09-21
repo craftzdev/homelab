@@ -1050,6 +1050,7 @@ def set_worker_intake(
     reason: str | None,
 ) -> dict[str, Any]:
     """Record the intake state the Gateway wants, as a new revision."""
+    connection.execute("SELECT logical_id FROM workers WHERE logical_id=%s FOR UPDATE", (worker_id,)).fetchone()
     now = utcnow()
     row = connection.execute(
         """
@@ -1160,8 +1161,8 @@ def worker_inventory(connection: Any) -> dict[str, Any]:
                 "desired_by": row["desired_actor"],
                 "intake_applied": (
                     None
-                    if row["desired_revision"] is None
-                    else row["intake_revision"] == row["desired_revision"]
+                    if row["desired_revision"] is None or stale or row["status"] != "HEALTHY"
+                    else row["intake_revision"] == row["desired_revision"] and row["accepting_jobs"] == row["desired_accepting"]
                 ),
             }
         )

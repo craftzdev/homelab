@@ -1,0 +1,23 @@
+name: configuration controller contracts
+on:
+  pull_request:
+    paths:
+      - ai-business-platform/config-controller/**
+      - .github/workflows/config-controller-tests.yaml
+  push:
+    branches: [main]
+    paths:
+      - ai-business-platform/config-controller/**
+      - .github/workflows/config-controller-tests.yaml
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - run: pip install -r requirements.txt pytest && python -m pytest -q test_controller.py
+        working-directory: ai-business-platform/config-controller

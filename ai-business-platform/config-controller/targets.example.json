@@ -1,0 +1,20 @@
+{
+  "ai-business-agent": {
+    "component": "agent",
+    "repository": "craftzdev/ai-business-agent",
+    "branch": "main",
+    "allowed_paths": ["profiles/", "schemas/"],
+    "pool": "stable",
+    "required_checks": ["config-check", "config-runtime-trial"],
+    "runtime_trial_check": "config-runtime-trial"
+  },
+  "ai-business-worker": {
+    "component": "worker",
+    "repository": "craftzdev/ai-business-worker",
+    "branch": "main",
+    "allowed_paths": ["skills/", "deploy/kubernetes/codex-harness.yaml"],
+    "pool": "stable",
+    "required_checks": ["config-check", "config-runtime-trial"],
+    "runtime_trial_check": "config-runtime-trial"
+  }
+}
