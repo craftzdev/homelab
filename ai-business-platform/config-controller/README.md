@@ -62,6 +62,9 @@ Controller は Gateway VM 上の独立した systemd service として稼働す�
 trial-settings.json に記録し、broker の準備完了を確認してから Controller を起動する。
 `deploy/install.py` は一回の導入で RBAC / trial namespace / secret / service を設定する。
 VM に Python 3 と venv、呼び出し元に kubectl / SSH とこの requirements が必要。
+Gateway の provision script / cloud-init は `python3-venv` と、VM から
+`172.16.40.10:6443` だけへの Kubernetes API 通信を用意する。既存 VM では導入前に
+この例外を workload VLAN の deny より前へ追加する。他の VLAN 制限は維持する。
 
 GitHub App は `github-app-manifest.json` で作成し、対象を
 `craftzdev/ai-business-agent` / `craftzdev/ai-business-worker` だけに限定する。
@@ -106,8 +109,10 @@ Controller tests は token 更新、候補との証跡の結び付け、試験�
 Pod の隔離、複数配置先の確認、古い版・CI 失敗・タイムアウトを扱う。
 
 Codex のカスタム provider は [公式の認証設定](https://developers.openai.com/codex/auth) に従う。
-検証: Controller 27 tests passed。Codex 0.153.4 とローカルの模擬 SSE 接続で、
+検証: Controller 28 tests passed。Codex 0.153.4 とローカルの模擬 SSE 接続で、
 認証ファイル・Authorization header なしに最終応答を受け取れることを確認した。
-実プロバイダーへの接続と本番の候補配布は専用認証の設定後に検証する。
+実プロバイダーへの接続も、資格情報を持たない隔離 Pod の Codex で成功した。
+同じ Pod の直接 Internet / Kubernetes API / DNS 接続は遮断され、broker だけに接続できた。
+候補ごとの配布結果は [本番接続検証](../gateway/docs/deployment-verification.md) に記録する。
 
 Broker readiness は Pod 内の exec probe で確認する。kubelet / node からの新規 ingress を許可せず、試験 Pod からの接続だけを維持する。

@@ -23,6 +23,7 @@ sudo apt-get install --yes \
   docker-compose-v2 \
   docker.io \
   jq \
+  python3-venv \
   qemu-guest-agent \
   tailscale \
   ufw \
@@ -49,6 +50,8 @@ sudo ufw allow in on tailscale0 comment 'Tailnet policy enforced by Tailscale'
 sudo ufw allow 41641/udp comment 'Tailscale direct connections'
 sudo ufw allow out to 172.16.40.1 port 53 proto udp comment 'Gateway DNS'
 sudo ufw allow out to 172.16.40.1 port 53 proto tcp comment 'Gateway DNS'
+# Insert before existing VLAN denies when provisioning an already-running VM.
+sudo ufw insert 1 allow out to 172.16.40.10 port 6443 proto tcp comment 'Config controller Kubernetes API'
 sudo ufw deny out to 172.16.10.0/24 comment 'Block management VLAN'
 sudo ufw deny out to 172.16.20.0/24 comment 'Block Ceph public VLAN'
 sudo ufw deny out to 172.16.30.0/24 comment 'Block Ceph cluster VLAN'

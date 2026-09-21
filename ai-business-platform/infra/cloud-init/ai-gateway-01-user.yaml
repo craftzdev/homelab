@@ -10,6 +10,7 @@ packages:
   - docker.io
   - docker-compose-v2
   - jq
+  - python3-venv
   - qemu-guest-agent
   - ufw
   - unattended-upgrades
@@ -32,6 +33,8 @@ runcmd:
   - [ufw, allow, 41641/udp]
   - [ufw, allow, out, to, 172.16.40.1, port, "53", proto, udp]
   - [ufw, allow, out, to, 172.16.40.1, port, "53", proto, tcp]
+  # Configuration controller: scoped Kubernetes credentials, API endpoint only.
+  - [ufw, allow, out, to, 172.16.40.10, port, "6443", proto, tcp]
   - [ufw, deny, out, to, 172.16.10.0/24]
   - [ufw, deny, out, to, 172.16.20.0/24]
   - [ufw, deny, out, to, 172.16.30.0/24]
