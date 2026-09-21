@@ -69,6 +69,7 @@ class Document(BaseModel):
     path: str = Field(max_length=500)
     content: str = Field(max_length=MAX_CONTENT)
     sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    loaded_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     repository: str = Field(max_length=100)
     observed_from: Literal["installed_file"]
     skill_id: str | None = Field(default=None, max_length=100)

@@ -274,6 +274,7 @@ def build_router(
     jobs: JobBridge,
     actor_resolver: Callable[[], tuple[str, str]],
     human_principal: Callable[[str | None], str],
+    config_principal: Callable[[str | None], str] | None = None,
 ) -> APIRouter:
     """Create the /v1 Task router.
 
@@ -493,7 +494,8 @@ def build_router(
 
     @router.post("/workers/{worker_id}/commands", status_code=status.HTTP_202_ACCEPTED)
     def run_worker_command(
-        worker_id: str, request: WorkerCommand
+        worker_id: str, request: WorkerCommand,
+        x_config_admin_token: str | None = Header(default=None),
     ) -> dict[str, Any]:
         """Ask a Worker to stop or resume taking new jobs.
 
@@ -501,7 +503,9 @@ def build_router(
         Worker reports which revision it applied, so "asked" and "applied" stay
         distinguishable. Draining never expires on its own.
         """
-        actor, _ = actor_resolver()
+        if config_principal is None:
+            raise HTTPException(status_code=503, detail="worker administration is not configured")
+        actor = config_principal(x_config_admin_token)
         with pool.connection() as connection:
             row = tasks.set_worker_intake(
                 connection,

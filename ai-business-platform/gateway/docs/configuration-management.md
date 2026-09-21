@@ -1,6 +1,6 @@
 # 設定の参照・下書き管理
 
-2026-09-20 時点の実装。設計書の Phase 3A のうち、実行環境の設定取得、下書き編集、差分、基本検証を追加した。Git/CI の変更作成、Release の適用・rollback は未実装。
+2026-09-21 更新。設定取得・下書き・基本検証に加え、固定した配布候補、専用 Config Controller、CI/実行試験の証跡、人間による Git 反映要求、戻す下書きの作成を実装した。本番の実行試験・署名済み image の digest 更新・Controller 配置は未接続。詳細は [Config Controller](../../config-controller/README.md)。
 
 ## 保存先と経路
 
@@ -54,9 +54,32 @@ Control Plane には同じ編集用 token を `CONFIG_ADMIN_TOKEN` として設�
 
 専用 executor、Skill bundle、pool、Artifact 引き継ぎ、実行検証が揃うまで有効化しない。既存の `technical-writer-v1 / content.article` と `growth.plan` は保持する。
 
-## 次の実装境界
+## 配布 API と現在の境界
 
-下書きから Git change set を作る Config Controller と、consumer の observed digest を確認する activation を追加する。それまでは設定の「適用」操作を公開しない。Writer/Marketing の実行開始は別段階の専用 pool 実装で行う。
+| API | 内容 |
+|---|---|
+| POST `/v1/config/drafts/{id}/release` | 基本検証した保存版を固定。expected_revision 必須。同じ版は再送可能 |
+| GET `/v1/config/releases` / `/{id}` | 配布状態・履歴・差分。詳細は配置中と読み込み版のハッシュも返す |
+| POST `/v1/config/releases/{id}/promote` | CI と実行試験が合格した版について人間が Git 反映を要求 |
+| POST `/v1/config/releases/{id}/rollback` | 配置元の一致を確認して変更前の内容を新しい下書きにする |
+| POST `/v1/config/workers/{id}/intake` | 管理者による新規受付の停止・再開。expected_revision 必須 |
+| GET `/v1/config/controller/work` | 専用 Controller が未完了候補を取得 |
+| POST `/v1/config/controller/releases/{id}/report` | 専用 Controller が版を指定して CI/Git 証跡を報告 |
+
+人間の書き込みには `X-Config-Admin-Token`、Controller の取得と報告には
+`X-Config-Controller-Token` が必要。通常の Gateway 認証も必須。
+Controller は人間の適用操作を代行できず、MCP の tool 一覧にも適用操作は追加しない。
+旧 `/v1/workers/{id}/commands` も設定管理者の資格情報を必須に変更した。
+旧クライアントは `X-Config-Admin-Token` を追加するか、版を確認できる新 API へ移行する。
+
+`QUEUED → REVIEW → VERIFIED → PROMOTE_REQUESTED → MERGED` の遷移を記録。
+固定 head の試験が不合格になれば VERIFIED から REVIEW に戻る。
+Git の base/head 競合等は BLOCKED。新しい下書きの保存・再検証からやり直す。
+配置観測は `MATCH / DIFFERENT / UNKNOWN`。Agent の `loaded_match` も別項目で返す。
+これらは全 pool の反映・実行成功の証明ではない。
+
+Writer/Marketing の実行開始、複数ファイルの一括配布、自動カナリアと排出は次段階。
+
 
 ## 検証記録
 
@@ -70,3 +93,24 @@ Control Plane には同じ編集用 token を `CONFIG_ADMIN_TOKEN` として設�
 | Worker | 全71テスト成功 |
 
 設定管理では、認証分離、CSRF、HTML escaping、更新競合、再送、履歴、編集による検証失効、検証中の競合、取得本文の digest、保存後の検証障害からの再試行を確認した。ブラウザ接続が利用できず、画面の目視検証は未完了。実際のモデルによる Writer/Marketing 実行と Git/CI 適用は検証対象に含まれない。
+
+
+## Production management API (2026-09-21)
+
+`GET /v1/config/contract` は API version 1.0 と capabilities を返す。
+`GET /v1/config/openapi.json` は通常の Gateway 認証を通した管理 API 定義。
+UI は release detail の `available_commands` を表示し、状態から適用操作を推測しない。
+v1 は追加的なフィールド変更を許容し、未知の状態は表示を維持して書き込みを無効にする。
+
+Gateway が設定・監査・承認状態の正本、Control Plane が管理 UI、
+専用 Controller が GitHub 連携、container CI と Argo CD が配置を担当する。
+UI の変更は Controller や Worker の再実装を必要としない。
+
+本番 Gateway の管理認証を有効化し、API でワーカー停止・適用観測を確認した。
+Agent / Worker / UI の署名済みイメージを GitOps に反映する CI を接続した。
+Controller の専用 GitHub 資格情報と候補 PR の実モデル試験は別途必要で、
+それらが揃うまでは管理画面の候補を自動適用しない。
+
+検証: Gateway 267 passed / 1 skipped、Worker 110 passed、Agent 70 passed、
+Control Plane 67 passed。イメージ昇格は一時 Git repository で古いビルドの拒否と
+YAML・他イメージの維持を確認した。本番 smoke の結果は deployment-verification.md に記録する。
