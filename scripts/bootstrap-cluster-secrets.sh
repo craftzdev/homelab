@@ -21,6 +21,12 @@ AGENT_API_KEYCHAIN_SERVICE="${AGENT_API_KEYCHAIN_SERVICE:-dev.craftz.homelab.ai-
 AGENT_API_KEYCHAIN_ACCOUNT="${AGENT_API_KEYCHAIN_ACCOUNT:-ai-business-gateway}"
 AGENT_WORKER_KEYCHAIN_SERVICE="${AGENT_WORKER_KEYCHAIN_SERVICE:-dev.craftz.homelab.ai-agent-worker-token}"
 AGENT_WORKER_KEYCHAIN_ACCOUNT="${AGENT_WORKER_KEYCHAIN_ACCOUNT:-ai-business-worker}"
+CONTROLLER_KEYCHAIN_SERVICE="${CONTROLLER_KEYCHAIN_SERVICE:-dev.craftz.homelab.ai-controller-api-token}"
+CONTROLLER_KEYCHAIN_ACCOUNT="${CONTROLLER_KEYCHAIN_ACCOUNT:-ai-business-workflow-controller}"
+# Where the Workflow Controller reaches the Gateway's internal surface. The
+# Gateway VM serves it under /internal on its Tailnet name; nothing outside the
+# Tailnet can reach it.
+GATEWAY_INTERNAL_URL="${GATEWAY_INTERNAL_URL:-https://ai-gateway-01.tailb6c7d.ts.net}"
 HOMEPAGE_PVE_KEYCHAIN_SERVICE="${HOMEPAGE_PVE_KEYCHAIN_SERVICE:-dev.craftz.homelab.homepage-proxmox-token}"
 HOMEPAGE_PVE_KEYCHAIN_ACCOUNT="${HOMEPAGE_PVE_KEYCHAIN_ACCOUNT:-homepage@pve!homepage}"
 HARBOR_ADMIN_KEYCHAIN_SERVICE="${HARBOR_ADMIN_KEYCHAIN_SERVICE:-dev.craftz.homelab.harbor-admin}"
@@ -249,19 +255,20 @@ unset harbor_admin_password harbor_secret_key harbor_database_password
 
 # Workload Pods get a read-only Harbor robot account. The CI publisher uses a
 # different push-capable credential that is never copied into Kubernetes.
-harbor_pull_password="$(security find-generic-password \
-  -s "${HARBOR_PULL_KEYCHAIN_SERVICE}" -a "${HARBOR_PULL_KEYCHAIN_ACCOUNT}" -w 2>/dev/null)" \
-  || die "Harbor pull credential is missing from macOS Keychain"
-harbor_pull_auth="$(printf '%s:%s' "${HARBOR_PULL_KEYCHAIN_ACCOUNT}" \
-  "${harbor_pull_password}" | openssl base64 -A)"
-harbor_pull_config="$(jq -cn --arg auth "${harbor_pull_auth}" \
-  '{auths: {
-    "harbor.tailb6c7d.ts.net": {auth: $auth},
-    "172.16.40.201:5000": {auth: $auth}
-  }}')"
-harbor_pull_config_b64="$(printf '%s' "${harbor_pull_config}" | openssl base64 -A)"
-
-for namespace in ai-agent ai-worker moshitoku moshitoku-scraper; do
+apply_harbor_pull_secret() {
+  local namespace="$1" service="$2" account="$3"
+  local harbor_pull_password harbor_pull_auth harbor_pull_config harbor_pull_config_b64
+  harbor_pull_password="$(security find-generic-password \
+    -s "${service}" -a "${account}" -w 2>/dev/null)" \
+    || die "Harbor pull credential for ${namespace} is missing from macOS Keychain"
+  harbor_pull_auth="$(printf '%s:%s' "${account}" \
+    "${harbor_pull_password}" | openssl base64 -A)"
+  harbor_pull_config="$(jq -cn --arg auth "${harbor_pull_auth}" \
+    '{auths: {
+      "harbor.tailb6c7d.ts.net": {auth: $auth},
+      "172.16.40.201:5000": {auth: $auth}
+    }}')"
+  harbor_pull_config_b64="$(printf '%s' "${harbor_pull_config}" | openssl base64 -A)"
   kubectl apply -f - >/dev/null <<EOF
 apiVersion: v1
 kind: Secret
@@ -272,9 +279,17 @@ type: kubernetes.io/dockerconfigjson
 data:
   .dockerconfigjson: ${harbor_pull_config_b64}
 EOF
+}
+
+for namespace in ai-agent ai-worker; do
+  apply_harbor_pull_secret "${namespace}" "${HARBOR_PULL_KEYCHAIN_SERVICE}" "${HARBOR_PULL_KEYCHAIN_ACCOUNT}"
 done
-ok "Harbor read-only pull credential reconciled"
-unset harbor_pull_password harbor_pull_auth harbor_pull_config harbor_pull_config_b64
+# Project-scoped moshitoku credentials must survive rebuilds without reverting
+# to the unrelated ai-business robot. Reconcile them with reconcile-moshitoku-harbor.py.
+for namespace in moshitoku moshitoku-scraper; do
+  apply_harbor_pull_secret "${namespace}" 'dev.craftz.homelab.harbor-moshitoku-k8s-pull' 'robot$moshitoku+k8s-pull'
+done
+ok "Harbor project-scoped read-only pull credentials reconciled"
 
 # Gateway-facing and Worker-facing tokens are deliberately independent. They
 # are generated once and retained in Keychain; changing one trust boundary does
@@ -317,6 +332,36 @@ stringData:
   worker-api-token: "${agent_worker_token}"
 EOF
 unset agent_api_token agent_worker_token
+
+# The Workflow Controller's credential for the Gateway's internal surface. The
+# same value has to be `CONTROLLER_API_TOKEN` in the Gateway VM's `.env`: the
+# Gateway is what this token authenticates to, and it is not in this cluster.
+if controller_api_token="$(security find-generic-password \
+    -s "${CONTROLLER_KEYCHAIN_SERVICE}" -a "${CONTROLLER_KEYCHAIN_ACCOUNT}" -w 2>/dev/null)"; then
+  info "Using the existing Workflow Controller token from macOS Keychain"
+else
+  info "Creating the Workflow Controller token in macOS Keychain"
+  controller_api_token="$(openssl rand -hex 32)"
+  security add-generic-password -U \
+    -s "${CONTROLLER_KEYCHAIN_SERVICE}" \
+    -a "${CONTROLLER_KEYCHAIN_ACCOUNT}" \
+    -w "${controller_api_token}" >/dev/null
+  info "Set CONTROLLER_API_TOKEN in the Gateway VM's .env to this value and restart its internal surface"
+fi
+[[ -n "${controller_api_token}" ]] || die "Workflow Controller token is empty"
+
+kubectl apply -f - >/dev/null <<EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ai-business-workflow-controller
+  namespace: ai-agent
+type: Opaque
+stringData:
+  gateway-internal-url: "${GATEWAY_INTERNAL_URL}"
+  controller-api-token: "${controller_api_token}"
+EOF
+unset controller_api_token
 
 # MinIO root and Loki's dedicated S3 credential are independent. Loki never
 # receives the MinIO administrator password. Values are generated only once and
