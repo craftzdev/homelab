@@ -51,3 +51,39 @@ GitHub Actions → テスト → build → Harbor → Sigstore 署名 → digest
 
 UI と API の分離、および main から署名済みイメージを本番配置する経路は接続済み。
 設定を編集してから候補試験・人間承認を通す全経路は、上記2点の接続待ち。
+
+
+## Configuration automatic delivery integration — 2026-09-21
+
+Merged homelab #67, Agent #7, Worker #7, and Control Plane #10. Gateway API source was backed up with the database to
+`/opt/ai-business-gateway-backups/config-autodeploy-20260921` before updating only the two changed API files.
+The public/internal/callback API containers are healthy and the dispatch scheduler is running.
+`/v1/config/contract` exposes `automatic_promotion` and `deployment_observation` on API version 1.0.
+
+The signed-image pipelines completed, all three Argo CD applications are Synced/Healthy, and the live Deployment
+source annotations and observed generations match. Worker intake is enabled with one usable slot and no unconfirmed execution.
+
+| Deployment | Source revision | Observed generation | Available replicas |
+|---|---|---|---|
+| ai-business-agent | `175e4fa1fcf3dc2c0e52909e2ad65ebabf50b51a` | 12 | 1/1 |
+| ai-business-workflow-controller | `175e4fa1fcf3dc2c0e52909e2ad65ebabf50b51a` | 4 | 1/1 |
+| ai-business-agent-edge | `175e4fa1fcf3dc2c0e52909e2ad65ebabf50b51a` | 9 | 1/1 |
+| ai-business-worker | `3a0590c2442f112df9c0c542708b8af81b402b4c` | 16 | 1/1 |
+| ai-business-control-plane | `55192cc2f26f9724ee15608ee0c599eab23cc12e` | 9 | 1/1 |
+
+Images:
+
+- `172.16.40.201:5000/ai-business/ai-business-agent@sha256:bd00f71206bdbb7496bf18c50f3e23761643100b5f584aca26c3d3b1b10e4c7a`
+- `172.16.40.201:5000/ai-business/ai-business-worker@sha256:c0f2796e0e89602421bed25ba67b9040b93d9cb75c356cbb9b5e45aeb3c08316`
+- `172.16.40.201:5000/ai-business/ai-business-control-plane@sha256:5224b605b0985161ef8186deca1bf1e28eef4d786bb7be802a4b74a7f485d950`
+
+The production settings/profile UI loads both Agent and Worker inventory and shows the automatic-delivery workflow.
+The release checkbox and CSRF/revision forwarding are covered by the 68 UI tests. Gateway: 268 passed / 1 skipped.
+Controller: 25 passed, including candidate recovery, immutable evidence, rollout observation, broker credential separation,
+restricted network policy, fixed upstream destinations, and sanitized errors.
+Codex 0.153.4 also completed a local mock SSE response through the custom provider with no auth file or Authorization header.
+
+The dedicated GitHub App and trial-provider credential are **not provisioned**. Neither the configuration controller nor
+the trial broker has been started. No candidate has been sent to the real model or automatically promoted in this validation.
+The credential-mount issue found in #67 was corrected before activation: only the separate broker Pod can mount provider auth;
+candidate Pods have no provider credential and no direct Internet/DNS egress.

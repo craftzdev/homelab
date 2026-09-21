@@ -32,6 +32,8 @@ Controller は GitHub、隔離した実行試験、配置確認を扱う。UI �
 候補 PR の Python・Dockerfile・workflow を試験用資格情報で実行しない。
 対象設定をデータとして ConfigMap に固定し、Agent image の既存 registry で読み込む。
 Worker image の既存 executor が、影響する profile ごとに本物の Codex を起動する。
+Codex は資格情報を持たず、別 Pod の固定接続先 Responses broker を使う。
+broker はこの smoke では tools を無効化し、保存を無効化する。
 
 これは **実モデル接続と設定供給の smoke test** であり、業務成果の品質評価や
 すべてのツール・付属スクリプトの動作保証ではない。チェック対象は profile、schema、
@@ -39,8 +41,12 @@ capabilities、SKILL.md、共通ハーネス。付属スクリプト等の変更
 本番の action の入力/出力契約は config-check と main の通常 CI でも検証する。
 
 Job は本番 PVC、Gateway token、GitHub token、ServiceAccount token を持たない。
-専用 namespace、read-only rootfs、非 root、resource quota、30分 deadline、public HTTPS
-と DNS だけの egress を使用する。Codex 認証だけを専用 Secret から渡す。
+専用 namespace、read-only rootfs、非 root、resource quota、30分 deadline を使用する。
+試験 Pod は Secret を一切 mount せず、直接のインターネット・DNS 通信も許可しない。
+ClusterIP の broker だけに通信する。broker は別 Pod / UID で、試験との共有 volume はなく、
+資格情報を専用 Secret から読む。broker の通信先は Cilium policy でも api.openai.com / chatgpt.com の443だけに限定する。
+HTTP relay は固定 Responses endpoint のみ、redirect を拒否し、上流の error 本文や認証 header を返さない。
+リクエストは1MB、応答は2MB、90秒、単一同時接続、30分あたり128件まで。
 ログにモデル出力・認証情報は残さず、合否とハッシュを Gateway に保存する。
 合格済みの同じ候補を繰り返しモデル実行しない。読み込み元の設定や試験 runtime が
 変われば再利用を拒否する。完了 Job と入力 ConfigMap は7日後に Kubernetes が回収する。
@@ -52,6 +58,8 @@ Job は本番 PVC、Gateway token、GitHub token、ServiceAccount token を持�
 Gateway の `automatic_promotion` / `deployment_observation` API、Control Plane の UI、
 Agent / Worker の source-revision 付き image promotion を先に配置する。
 Controller は Gateway VM 上の独立した systemd service として稼働する。
+試験 namespace には Cilium の FQDN / DNS policy が必要。導入時に broker の Service IP を
+trial-settings.json に記録し、broker の準備完了を確認してから Controller を起動する。
 `deploy/install.py` は一回の導入で RBAC / trial namespace / secret / service を設定する。
 VM に Python 3 と venv、呼び出し元に kubectl / SSH とこの requirements が必要。
 
@@ -72,7 +80,10 @@ python deploy/install.py --kubeconfig /path/to/kubeconfig \
 # 利用者が明示的に選んだ場合のみ --trial-auth-file の代わりに --reuse-worker-auth を使う。
 ```
 
-App ID・installation ID・鍵・試験用認証が必須。利用者の gh token を常駐用にコピーしない。
+App ID・installation ID・鍵・試験用認証が必須。
+試験用 auth.json は専用 API key を推奨する。明示的に既存 Codex 認証を再利用する場合も
+broker のみへ配置し、access token と account ID が必要。ChatGPT token の期限切れは試験失敗となり、
+資格情報を更新するまで配布を進めない。この broker は OAuth refresh token を使用しない。利用者の gh token を常駐用にコピーしない。
 Secret は stdin で転送し、argv や Git に入れない。VM の `/etc/ai-config-controller` は
 root 管理・service group 読み取りだけ。Kubernetes は専用 ServiceAccount の token を使用し、
 管理者 kubeconfig を転送しない。この VM 用 token は長期資格情報なので、VM の廃止時は
@@ -92,3 +103,8 @@ python -m pytest -q
 Gateway tests は自動承認の権限・固定版・失敗時停止・配布証跡を DB まで確認する。
 Controller tests は token 更新、候補との証跡の結び付け、試験失敗、再実行抑止、
 Pod の隔離、複数配置先の確認、古い版・CI 失敗・タイムアウトを扱う。
+
+Codex のカスタム provider は [公式の認証設定](https://developers.openai.com/codex/auth) に従う。
+検証: Controller 25 tests passed。Codex 0.153.4 とローカルの模擬 SSE 接続で、
+認証ファイル・Authorization header なしに最終応答を受け取れることを確認した。
+実プロバイダーへの接続と本番の候補配布は専用認証の設定後に検証する。

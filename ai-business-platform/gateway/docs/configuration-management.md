@@ -135,7 +135,9 @@ Harness は ConfigMap と Pod template の候補 ID により新 Pod への反�
 導入方法と認証・隔離の境界は [Controller README](../../config-controller/README.md) を参照。
 専用 GitHub App と試験用資格情報の設定が完了するまで Controller を起動しない。
 
-実装検証: Gateway 268 passed / 1 skipped、Control Plane 68 passed、Controller 22 passed。
+実装検証: Gateway 268 passed / 1 skipped、Control Plane 68 passed、Controller 25 passed。
 3リポジトリのイメージ昇格を一時 Git repository で確認した。
 候補生成・実行試験の再起動回復・証跡不一致拒否・全配置先の反映判定・権限分離・再確認をテストした。
 この記録は専用 App での本番候補配布の完了を意味しない。本番の接続検証は認証設定後に別途記録する。
+
+試験用認証は候補 Pod に渡さず、別 Pod の固定接続先 broker だけに配置する。候補 Pod は broker 以外へ通信できない。

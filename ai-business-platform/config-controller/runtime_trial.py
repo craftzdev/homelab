@@ -12,6 +12,11 @@ def sha(value):
     return hashlib.sha256(value.encode()).hexdigest()
 
 
+def runtime_digest(settings):
+    code = {name: sha(Path(__file__).with_name(name).read_text()) for name in ('trial_prepare.py', 'trial_run.py', 'trial_broker.py')}
+    return sha(json.dumps({'settings': settings, 'code': code}, sort_keys=True))
+
+
 class Trials:
     def __init__(self, kube, gateway, github, settings):
         self.kube, self.gateway, self.github, self.settings = kube, gateway, github, settings
@@ -23,7 +28,7 @@ class Trials:
         from controller import Blocked
         inventory = self.gateway('GET', '/v1/config/inventory')
         baseline = sha(json.dumps({doc['id']: doc['sha256'] for doc in inventory['documents']}, sort_keys=True))
-        runtime_version = sha(json.dumps(self.settings, sort_keys=True))
+        runtime_version = runtime_digest(self.settings)
         prior = proof.get('runtime_trial', {})
         if prior.get('passed') is True:
             if (prior.get('head_sha') != proof['head_sha'] or prior.get('content_sha256') != release['content_sha256']
@@ -58,7 +63,7 @@ class Trials:
                     if sha(content) != doc['sha256']:
                         raise Blocked('Git base and installed trial baseline differ')
             source.update(content=release['content'], sha256=release['content_sha256'])
-            bundle = {'source': release['source'], 'documents': docs, 'head_sha': proof['head_sha'], 'content_sha256': release['content_sha256'], 'baseline_sha256': baseline, 'runtime_sha256': runtime_version}
+            bundle = {'broker_url': self.settings['broker_url'], 'source': release['source'], 'documents': docs, 'head_sha': proof['head_sha'], 'content_sha256': release['content_sha256'], 'baseline_sha256': baseline, 'runtime_sha256': runtime_version}
             bundle['bundle_sha256'] = sha(json.dumps(bundle, sort_keys=True))
             if len(json.dumps(bundle).encode()) > 900_000:
                 raise Blocked('trial input exceeds the ConfigMap budget')
@@ -115,7 +120,6 @@ class Trials:
                     'env': [{'name': 'PYTHONPATH', 'value': '/opt/agent' if name == 'prepare' else '/opt/worker'}, {'name': 'PYTHONDONTWRITEBYTECODE', 'value': '1'}],
                     'resources': {'requests': {'cpu': '100m', 'memory': '256Mi'}, 'limits': {'cpu': '2', 'memory': '2Gi'}}}
         trial = container('trial', self.settings['worker_image'], '/candidate/run.py')
-        trial['volumeMounts'].append({'name': 'codex-auth', 'mountPath': '/auth', 'readOnly': True})
         return {'apiVersion': 'batch/v1', 'kind': 'Job', 'metadata': {'name': name, 'labels': {'app': 'config-trial'}, 'annotations': annotations},
                 'spec': {'backoffLimit': 0, 'activeDeadlineSeconds': 1800, 'ttlSecondsAfterFinished': 604800,
                          'template': {'metadata': {'labels': {'app': 'config-trial'}}, 'spec': {
@@ -124,4 +128,4 @@ class Trials:
                              'securityContext': {'runAsNonRoot': True, 'runAsUser': 10001, 'runAsGroup': 10001, 'fsGroup': 10001, 'seccompProfile': {'type': 'RuntimeDefault'}},
                              'imagePullSecrets': [{'name': 'harbor-pull'}],
                              'initContainers': [container('prepare', self.settings['agent_image'], '/candidate/prepare.py')], 'containers': [trial],
-                             'volumes': [{'name': 'candidate', 'configMap': {'name': name}}, {'name': 'work', 'emptyDir': {'sizeLimit': '2Gi'}}, {'name': 'tmp', 'emptyDir': {'sizeLimit': '256Mi'}}, {'name': 'codex-auth', 'secret': {'secretName': 'config-trial-codex-auth', 'defaultMode': 288}}]}}}}
+                             'volumes': [{'name': 'candidate', 'configMap': {'name': name}}, {'name': 'work', 'emptyDir': {'sizeLimit': '2Gi'}}, {'name': 'tmp', 'emptyDir': {'sizeLimit': '256Mi'}}]}}}}
