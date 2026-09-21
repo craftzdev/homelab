@@ -13,6 +13,19 @@ proxyする。internal surfaceは Workflow Controller 専用で、`CONTROLLER_AP
 持つ主体だけが `/internal/v1/...` を使える。Grok とブラウザが通る public ingress には
 出さない。
 
+Gateway VM 上の Tailscale Serve は次の2経路である。callback は root、internal は
+`/internal` 配下に置く（同じ 443 なので、Tailnet ACL は `tcp:443` のままで足りる）。
+
+```
+sudo tailscale serve --bg http://127.0.0.1:8081                              # /
+sudo tailscale serve --bg --set-path=/internal http://127.0.0.1:8082/internal  # /internal/v1/...
+```
+
+cluster 側の Workflow Controller には secret `ai-business-workflow-controller` で
+`gateway-internal-url=https://ai-gateway-01.<tailnet>.ts.net` と、VM の `.env` と同じ
+`controller-api-token` を渡す（`scripts/bootstrap-cluster-secrets.sh` が macOS Keychain
+から材料化する）。
+
 The public listener intentionally remains on loopback. The deployed Cloudflare
 Tunnel exposes it at `https://gateway.craftz.dev`; the application Bearer token
 and Cloudflare Access Service Auth are active. The Gateway validates the Access
