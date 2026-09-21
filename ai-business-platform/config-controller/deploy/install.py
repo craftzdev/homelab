@@ -19,7 +19,7 @@ sys.path.insert(0, str(ROOT))
 from github_auth import GitHubAuth
 from controller import HTTP
 
-FILES = ['controller.py','github_auth.py','kubernetes_api.py','runtime_trial.py','trial_prepare.py','trial_run.py','rollout.py','requirements.txt']
+FILES = ['controller.py','github_auth.py','kubernetes_api.py','runtime_trial.py','trial_prepare.py','trial_run.py','trial_broker.py','rollout.py','requirements.txt']
 
 REMOTE_INSTALL = r'''
 import base64,grp,json,os,pathlib,subprocess,sys
