@@ -1,0 +1,24 @@
+[Unit]
+Description=AI Gateway configuration deployment controller
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=config-controller
+Group=config-controller
+WorkingDirectory=/opt/ai-config-controller
+EnvironmentFile=/etc/ai-config-controller/runtime.env
+ExecStart=/opt/ai-config-controller/venv/bin/python /opt/ai-config-controller/controller.py --targets /etc/ai-config-controller/targets.json
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

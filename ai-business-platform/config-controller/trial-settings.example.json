@@ -1,0 +1,5 @@
+{
+  "namespace": "ai-config-trial",
+  "agent_image": "172.16.40.201:5000/ai-business/ai-business-agent@sha256:b124508074d33345be75586b2c8a1ef7f820e57c009e5ba2fc9ba7d3ad7ad5cf",
+  "worker_image": "172.16.40.201:5000/ai-business/ai-business-worker@sha256:ce5d391fc97ab0818cf382b3a8c6e72f1304bb331cb8eee8958ff15b2aea9285"
+}

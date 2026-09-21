@@ -17,6 +17,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import PurePosixPath
+from datetime import datetime, timezone
 
 import yaml
 
@@ -31,7 +32,7 @@ class HTTP:
 
     def __call__(self, method, path, body=None):
         request = urllib.request.Request(self.base + path, method=method,
-            headers={"Accept": "application/json", "Content-Type": "application/json", "User-Agent": "ai-config-controller", **self.headers},
+            headers={"Accept": "application/json", "Content-Type": "application/json", "User-Agent": "ai-config-controller", **(self.headers() if callable(self.headers) else self.headers)},
             data=json.dumps(body).encode() if body is not None else None)
         with urllib.request.urlopen(request, timeout=30) as response:
             raw = response.read(4_194_305)
@@ -66,8 +67,9 @@ def managed_path(source, target):
 
 
 class GitOps:
-    def __init__(self, github, targets):
+    def __init__(self, github, targets, *, trials=None, rollouts=None):
         self.github, self.targets = github, targets
+        self.trials, self.rollouts = trials, rollouts
 
     def reconcile(self, release):
         target = self.targets.get(release["source"]["repository"])
@@ -80,6 +82,10 @@ class GitOps:
             raise Blocked("invalid configured branch")
         api = lambda method, path, body=None: self.github(method, f"/repos/{repo}" + path, body)
         path, key = managed_path(release["source"], target)
+        if release['state'] in {'MERGED', 'DEPLOYING'}:
+            if self.rollouts is None:
+                raise Blocked('deployment observer is not configured')
+            return self.rollouts.reconcile(release, target)
         if digest(release["content"]) != release["content_sha256"]:
             raise Blocked("release digest mismatch")
         branch = "codex/config-" + release["id"]
@@ -163,7 +169,7 @@ class GitOps:
         if pr.get("merged"):
             if release["state"] != "PROMOTE_REQUESTED":
                 raise Blocked("pull request was merged outside the promotion request")
-            return "MERGED", {**proof, "merge_sha": pr["merge_commit_sha"]}
+            return "MERGED", {**proof, "merge_sha": pr["merge_commit_sha"], "merged_at": pr.get("merged_at") or datetime.now(timezone.utc).isoformat()}
         if pr["state"] != "open":
             raise Blocked("pull request is closed")
         current_base = api("GET", "/git/ref/heads/" + target["branch"])["object"]["sha"]
@@ -173,8 +179,9 @@ class GitOps:
         if report["total_count"] > 100:
             raise Blocked("too many CI checks; cannot establish complete evidence")
         required = target["required_checks"]
-        trial = target["runtime_trial_check"]
-        if not required or trial not in required:
+        trial = target.get("runtime_trial_check", "config-runtime-trial")
+        native_trial = target.get("runtime_trial") == "kubernetes"
+        if not required or (not native_trial and trial not in required):
             raise Blocked("target must require a runtime trial check")
         # All checks with a required name must pass. Queued reruns invalidate a
         # previous success; an arbitrary check from another app is not evidence.
@@ -185,13 +192,23 @@ class GitOps:
             for c in checks if c["name"] == name)
         proof.update(checks_passed=all(passed(name) for name in required), runtime_trial_passed=passed(trial),
                      required_checks=required, checks=[{"name": c["name"], "status": c["status"], "conclusion": c["conclusion"]} for c in checks if c["name"] in required])
+        if native_trial:
+            if self.trials is None:
+                raise Blocked('isolated runtime trial is not configured')
+            receipt = self.trials.reconcile(release, proof, target) if proof['checks_passed'] else {'passed': False, 'status': 'WAITING_FOR_CI'}
+            proof['runtime_trial'] = receipt
+            proof['runtime_trial_passed'] = receipt.get('passed') is True
+            proof['checks_passed'] = proof['checks_passed'] and proof['runtime_trial_passed']
+            proof['checks'].append({'name': 'isolated-runtime-smoke', 'status': receipt.get('status'), 'conclusion': 'success' if receipt.get('passed') else None})
         if release["state"] == "PROMOTE_REQUESTED":
             if not proof["checks_passed"]:
                 raise Blocked("CI or trial no longer passes")
+            if api("GET", "/git/ref/heads/" + target["branch"])["object"]["sha"] != proof["base_sha"]:
+                raise Blocked("target branch changed while checking the runtime trial")
             merged = api("PUT", f"/pulls/{proof['pr_number']}/merge", {"sha": proof["head_sha"], "merge_method": "merge"})
             if not merged.get("merged"):
                 raise Blocked("GitHub did not merge the release")
-            return "MERGED", {**proof, "merge_sha": merged["sha"]}
+            return "MERGED", {**proof, "merge_sha": merged["sha"], "merged_at": datetime.now(timezone.utc).isoformat()}
         return ("VERIFIED" if proof["checks_passed"] else "REVIEW"), proof
 
 
@@ -200,7 +217,7 @@ def tick(gateway, gitops):
         try:
             state, evidence = gitops.reconcile(release)
         except Blocked as failure:
-            state, evidence = "BLOCKED", {**release["evidence"], "reason": str(failure)}
+            state, evidence = ("DEPLOYMENT_FAILED" if release["state"] in {"MERGED", "DEPLOYING"} else "BLOCKED"), {**release["evidence"], "reason": str(failure)}
         except (OSError, ValueError, KeyError, TypeError, yaml.YAMLError):
             # Transient/uncertain upstream writes are retried with the same branch.
             # Never log tokens or upstream response bodies.
@@ -224,10 +241,18 @@ def main():
     if os.environ.get("CF_ACCESS_CLIENT_ID") and os.environ.get("CF_ACCESS_CLIENT_SECRET"):
         headers.update({"CF-Access-Client-Id": os.environ["CF_ACCESS_CLIENT_ID"], "CF-Access-Client-Secret": os.environ["CF_ACCESS_CLIENT_SECRET"]})
     gateway = HTTP(os.environ["GATEWAY_URL"], headers)
-    github = HTTP("https://api.github.com", {"Authorization": "Bearer " + os.environ["GITHUB_TOKEN"], "X-GitHub-Api-Version": "2022-11-28"})
+    from github_auth import GitHubAuth
+    from kubernetes_api import Kubernetes
+    from runtime_trial import Trials
+    from rollout import Rollouts
+    github = HTTP("https://api.github.com", GitHubAuth([target['repository'] for target in targets.values()]))
+    kube = Kubernetes()
+    with open(os.environ['TRIAL_SETTINGS_FILE']) as stream:
+        trial_settings = json.load(stream)
+    gitops = GitOps(github, targets, trials=Trials(kube, gateway, github, trial_settings), rollouts=Rollouts(kube, github))
     while True:
         try:
-            tick(gateway, GitOps(github, targets))
+            tick(gateway, gitops)
         except (OSError, ValueError):
             logging.warning("Gateway work feed unavailable; retrying next tick")
             if args.once:

@@ -108,3 +108,45 @@ def test_unknown_inventory_is_never_applied(client, source, monkeypatch):
     monkeypatch.setattr(config, "fetch_inventory", lambda: config.error("UNAVAILABLE", "offline", 502))
     detail = client.get(f'/v1/config/releases/{row["id"]}', headers=BOT).json()
     assert detail["observation"]["status"] == "UNKNOWN"
+
+
+def test_auto_release_is_human_opt_in_and_survives_draft_edits(client, source):
+    item = draft(client, source)
+    path = f'/v1/config/drafts/{item["id"]}'
+    client.post(path + '/validate', headers=EDITOR, json={'expected_revision': 1})
+    body = {'expected_revision': 2, 'auto_promote': True}
+    assert client.post(path + '/release', headers=CONTROLLER, json=body).status_code == 401
+    row = client.post(path + '/release', headers=EDITOR, json=body).json()
+    assert row['auto_promote'] is True
+    assert client.post(path + '/release', headers=EDITOR, json={**body, 'auto_promote': False}).status_code == 409
+    client.patch(path, headers=EDITOR, json={'expected_revision': 2, 'content': 'A later unapproved draft'})
+    reviewed = report(client, row, 'REVIEW').json()
+    proof = {'head_sha': 'a'*40, 'base_sha': 'b'*40, 'content_sha256': row['content_sha256'], 'checks_passed': True, 'runtime_trial_passed': False}
+    assert report(client, reviewed, 'VERIFIED', proof).status_code == 409
+    proof['runtime_trial_passed'] = True
+    approved = report(client, reviewed, 'VERIFIED', proof).json()
+    assert approved['state'] == 'PROMOTE_REQUESTED'
+    assert approved['content'] == 'New instructions\n'
+    history = client.get('/v1/config/releases/' + row['id'], headers=BOT).json()['history']
+    assert any(h['type'] == 'config.release_promote_requested' and h['actor'] == 'config-editor:operator' for h in history)
+    proof['merge_sha'] = 'c'*40
+    merged = report(client, approved, 'MERGED', proof).json()
+    work = client.get('/v1/config/controller/work', headers=CONTROLLER).json()['releases']
+    assert any(r['id'] == row['id'] for r in work)
+    assert report(client, merged, 'DEPLOYED', proof).status_code == 409
+    assert report(client, merged, 'DEPLOYING', {**proof, 'head_sha': 'd'*40}).status_code == 409
+    pending = report(client, merged, 'DEPLOYING', proof).json()
+    failed = report(client, pending, 'DEPLOYMENT_FAILED', {**proof, 'deployment_started_at': '2026-01-01T00:00:00+00:00', 'deployment': {'ready': False, 'reason': 'timeout'}}).json()
+    recheck = '/v1/config/releases/' + row['id'] + '/recheck'
+    for headers in (BOT, CONTROLLER):
+        assert client.post(recheck, headers=headers, json={'expected_revision': failed['revision']}).status_code == 401
+    assert client.post(recheck, headers=EDITOR, json={'expected_revision': pending['revision']}).status_code == 409
+    pending = client.post(recheck, headers=EDITOR, json={'expected_revision': failed['revision']}).json()
+    assert pending['state'] == 'DEPLOYING'
+    assert pending['evidence']['deployment_started_at'] != failed['evidence']['deployment_started_at']
+    assert pending['evidence']['merge_sha'] == proof['merge_sha']
+    assert client.post(recheck, headers=EDITOR, json={'expected_revision': pending['revision']}).status_code == 409
+    done = report(client, pending, 'DEPLOYED', {**proof, 'deployment': {'ready': True, 'resources': [{'name': 'agent', 'images': {'agent':'registry/agent@sha256:'+'e'*64}}]}})
+    assert done.status_code == 200, done.text
+    assert done.json()['state'] == 'DEPLOYED'
+    assert not any(r['id'] == row['id'] for r in client.get('/v1/config/controller/work', headers=CONTROLLER).json()['releases'])

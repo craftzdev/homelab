@@ -30,12 +30,17 @@ CREATE TABLE IF NOT EXISTS config_releases (
  UNIQUE(draft_id, draft_revision)
 );
 ALTER TABLE config_releases ADD COLUMN IF NOT EXISTS last_polled_at TIMESTAMPTZ;
+ALTER TABLE config_releases ADD COLUMN IF NOT EXISTS auto_promote BOOLEAN NOT NULL DEFAULT FALSE;
 """
 
 
 class Revision(BaseModel):
     model_config = ConfigDict(extra="forbid")
     expected_revision: int = Field(ge=1)
+
+
+class ReleaseRequest(Revision):
+    auto_promote: bool = False
 
 
 class Intake(BaseModel):
@@ -46,7 +51,7 @@ class Intake(BaseModel):
 
 
 class Report(Revision):
-    state: Literal["REVIEW", "VERIFIED", "MERGED", "BLOCKED"]
+    state: Literal["REVIEW", "VERIFIED", "MERGED", "DEPLOYING", "DEPLOYED", "DEPLOYMENT_FAILED", "BLOCKED"]
     # Only the isolated controller can supply this evidence. No arbitrary HTML.
     evidence: dict[str, Any]
 
@@ -61,7 +66,7 @@ def read(db, release_id, *, lock=False):
 def event(db, row, actor):
     tasks.record_event(db, aggregate_type="config_release", aggregate_id=str(row["id"]),
                        aggregate_revision=row["revision"], actor=actor, type="config.release_" + row["state"].lower(),
-                       payload={"content_sha256": row["content_sha256"], "state": row["state"]})
+                       payload={"content_sha256": row["content_sha256"], "state": row["state"], "auto_promote": row.get("auto_promote", False)})
 
 
 def transition(db, row, state, actor, evidence=None):
@@ -85,8 +90,9 @@ def commands(row):
     return [
         {"type": "promote", "label": "この版を Git に反映する", "enabled": row["state"] == "VERIFIED",
          "reason": None if row["state"] == "VERIFIED" else "CI・実行試験の合格確認が必要です"},
-        {"type": "rollback", "label": "変更前に戻す下書きを作る", "enabled": row["state"] in {"MERGED", "DEPLOYED"},
-         "reason": None if row["state"] in {"MERGED", "DEPLOYED"} else "Git 反映後に使用できます"},
+        {"type": "rollback", "label": "変更前に戻す下書きを作る", "enabled": row["state"] in {"MERGED", "DEPLOYING", "DEPLOYED", "DEPLOYMENT_FAILED"},
+         "reason": None if row["state"] in {"MERGED", "DEPLOYING", "DEPLOYED", "DEPLOYMENT_FAILED"} else "Git 反映後に使用できます"},
+        {"type": "recheck", "label": "配布状態を再確認する", "enabled": row["state"] == "DEPLOYMENT_FAILED", "reason": None},
     ]
 
 
@@ -139,12 +145,14 @@ def build_router(*, pool, auth, config_principal: Callable):
         return row
 
     @router.post("/drafts/{draft_id}/release", status_code=201)
-    def create(draft_id: uuid.UUID, request: Revision, actor: str = Depends(editor)):
+    def create(draft_id: uuid.UUID, request: ReleaseRequest, actor: str = Depends(editor)):
         with pool.connection() as db:
             draft = config.read_draft(db, draft_id, lock=True)
             config.check_revision(draft, request.expected_revision)
             existing = db.execute("SELECT * FROM config_releases WHERE draft_id=%s AND draft_revision=%s", (draft_id, draft["revision"])).fetchone()
             if existing:
+                if existing["auto_promote"] != request.auto_promote:
+                    config.error("RELEASE_MODE_CONFLICT", "作成済みの候補の配布承認方式は変更できません", 409)
                 return existing
             validation = draft["validation"] or {}
             if draft["state"] != "VALIDATED" or not validation.get("passed") or validation.get("content_sha256") != draft["content_sha256"]:
@@ -152,8 +160,8 @@ def build_router(*, pool, auth, config_principal: Callable):
             if draft["content"] == draft["base_content"]:
                 config.error("NO_CHANGE", "配布する変更がありません", 409)
             now = tasks.utcnow()
-            row = db.execute("INSERT INTO config_releases (id,draft_id,draft_revision,source,base_content,content,content_sha256,created_by,created_at,updated_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *",
-                             (uuid.uuid4(), draft_id, draft["revision"], json.dumps(draft["source"]), draft["base_content"], draft["content"], draft["content_sha256"], actor, now, now)).fetchone()
+            row = db.execute("INSERT INTO config_releases (id,draft_id,draft_revision,source,base_content,content,content_sha256,created_by,created_at,updated_at,auto_promote) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *",
+                             (uuid.uuid4(), draft_id, draft["revision"], json.dumps(draft["source"]), draft["base_content"], draft["content"], draft["content_sha256"], actor, now, now, request.auto_promote)).fetchone()
             event(db, row, actor)
         return row
 
@@ -172,7 +180,7 @@ def build_router(*, pool, auth, config_principal: Callable):
         with pool.connection() as db:
             row = read(db, release_id, lock=True)
             config.check_revision(row, request.expected_revision)
-            if row["state"] != "MERGED":
+            if row["state"] not in {"MERGED", "DEPLOYING", "DEPLOYED", "DEPLOYMENT_FAILED"}:
                 config.error("NOT_MERGED", "Git に反映済みの変更だけを戻せます", 409)
             inventory = config.fetch_inventory()
             if observed(row, inventory)["status"] != "MATCH":
@@ -188,10 +196,20 @@ def build_router(*, pool, auth, config_principal: Callable):
             config.revision_event(db, draft, actor, "config.rollback_drafted")
         return config.public(draft)
 
+    @router.post("/releases/{release_id}/recheck")
+    def recheck(release_id: uuid.UUID, request: Revision, actor: str = Depends(editor)):
+        with pool.connection() as db:
+            row = read(db, release_id, lock=True)
+            config.check_revision(row, request.expected_revision)
+            if row["state"] != "DEPLOYMENT_FAILED":
+                config.error("NOT_FAILED", "要確認の配布だけ再確認できます", 409)
+            proof = {**row["evidence"], "deployment_started_at": tasks.utcnow().isoformat()}
+            return transition(db, row, "DEPLOYING", actor, proof)
+
     @router.get("/controller/work")
     def work(actor: str = Depends(controller)):
         with pool.connection() as db:
-            rows = db.execute("WITH candidates AS (SELECT id FROM config_releases WHERE state IN ('QUEUED','REVIEW','VERIFIED','PROMOTE_REQUESTED') ORDER BY last_polled_at NULLS FIRST,created_at LIMIT 100 FOR UPDATE SKIP LOCKED) UPDATE config_releases SET last_polled_at=%s WHERE id IN (SELECT id FROM candidates) RETURNING *", (tasks.utcnow(),)).fetchall()
+            rows = db.execute("WITH candidates AS (SELECT id FROM config_releases WHERE state IN ('QUEUED','REVIEW','VERIFIED','PROMOTE_REQUESTED','MERGED','DEPLOYING') ORDER BY last_polled_at NULLS FIRST,created_at LIMIT 100 FOR UPDATE SKIP LOCKED) UPDATE config_releases SET last_polled_at=%s WHERE id IN (SELECT id FROM candidates) RETURNING *", (tasks.utcnow(),)).fetchall()
         return {"releases": rows}
 
     @router.post("/controller/releases/{release_id}/report")
@@ -199,19 +217,33 @@ def build_router(*, pool, auth, config_principal: Callable):
         if len(json.dumps(request.evidence)) > 16_384:
             config.error("EVIDENCE_TOO_LARGE", "検証結果が大きすぎます")
         allowed = {"QUEUED": {"REVIEW", "BLOCKED"}, "REVIEW": {"REVIEW", "VERIFIED", "BLOCKED"},
-                   "VERIFIED": {"VERIFIED", "REVIEW", "BLOCKED"}, "PROMOTE_REQUESTED": {"MERGED", "BLOCKED"}}
+                   "VERIFIED": {"VERIFIED", "REVIEW", "BLOCKED"}, "PROMOTE_REQUESTED": {"MERGED", "BLOCKED"},
+                   "MERGED": {"DEPLOYING", "DEPLOYED", "DEPLOYMENT_FAILED"},
+                   "DEPLOYING": {"DEPLOYING", "DEPLOYED", "DEPLOYMENT_FAILED"}}
         with pool.connection() as db:
             row = read(db, release_id, lock=True)
             config.check_revision(row, request.expected_revision)
             if request.state not in allowed.get(row["state"], set()):
                 config.error("INVALID_TRANSITION", "配布状態の遷移が不正です", 409)
-            if request.state in {"VERIFIED", "MERGED"}:
+            if request.state in {"VERIFIED", "MERGED", "DEPLOYING", "DEPLOYED", "DEPLOYMENT_FAILED"}:
                 proof = request.evidence
                 if (proof.get("content_sha256") != row["content_sha256"] or not proof.get("head_sha")
                     or proof.get("checks_passed") is not True or proof.get("runtime_trial_passed") is not True):
                     config.error("EVIDENCE_REQUIRED", "内容の版に対応した CI・実行試験の証跡が必要です", 409)
+            if row["state"] in {"MERGED", "DEPLOYING"}:
+                for field in ("head_sha", "base_sha", "merge_sha", "content_sha256", "pr_number"):
+                    if request.evidence.get(field) != row["evidence"].get(field):
+                        config.error("EVIDENCE_CHANGED", "承認した Git 版は変更できません", 409)
+            if request.state == "DEPLOYED":
+                deployment = request.evidence.get("deployment", {})
+                if deployment.get("ready") is not True or not deployment.get("resources"):
+                    config.error("ROLLOUT_EVIDENCE_REQUIRED", "配置先の反映確認が必要です", 409)
             if request.state == row["state"] and request.evidence == row["evidence"]:
                 return row
-            return transition(db, row, request.state, actor, request.evidence)
+            row = transition(db, row, request.state, actor, request.evidence)
+            if request.state == "VERIFIED" and row["auto_promote"]:
+                # Only the human's immutable, per-release opt-in authorizes this.
+                row = transition(db, row, "PROMOTE_REQUESTED", row["created_by"])
+            return row
 
     return router
