@@ -65,3 +65,29 @@ def test_installer_copies_only_credentials_the_broker_uses():
     assert json.loads(broker_auth(json.dumps(auth))) == {'tokens': {'access_token': 'access', 'account_id': 'account'}}
     with pytest.raises(ValueError): broker_auth(json.dumps({'tokens': {'access_token': 'access'}}))
     assert json.loads(broker_auth(json.dumps({'OPENAI_API_KEY': 'key', 'tokens': auth['tokens']}))) == {'OPENAI_API_KEY': 'key'}
+
+
+def test_relay_validates_sse_even_when_provider_omits_content_type(tmp_path,monkeypatch):
+    auth=tmp_path/'auth.json';auth.write_text(json.dumps({'OPENAI_API_KEY':'test-secret'}))
+    monkeypatch.setattr(Broker,'auth_path',auth)
+    Broker.calls=[]
+    class Response(io.BytesIO):
+        status=200
+        headers={}
+    payload=[b'event: response.completed\ndata: {"type":"response.completed"}\n\n']
+    class Opener:
+        def open(self,request,**kwargs): return Response(payload[0])
+    monkeypatch.setattr(Broker,'opener',Opener())
+    server=HTTPServer(('127.0.0.1',0),Broker)
+    thread=Thread(target=server.serve_forever,daemon=True);thread.start()
+    try:
+        url='http://127.0.0.1:'+str(server.server_port)+'/v1/responses'
+        request=urllib.request.Request(url,data=b'{"model":"test","stream":true}')
+        with urllib.request.urlopen(request,timeout=2) as response:
+            assert response.headers['Content-Type']=='text/event-stream'
+            assert response.read()==payload[0]
+        payload[0]=b'{"error":"test-secret"}\n'
+        with pytest.raises(urllib.error.HTTPError) as error:urllib.request.urlopen(request,timeout=2)
+        assert error.value.code==502 and b'test-secret' not in error.value.read()
+    finally:
+        server.shutdown();server.server_close();thread.join()

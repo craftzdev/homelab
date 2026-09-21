@@ -106,7 +106,7 @@ Controller tests は token 更新、候補との証跡の結び付け、試験�
 Pod の隔離、複数配置先の確認、古い版・CI 失敗・タイムアウトを扱う。
 
 Codex のカスタム provider は [公式の認証設定](https://developers.openai.com/codex/auth) に従う。
-検証: Controller 26 tests passed。Codex 0.153.4 とローカルの模擬 SSE 接続で、
+検証: Controller 27 tests passed。Codex 0.153.4 とローカルの模擬 SSE 接続で、
 認証ファイル・Authorization header なしに最終応答を受け取れることを確認した。
 実プロバイダーへの接続と本番の候補配布は専用認証の設定後に検証する。
 
