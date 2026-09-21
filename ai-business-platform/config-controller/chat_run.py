@@ -20,6 +20,7 @@ JSONをコードフェンスで囲まないでください。'''
 def parse_response(stream):
     """Accept only a bounded terminal Responses event, never a truncated delta."""
     total = 0
+    parts = {}
     for line in stream:
         total += len(line)
         if total > 2_000_000 or len(line) > 1_000_000:
@@ -27,18 +28,33 @@ def parse_response(stream):
         if not line.startswith(b'data:'):
             continue
         payload = line[5:].strip()
+        if not payload:
+            continue
         if payload == b'[DONE]':
             break
         event = json.loads(payload)
         if event.get('type') in {'error','response.failed','response.incomplete'}:
             raise ValueError('provider failed')
-        if event.get('type') != 'response.completed':
+        kind = event.get('type')
+        key = (event.get('output_index', 0), event.get('content_index', 0))
+        if kind == 'response.output_text.delta':
+            parts[key] = parts.get(key, '') + event['delta']
+        elif kind == 'response.output_text.done':
+            parts[key] = event['text']
+        elif kind == 'response.output_item.done' and event.get('item', {}).get('type') == 'message':
+            for index, part in enumerate(event['item'].get('content', [])):
+                if part.get('type') == 'output_text':
+                    parts[(event.get('output_index', 0), index)] = part['text']
+        if kind != 'response.completed':
             continue
         response = event['response']
         if response.get('status') != 'completed':
             raise ValueError('incomplete response')
         text = ''.join(part['text'] for item in response.get('output',[]) if item.get('type') == 'message'
                        for part in item.get('content',[]) if part.get('type') == 'output_text')
+        # The account-backed relay may omit output from its terminal envelope.
+        # Streamed text is accepted only after a completed terminal event.
+        text = text or ''.join(parts[key] for key in sorted(parts))
         value = json.loads(text)
         if not isinstance(value,dict) or set(value) != {'reply','proposal'}:
             raise ValueError('invalid response shape')

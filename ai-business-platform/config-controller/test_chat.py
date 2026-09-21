@@ -31,3 +31,13 @@ def test_recoverable_isolated_job():
     assert pod['containers'][0]['command']==['python','/candidate/chat.py']
     assert not any('secret' in v for v in pod['volumes']) and posts[1]['spec']['backoffLimit']==0
     with pytest.raises(Blocked):runner.reconcile({**turn,'request_sha256':'a'*64})
+
+
+def test_account_stream_without_terminal_output_is_assembled_once():
+    answer=json.dumps({'reply':'説明','proposal':None})
+    stream=event({'type':'response.output_text.delta','output_index':0,'content_index':0,'delta':answer[:10]})
+    stream+=event({'type':'response.output_text.delta','output_index':0,'content_index':0,'delta':answer[10:]})
+    stream+=event({'type':'response.output_text.done','output_index':0,'content_index':0,'text':answer})
+    with pytest.raises(ValueError):parse_response(io.BytesIO(stream))
+    stream+=event({'type':'response.completed','response':{'status':'completed','output':[]}})
+    assert parse_response(io.BytesIO(stream))=={'reply':'説明','proposal':None}
