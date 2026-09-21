@@ -56,3 +56,12 @@ def test_trial_has_no_internet_or_dns_and_credentials_belong_to_separate_pod():
     assert any('secret' in v for v in pod['volumes'])
     assert all('emptyDir' not in v and 'persistentVolumeClaim' not in v for v in pod['volumes'])
     assert pod['containers'][0]['command']==['python','/broker/broker.py']
+    assert 'exec' in pod['containers'][0]['readinessProbe']  # node probes cannot bypass namespace ingress isolation
+
+
+def test_installer_copies_only_credentials_the_broker_uses():
+    from deploy.install import broker_auth
+    auth = {'tokens': {'access_token': 'access', 'account_id': 'account', 'refresh_token': 'must-not-copy', 'id_token': 'must-not-copy'}}
+    assert json.loads(broker_auth(json.dumps(auth))) == {'tokens': {'access_token': 'access', 'account_id': 'account'}}
+    with pytest.raises(ValueError): broker_auth(json.dumps({'tokens': {'access_token': 'access'}}))
+    assert json.loads(broker_auth(json.dumps({'OPENAI_API_KEY': 'key', 'tokens': auth['tokens']}))) == {'OPENAI_API_KEY': 'key'}
