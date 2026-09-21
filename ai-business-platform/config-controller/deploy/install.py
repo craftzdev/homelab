@@ -77,8 +77,8 @@ def main():
         raise ValueError('deploy the automatic-promotion Gateway API before starting this controller')
     trial_auth = args.trial_auth_file.read_bytes() if args.trial_auth_file else base64.b64decode(kub_json('-n','ai-worker','get','secret','ai-business-worker-codex-auth','-o','json')['data']['auth.json'])
     parsed_auth=json.loads(trial_auth)
-    if not parsed_auth.get('OPENAI_API_KEY') and not (isinstance(parsed_auth.get('tokens'),dict) and parsed_auth['tokens'].get('access_token')):
-        raise ValueError('trial auth.json does not contain a Codex credential')
+    if not parsed_auth.get('OPENAI_API_KEY') and not (isinstance(parsed_auth.get('tokens'),dict) and parsed_auth['tokens'].get('access_token') and parsed_auth['tokens'].get('account_id')):
+        raise ValueError('trial auth.json requires an API key or a Codex access token with account ID')
     if args.check:
         print('App repository access, Gateway contract, and trial credential input validated; no changes made')
         return
