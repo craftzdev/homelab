@@ -166,3 +166,22 @@ def test_create_then_recover_reuses_the_same_git_branch_and_pr():
     recovered = gitops.reconcile(release("QUEUED"))
     assert first == recovered and first[0] == "REVIEW"
     assert len([m for m,_,_ in calls if m == "POST"]) == before
+
+
+def test_native_runtime_trial_is_required_before_auto_promotion_can_merge():
+    class Trial:
+        passed = False
+        def reconcile(self, *args):
+            return {'passed': self.passed, 'status': 'SUCCEEDED' if self.passed else 'RUNNING'}
+    trial, api = Trial(), GitHub()
+    target = {**TARGET, 'required_checks': ['config-check'], 'runtime_trial': 'kubernetes'}
+    gitops = GitOps(api, {'ai-business-agent': target}, trials=trial)
+    assert gitops.reconcile(release())[0] == 'REVIEW'
+    with pytest.raises(Blocked):
+        gitops.reconcile(release('PROMOTE_REQUESTED'))
+    trial.passed = True
+    state, proof = gitops.reconcile(release())
+    assert state == 'VERIFIED' and proof['runtime_trial_passed']
+    assert gitops.reconcile({**release('PROMOTE_REQUESTED'), 'evidence': proof})[0] == 'MERGED'
+    with pytest.raises(Blocked):
+        GitOps(api, {'ai-business-agent': target}).reconcile(release())

@@ -3,18 +3,54 @@
     "component": "agent",
     "repository": "craftzdev/ai-business-agent",
     "branch": "main",
-    "allowed_paths": ["profiles/", "schemas/"],
+    "allowed_paths": [
+      "profiles/",
+      "schemas/"
+    ],
     "pool": "stable",
-    "required_checks": ["config-check", "config-runtime-trial"],
-    "runtime_trial_check": "config-runtime-trial"
+    "required_checks": [
+      "config-check"
+    ],
+    "runtime_trial": "kubernetes",
+    "rollout_timeout_seconds": 43200,
+    "deployments": [
+      {
+        "namespace": "ai-agent",
+        "name": "ai-business-agent",
+        "path": "deploy/kubernetes/deployment.yaml"
+      },
+      {
+        "namespace": "ai-agent",
+        "name": "ai-business-workflow-controller",
+        "path": "deploy/kubernetes/workflow-controller.yaml"
+      },
+      {
+        "namespace": "ai-worker",
+        "name": "ai-business-agent-edge",
+        "path": "deploy/kubernetes/edge.yaml"
+      }
+    ]
   },
   "ai-business-worker": {
     "component": "worker",
     "repository": "craftzdev/ai-business-worker",
     "branch": "main",
-    "allowed_paths": ["skills/", "deploy/kubernetes/codex-harness.yaml"],
+    "allowed_paths": [
+      "skills/",
+      "deploy/kubernetes/codex-harness.yaml"
+    ],
     "pool": "stable",
-    "required_checks": ["config-check", "config-runtime-trial"],
-    "runtime_trial_check": "config-runtime-trial"
+    "required_checks": [
+      "config-check"
+    ],
+    "runtime_trial": "kubernetes",
+    "rollout_timeout_seconds": 43200,
+    "deployments": [
+      {
+        "namespace": "ai-worker",
+        "name": "ai-business-worker",
+        "path": "deploy/kubernetes/deployment.yaml"
+      }
+    ]
   }
 }

@@ -1,96 +1,94 @@
-# Configuration controller
+# Configuration deployment controller
 
-Control Plane は人間向けの管理画面、Gateway は設定変更・監査の正本、
-このプロセスは GitHub 書き込みを行う専用コントローラーです。
-通常の MCP/Bot 資格情報では設定の適用を承認できません。
+Control Plane は表示と管理 API 呼び出しを担当し、Gateway が下書き・承認・履歴を保持する。
+Controller は GitHub、隔離した実行試験、配置確認を扱う。UI に GitHub / Kubernetes の資格情報を渡さない。
 
-## Implemented path
+## Flow
 
-1. `/profiles` から配置中のプロファイル・スキル・ハーネスを選び、下書きを保存して基本検証する。
-2. 保存した版から配布候補を作成する。本文・編集元・ハッシュは固定され、後から下書きを編集しても変わらない。
-3. Controller が Git の編集元を照合し、`codex/config-<release UUID>` ブランチと PR を作成する。
-4. 固定した PR head に対する必須 CI と実行試験を確認する。未取得・失敗・再実行待ちは合格にならない。
-5. 人間が `/releases/<id>` で適用を要求する。Controller は head・base・CI を再確認し、同じ head を指定して merge する。
-6. 配布画面は Git 反映・配置ファイル・Agent の読み込み版を分けて表示する。
-7. 戻す操作は変更前の内容を持つ新しい下書きを作る。同じ検証・適用の手順を通す。
+1. 設定を編集・保存し、基本検証する。
+2. 保存版から配布候補を作る。**検証後に自動配布**は人間が候補ごとに選ぶ。
+   既定では検証後にもう一度適用を判断する。後から同じ候補の承認方式を変更できない。
+3. Controller が対象 Git ファイルと編集元を照合し、固定 head の PR を作成する。
+4. `config-check` が合格してから、一時 Kubernetes Job で候補設定を実際の Codex に渡す。
+   配置中の Agent の読み込み版、Git base、試験入力のハッシュを照合する。
+5. 実行試験合格後、自動配布が承認されている候補は Gateway が PROMOTE_REQUESTED に進める。
+   未承認の候補は VERIFIED で人間の判断を待つ。Controller 自身は承認できない。
+6. Controller が head/base/CI/試験対象を再確認して merge する。
+7. profiles / skills / schemas は main の CI がビルド・署名し、image digest と
+   `ai-business/source-revision` を Git に記録する。Argo CD が配置する。
+   共通ハーネスは ConfigMap と Pod template の release annotation を同時に変更する。
+8. 対象の全 Deployment の image、承認版の annotation、observedGeneration、
+   更新済み・稼働中 replica 数を確認して DEPLOYED にする。
 
-一度に扱うのは **1ファイルの変更**。複数ファイルを一括で昇格するプロファイルバンドル、
-プールの作成・自動カナリア切替、モデルや権限の汎用エディターは未実装。
-`pool` は監査上の対象名であり、実行先を切り替えるスケジューラーではない。
+状態: `QUEUED → REVIEW → VERIFIED → PROMOTE_REQUESTED → MERGED → DEPLOYING → DEPLOYED`。
+自動配布は VERIFIED を経由して直ちに PROMOTE_REQUESTED へ進み、両イベントを残す。
+検証や競合で BLOCKED、CI/配置失敗や期限超過で DEPLOYMENT_FAILED。
+要確認の配布は管理 API の `/recheck` で再確認できる（CI 再実行そのものは行わない）。
+戻す操作は変更前の内容を持つ新しい下書きで、同じ検証を通す。
 
-## Run
+## Runtime trial boundary
 
-単一プロセスで稼働させる。多重起動を前提にした分散リースは未実装。
-コンテナは read-only filesystem / non-root / service-account token なしで実行できる。
-必要な接続先は Gateway と `api.github.com:443` のみ。Kubernetes 資格情報は不要。
+試験は operator が digest 固定した既存 Agent / Worker image を使用する。
+候補 PR の Python・Dockerfile・workflow を試験用資格情報で実行しない。
+対象設定をデータとして ConfigMap に固定し、Agent image の既存 registry で読み込む。
+Worker image の既存 executor が、影響する profile ごとに本物の Codex を起動する。
+
+これは **実モデル接続と設定供給の smoke test** であり、業務成果の品質評価や
+すべてのツール・付属スクリプトの動作保証ではない。チェック対象は profile、schema、
+capabilities、SKILL.md、共通ハーネス。付属スクリプト等の変更は試験未対応として止める。
+本番の action の入力/出力契約は config-check と main の通常 CI でも検証する。
+
+Job は本番 PVC、Gateway token、GitHub token、ServiceAccount token を持たない。
+専用 namespace、read-only rootfs、非 root、resource quota、30分 deadline、public HTTPS
+と DNS だけの egress を使用する。Codex 認証だけを専用 Secret から渡す。
+ログにモデル出力・認証情報は残さず、合否とハッシュを Gateway に保存する。
+合格済みの同じ候補を繰り返しモデル実行しない。読み込み元の設定や試験 runtime が
+変われば再利用を拒否する。完了 Job と入力 ConfigMap は7日後に Kubernetes が回収する。
+
+試験用資格情報を持たない状態を合格にしたり、以前の本番 smoke を候補の証跡に転用しない。
+
+## Production installation
+
+Gateway の `automatic_promotion` / `deployment_observation` API、Control Plane の UI、
+Agent / Worker の source-revision 付き image promotion を先に配置する。
+Controller は Gateway VM 上の独立した systemd service として稼働する。
+`deploy/install.py` は一回の導入で RBAC / trial namespace / secret / service を設定する。
+VM に Python 3 と venv、呼び出し元に kubectl / SSH とこの requirements が必要。
+
+GitHub App は `github-app-manifest.json` で作成し、対象を
+`craftzdev/ai-business-agent` / `craftzdev/ai-business-worker` だけに限定する。
+Contents/Pull requests write、Checks/Actions read。Runner 管理 App と分離する。
+[Installation tokens](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token-for-a-github-app)
+は Controller がメモリー内で更新し、発行時にも対象 repo と権限を制限する。
 
 ```sh
 python -m pip install -r requirements.txt
-python controller.py --targets /etc/config-controller/targets.json --once
+python deploy/install.py --kubeconfig /path/to/kubeconfig \
+  --host craftz@172.16.40.30 \
+  --github-app-id APP_ID --github-installation-id INSTALLATION_ID \
+  --github-app-key /path/to/private-key.pem \
+  --trial-auth-file /path/to/trial-auth.json --check
+# --check を外して導入する。
+# 利用者が明示的に選んだ場合のみ --trial-auth-file の代わりに --reuse-worker-auth を使う。
 ```
 
-常駐時は `--once` を外す。設定ファイルには `targets.example.json` を使用する。
-書き込み可能な repository / branch / path / 必須 check はオペレーターが管理する。
-UI や下書きの本文から任意のコマンド、URL、リポジトリを指定することはできない。
+App ID・installation ID・鍵・試験用認証が必須。利用者の gh token を常駐用にコピーしない。
+Secret は stdin で転送し、argv や Git に入れない。VM の `/etc/ai-config-controller` は
+root 管理・service group 読み取りだけ。Kubernetes は専用 ServiceAccount の token を使用し、
+管理者 kubeconfig を転送しない。この VM 用 token は長期資格情報なので、VM の廃止時は
+`ai-config-trial/config-controller-api` Secret を削除して失効させる。
 
-環境変数:
-
-| Variable | Location / purpose |
-|---|---|
-| `GATEWAY_URL` | Controller → Gateway の到達可能な URL |
-| `GATEWAY_API_TOKEN` | Controller の Gateway Bearer 認証 |
-| `CONFIG_CONTROLLER_TOKEN` | Gateway と Controller の両方に設定する32文字以上の専用 secret |
-| `GITHUB_TOKEN` | Controller のみ。対象2リポジトリの Contents / Pull requests write、Checks read |
-| `CF_ACCESS_CLIENT_ID`, `CF_ACCESS_CLIENT_SECRET` | Cloudflare 経由の場合の接続情報 |
-| `CONFIG_ADMIN_TOKEN`, `CONFIG_ADMIN_ACTOR` | 既存の Gateway 設定編集資格情報。Control Plane には token のみを渡す |
-
-Controller に `CONFIG_ADMIN_TOKEN` を渡さない。Control Plane / Gateway に `GITHUB_TOKEN` を渡さない。
-GitHub App installation token の短期発行・更新は起動基盤側で行う。
-任意のユーザーが同名 check を成功扱いにできないよう、必須試験を実行する
-GitHub Actions ワークフローと対象ブランチを保護する。
-
-## Production integration
-
-Gateway の管理 API と Control Plane の管理資格情報は本番に設定済み。
-Agent / Worker / Control Plane の container CI は、テスト・ビルド・署名後に
-Deployment の immutable digest を Git に反映し、Argo CD が同期する。
-ソースが先に更新された古いビルドは昇格しない。`MERGED` は配置完了を意味しない。
-
-Worker の planned rollout は preStop で受付停止し、実行中・待機中・停止未確認・
-未送信 callback が 0 になるまで待つ。既定キューに対応する 10 時間の猶予を設定。
-ノード障害や猶予超過時の強制終了まで防ぐものではない。
-
-残っている接続:
-
-- **Controller identity**: 専用 GitHub App または repository 限定 token の選択・設定。
-  ARC Runner 管理用 App は Contents 権限を持たないため流用しない。
-  常駐 Controller に利用者の汎用 gh token を保存しない。
-- **Candidate runtime trial**: `config-check` は契約テストであり実モデル試験ではない。
-  必須 `config-runtime-trial` は専用の試験環境と資格情報を設定してから有効化する。
-  候補の正確な commit を実行し、代表ジョブ・成果物・設定ハッシュを評価する。
-  それまで候補を VERIFIED にしない。本番の実行確認は候補 PR の合格証跡に転用しない。
-- **Observation**: 現状の inventory は1つの Agent 接続から取得する。
-  全プール・全レプリカへの反映は確認できない。ファイル一致を全体の反映成功と解釈しない。
-
-ハーネスは `harness/AGENTS.md` → ConfigMap の `data.AGENTS.md` に固定対応する。
-Controller は同じ commit 内で Pod template に release ID の annotation を追加する。
-これにより Argo CD 同期後に subPath mount を持つ Pod が作り直される。
-
-## Runtime evidence
-
-Agent は起動時の capabilities / profiles / schemas を固定する。配置ファイルが変わっても
-プロセス再起動までは読み込み版が変わらず、既存 dispatch の再送も保存済みの版を使う。
-Worker は起動する実行へ渡すハーネス・SKILL.md 本文を取り込み、`configuration.json`
-と結果の `configuration` にハッシュを記録する。本文・認証情報は記録しない。
-スキルの付属テキストファイルは「観測した版」であり、モデルが読んだ証明ではない。
-ファイルやプロンプトは OS の権限境界の代わりにならない。
+`targets.example.json` と `trial-settings.example.json` は operator が管理する。
+本番 Deployment は読み取りのみ。Controller の書き込み権限は試験 namespace 内の
+Job / ConfigMap に限定する。Git の更新と Argo CD による配置の分離を維持する。
+一つの Controller service で稼働させる。Git の base が競合した候補は新しい版から作り直す。
 
 ## Validation
 
 ```sh
-python -m pytest -q test_controller.py
+python -m pytest -q
 ```
 
-HTTP の書き込みが不確定な場合は同じ branch / PR を再確認する。Git の編集元、
-head、base が変わった場合は BLOCKED として新しい候補の検証を要求する。
-ネットワーク障害は secret やレスポンス本文をログに出さず再試行する。
+Gateway tests は自動承認の権限・固定版・失敗時停止・配布証跡を DB まで確認する。
+Controller tests は token 更新、候補との証跡の結び付け、試験失敗、再実行抑止、
+Pod の隔離、複数配置先の確認、古い版・CI 失敗・タイムアウトを扱う。

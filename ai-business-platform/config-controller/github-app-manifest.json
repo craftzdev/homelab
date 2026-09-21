@@ -1,0 +1,8 @@
+{
+  "name": "craftz-ai-config-controller",
+  "url": "https://github.com/craftzdev/homelab",
+  "public": false,
+  "hook_attributes": {"url": "https://gateway.craftz.dev/", "active": false},
+  "default_permissions": {"contents": "write", "pull_requests": "write", "checks": "read", "actions": "read"},
+  "default_events": []
+}

@@ -1899,7 +1899,7 @@ app.include_router(config_releases.build_router(pool=pool, auth=require_gateway_
 @app.get("/v1/config/contract", dependencies=[Depends(require_gateway_token)])
 def configuration_contract():
     return {"api_version": "1.0", "schema_url": "/v1/config/openapi.json",
-            "capabilities": ["drafts", "immutable_releases", "ci_evidence", "human_promotion", "worker_intake"],
+            "capabilities": ["drafts", "immutable_releases", "ci_evidence", "human_promotion", "worker_intake", "automatic_promotion", "deployment_observation"],
             "compatibility": "Additive fields and new states may be introduced in v1. Clients must preserve unknown states and use available_commands."}
 
 
