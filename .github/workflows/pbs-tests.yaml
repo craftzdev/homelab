@@ -1,0 +1,26 @@
+name: PBS capacity guard tests
+
+on:
+  pull_request:
+    paths:
+      - scripts/pbs-capacity-guard.py
+      - scripts/tests/test_pbs_capacity_guard.py
+      - .github/workflows/pbs-tests.yaml
+  push:
+    branches: [main]
+    paths:
+      - scripts/pbs-capacity-guard.py
+      - scripts/tests/test_pbs_capacity_guard.py
+      - .github/workflows/pbs-tests.yaml
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - name: Test capacity checks without contacting Proxmox
+        run: python3 -m unittest discover -s scripts/tests -p 'test_pbs_capacity_guard.py'

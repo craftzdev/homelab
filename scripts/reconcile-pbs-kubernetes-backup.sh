@@ -41,6 +41,8 @@ BW_LIMIT_KIB="${BW_LIMIT_KIB:-51200}"
 #    keep-last=5,keep-daily=5 は 10 世代になる（同文書 §6-1）。
 PRUNE_BACKUPS="${PRUNE_BACKUPS:-keep-daily=3}"
 APPLY=false
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+CAPACITY_GUARD="/usr/local/libexec/homelab-pbs-capacity-guard"
 
 readonly C_RED=$'\033[0;31m' C_GREEN=$'\033[0;32m' C_YELLOW=$'\033[0;33m'
 readonly C_BLUE=$'\033[0;34m' C_RESET=$'\033[0m'
@@ -142,9 +144,27 @@ if [[ "${APPLY}" != true ]]; then
   exit 0
 fi
 
+# Install the hook on every cluster node before assigning it to the shared job.
+# Check the batch budget (80 GiB) and the per-VM floor (16 GiB) on the host
+# actually running vzdump. A failed guard becomes a visible failed backup task.
+guard_nodes="$(pve 'pvesh get /cluster/status --output-format json' | python3 -c '
+import ipaddress,json,sys
+for node in json.load(sys.stdin):
+    if node.get("type") == "node":
+        print(ipaddress.ip_address(node["ip"]))
+')"
+[[ -n "${guard_nodes}" ]] || die "容量ガードの配布先ノードがありません"
+while IFS= read -r node_ip; do
+  scp -q "${SCRIPT_DIR}/pbs-capacity-guard.py" \
+    "${PVE_SSH_USER}@${node_ip}:/tmp/homelab-pbs-capacity-guard.py"
+  ssh -n "${PVE_SSH_USER}@${node_ip}" \
+    "install -D -m 0755 /tmp/homelab-pbs-capacity-guard.py ${CAPACITY_GUARD} && rm /tmp/homelab-pbs-capacity-guard.py"
+done <<<"${guard_nodes}"
+
 common_args="--storage ${PBS_STORAGE} --vmid ${VM_IDS} --schedule ${SCHEDULE} \
 --mode snapshot --compress zstd --zstd 1 --bwlimit ${BW_LIMIT_KIB} --ionice 8 \
 --prune-backups ${PRUNE_BACKUPS} --remove 1 --repeat-missed 0 --enabled 1 \
+--script ${CAPACITY_GUARD} \
 --comment managed-by-homelab-reconcile-pbs-kubernetes-backup"
 
 if [[ "${action}" == create ]]; then
