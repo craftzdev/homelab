@@ -141,3 +141,20 @@ Harness は ConfigMap と Pod template の候補 ID により新 Pod への反�
 この記録は専用 App での本番候補配布の完了を意味しない。本番の接続検証は認証設定後に別途記録する。
 
 試験用認証は候補 Pod に渡さず、別 Pod の固定接続先 broker だけに配置する。候補 Pod は broker 以外へ通信できない。
+
+
+### Logical display names
+
+`GET /v1/config/inventory` adds `logical_name` (nullable) and `name_revision`
+(initially 0) to each document. `POST /v1/config/sources/{source_id}/name`
+accepts `{ "logical_name": "共通の作業ルール", "expected_revision": 0 }` using
+both Gateway and configuration-admin credentials. Names are trimmed, limited to
+80 characters, and cannot contain control characters. Empty names restore the
+path display. Concurrent changes return 409; repeated saves of the current name
+are idempotent. The name is stored in Gateway PostgreSQL against the stable
+component/path ID and recorded as `config.source_renamed` in the event log.
+
+Names are presentation metadata: they do not rename files, change content hashes,
+create releases, or alter worker prompts. Chat reads resolve current names, so
+existing conversations reflect later renames without changing their revisions.
+Deploy Gateway before a Control Plane version that edits these names.
