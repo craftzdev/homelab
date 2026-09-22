@@ -10,7 +10,7 @@ def setup(client,monkeypatch):
     monkeypatch.setenv('CONFIG_ADMIN_ACTOR','operator')
     monkeypatch.setenv('CONFIG_CONTROLLER_TOKEN','z'*64)
     monkeypatch.setattr(configuration,'fetch_inventory',lambda:{'documents':[source()]})
-    with gateway.pool.connection() as db:db.execute('TRUNCATE config_chat_sessions,config_chat_turns CASCADE')
+    with gateway.pool.connection() as db:db.execute('TRUNCATE config_source_names,config_chat_sessions,config_chat_turns CASCADE')
 
 def create(c,key='create-test'):
     return c.post(BASE+'/sessions',headers={**EDITOR,'Idempotency-Key':key},json={'source_id':source()['id'],'base_sha256':source()['sha256']})
@@ -82,3 +82,13 @@ def test_capacity_and_expiry(client):
     with gateway.pool.connection() as db:db.execute("UPDATE config_chat_turns SET created_at=created_at-INTERVAL '20 minutes'")
     assert client.get(BASE+'/controller/work',headers=CONTROLLER).json()['turns']==[]
     assert send(client,last).status_code==202
+
+
+def test_existing_conversation_uses_current_logical_name(client):
+    row = create(client).json()
+    path = '/v1/config/sources/' + source()['id'] + '/name'
+    assert client.post(path, headers=EDITOR, json={'logical_name': '共通ルール', 'expected_revision': 0}).status_code == 200
+    updated = detail(client, row)
+    assert updated['source']['logical_name'] == '共通ルール'
+    assert updated['revision'] == row['revision'] and updated['content'] == source()['content']
+    assert client.get(BASE+'/sessions', headers=BOT).json()['sessions'][0]['source']['logical_name'] == '共通ルール'

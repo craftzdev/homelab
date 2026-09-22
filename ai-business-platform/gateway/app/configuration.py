@@ -10,6 +10,7 @@ import re
 import urllib.error
 import urllib.request
 import uuid
+import unicodedata
 from pathlib import PurePosixPath
 from typing import Any, Callable, Literal
 
@@ -22,6 +23,13 @@ from app import tasks
 
 MAX_CONTENT = 65_536
 SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS config_source_names (
+    source_id TEXT PRIMARY KEY,
+    logical_name TEXT,
+    revision INTEGER NOT NULL,
+    updated_by TEXT NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL
+);
 CREATE TABLE IF NOT EXISTS config_drafts (
     id UUID PRIMARY KEY,
     source_id TEXT NOT NULL,
@@ -220,6 +228,22 @@ def validate_content(document: dict[str, Any], content: str) -> dict[str, Any]:
     }
 
 
+class SourceNameUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_revision: int = Field(ge=0)
+    logical_name: str = Field(max_length=80)
+
+
+def attach_names(db: Any, documents: list[dict[str, Any]]) -> None:
+    rows = db.execute("SELECT source_id,logical_name,revision FROM config_source_names WHERE source_id = ANY(%s)",
+                      ([d["id"] for d in documents],)).fetchall()
+    names = {row["source_id"]: row for row in rows}
+    for document in documents:
+        name = names.get(document["id"], {})
+        document["logical_name"] = name.get("logical_name")
+        document["name_revision"] = name.get("revision", 0)
+
+
 class DraftCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     source_id: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -283,7 +307,36 @@ def build_router(*, pool: Any, auth: Any, config_principal: Callable[[str | None
 
     @router.get("/inventory")
     def inventory():
-        return fetch_inventory()
+        report = fetch_inventory()
+        with pool.connection() as db:
+            attach_names(db, report["documents"])
+        return report
+
+    @router.post("/sources/{source_id}/name")
+    def rename(source_id: str, request: SourceNameUpdate, actor: str = Depends(editor)):
+        if not re.fullmatch(r"[0-9a-f]{64}", source_id):
+            error("INVALID_SOURCE", "対象の設定IDが不正です")
+        if any(unicodedata.category(char).startswith("C") for char in request.logical_name):
+            error("INVALID_NAME", "論理名には改行や制御文字を使用できません")
+        name = request.logical_name.strip() or None
+        if not any(d["id"] == source_id for d in fetch_inventory()["documents"]):
+            error("SOURCE_UNAVAILABLE", "対象の設定が取得できません", 404)
+        with pool.connection() as db:
+            # Serialize creation as well as updates for this stable file identity.
+            db.execute("SELECT pg_advisory_xact_lock(%s)", (int(source_id[:15], 16),))
+            current = db.execute("SELECT * FROM config_source_names WHERE source_id=%s", (source_id,)).fetchone()
+            revision = current["revision"] if current else 0
+            if current and current["logical_name"] == name:
+                return {"source_id": source_id, "logical_name": name, "name_revision": revision}
+            if revision != request.expected_revision:
+                error("REVISION_CONFLICT", "論理名が別の操作で変更されています。最新の名前を確認してください", 409, current_revision=revision)
+            revision += 1
+            db.execute("INSERT INTO config_source_names (source_id,logical_name,revision,updated_by,updated_at) VALUES (%s,%s,%s,%s,%s) ON CONFLICT(source_id) DO UPDATE SET logical_name=EXCLUDED.logical_name,revision=EXCLUDED.revision,updated_by=EXCLUDED.updated_by,updated_at=EXCLUDED.updated_at",
+                       (source_id, name, revision, actor, tasks.utcnow()))
+            tasks.record_event(db, aggregate_type="config_source", aggregate_id=source_id,
+                               type="config.source_renamed", actor=actor, aggregate_revision=revision,
+                               payload={"logical_name": name})
+        return {"source_id": source_id, "logical_name": name, "name_revision": revision}
 
     @router.get("/drafts")
     def drafts():

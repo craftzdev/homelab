@@ -31,7 +31,7 @@ def configuration_setup(client, monkeypatch):
     monkeypatch.setenv("CONFIG_ADMIN_ACTOR", "operator")
     monkeypatch.setattr(configuration, "fetch_inventory", lambda: {"documents": [source()], "components": [{"component": "worker", "status": "available"}]})
     with gateway.pool.connection() as db:
-        db.execute("TRUNCATE config_draft_revisions,config_drafts CASCADE")
+        db.execute("TRUNCATE config_source_names,config_draft_revisions,config_drafts CASCADE")
 
 
 def create(client, *, headers=EDITOR, key=None, content="# Revised\nKeep evidence.\n"):
@@ -136,3 +136,23 @@ def test_remote_inventory_contract_and_digest_are_checked(monkeypatch):
         with pytest.raises(gateway.HTTPException) as failure:
             FETCH_INVENTORY()
     assert failure.value.status_code == 502
+
+
+def test_logical_names_are_durable_revisioned_metadata(client):
+    path = '/v1/config/sources/' + source()['id'] + '/name'
+    body = {'logical_name': ' 共通の作業ルール ', 'expected_revision': 0}
+    assert client.post(path, headers=BOT, json=body).status_code == 401
+    named = client.post(path, headers=EDITOR, json=body).json()
+    assert named['logical_name'] == '共通の作業ルール' and named['name_revision'] == 1
+    assert client.post(path, headers=EDITOR, json=body).json() == named
+    inventory = client.get('/v1/config/inventory', headers=BOT).json()['documents'][0]
+    assert inventory['logical_name'] == named['logical_name']
+    assert inventory['sha256'] == source()['sha256'] and inventory['path'] == source()['path']
+    assert client.post(path, headers=EDITOR, json={**body, 'logical_name': '別の名前'}).status_code == 409
+    for invalid in ['x' * 81, '名前\n改行', '名前\x00']:
+        assert client.post(path, headers=EDITOR, json={**body, 'logical_name': invalid}).status_code == 422
+    assert client.post('/v1/config/sources/' + 'f'*64 + '/name', headers=EDITOR, json=body).status_code == 404
+    cleared = client.post(path, headers=EDITOR, json={'logical_name': '', 'expected_revision': 1}).json()
+    assert cleared['logical_name'] is None and cleared['name_revision'] == 2
+    with gateway.pool.connection() as db:
+        assert db.execute('SELECT count(*) n FROM config_drafts').fetchone()['n'] == 0

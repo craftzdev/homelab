@@ -74,6 +74,8 @@ def revision(row, expected):
 
 def public(db, row):
     result = {k: v for k, v in row.items() if k not in {'idempotency_key', 'request_hash'}}
+    result['source'] = dict(row['source'])
+    config.attach_names(db, [result['source']])
     turns = db.execute('SELECT * FROM config_chat_turns WHERE session_id=%s ORDER BY created_at,id', (row['id'],)).fetchall()
     result['turns'] = []
     for turn in turns:
@@ -99,6 +101,7 @@ def build_router(*, pool, auth, config_principal):
     def sessions():
         with pool.connection() as db:
             rows = db.execute('SELECT id,source,revision,created_at,updated_at FROM config_chat_sessions ORDER BY updated_at DESC LIMIT 50').fetchall()
+            config.attach_names(db, [row['source'] for row in rows])
         return {'sessions': rows}
 
     @router.post('/sessions', status_code=201)
