@@ -709,3 +709,31 @@ spec:
             summary: "PBS {{ $labels.datastore }} のガベージコレクションが失敗しています"
             description: |
               確認: ssh root@172.16.10.51 'proxmox-backup-manager garbage-collection status gateway-backup'
+
+        - alert: PBSGarbageCollectionStale
+          # GC runs every six hours; a past successful run must not hide a stopped schedule.
+          expr: |
+            time() - pbs_observer_gc_last_end_timestamp_seconds > 12 * 3600
+          for: 30m
+          labels:
+            severity: critical
+          annotations:
+            summary: "PBS {{ $labels.datastore }} のGCが12時間以上完了していません"
+            description: |
+              GCは00:15/06:15/12:15/18:15に実行する。保持世代の削除だけでは容量は戻らない。
+              確認: ssh root@172.16.10.51 'proxmox-backup-manager garbage-collection status gateway-backup'
+
+        - alert: PBSBackupCapacityInsufficient
+          # A daily batch adds ~49 GiB across the three nodes. Match the vzdump
+          # hook's 80 GiB batch budget, including space for growth and metadata.
+          expr: |
+            pbs_observer_datastore_avail_bytes < 80 * 1024 * 1024 * 1024
+          for: 1h
+          labels:
+            severity: critical
+          annotations:
+            summary: "PBS {{ $labels.datastore }} に次回バックアップ用の80GiBの空きがありません"
+            description: |
+              容量ガードが日次ジョブ開始時にバックアップを中止する状態。
+              Prune/GCの成功、pending removals、日次増分を確認する。
+              待機中のチャンクを強制削除したりGCの安全猶予を短縮したりしないこと。
