@@ -1,0 +1,50 @@
+githubConfigUrl: https://github.com/craftzdev/SNSBoost
+githubConfigSecret: arc-github-app
+
+# SNSBoost の Cloudflare Worker デプロイ用（npm ci・型検査・テスト・wrangler deploy）。
+#
+# Docker を使わないので、moshitoku-scraper-ci と同じく非 root・capability 全 drop の
+# daemonless 構成にする。必要な通信は npm・GitHub・Cloudflare API への HTTPS だけで、
+# arc-runners の runner-public-https-only ポリシーの範囲に収まる。
+#
+# Zero idle Pods: GitHub creates one ephemeral runner only when a trusted job
+# is queued. Deploys are serialized by the workflow, so one runner is enough.
+runnerScaleSetName: snsboost-ci
+minRunners: 0
+maxRunners: 1
+
+controllerServiceAccount:
+  namespace: arc-systems
+  name: arc-controller-gha-rs-controller
+
+template:
+  spec:
+    automountServiceAccountToken: false
+    nodeSelector:
+      homelab.craftz.dev/workload-plane: "true"
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 1001
+      runAsGroup: 1001
+      fsGroup: 1001
+      seccompProfile:
+        type: RuntimeDefault
+    containers:
+      - name: runner
+        image: >-
+          ghcr.io/actions/actions-runner@sha256:e5496277be5d09bc968b3d64911b74e219ac4a3f2edce956a3ecf9271bea1ef4
+        command: ["/home/runner/run.sh"]
+        resources:
+          requests:
+            cpu: 500m
+            memory: 1Gi
+            # Node のツールキャッシュ、npm ci（wrangler・workerd を含む）と esbuild のバンドルのぶん。
+            ephemeral-storage: 4Gi
+          limits:
+            cpu: "2"
+            memory: 4Gi
+            ephemeral-storage: 8Gi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]

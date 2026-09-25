@@ -8,6 +8,10 @@ daemon. Two repository-scoped scale sets build application images:
 - `ai-worker-builder` for `craftzdev/ai-business-worker`
 - `ai-control-plane-builder` for `craftzdev/ai-business-control-plane`
 
+`snsboost-ci` is a daemonless, repository-scoped scale set in `arc-runners` for
+`craftzdev/SNSBoost`. It runs `npm ci`, the tests and `wrangler deploy` for the
+Cloudflare Worker, and needs nothing beyond public HTTPS.
+
 The builder Pods use ARC's ephemeral Docker-in-Docker mode and disappear after
 each job. Because the `dind` sidecar is privileged, the builders run in their
 own `arc-builders` namespace (Pod Security `privileged`). `arc-runners`, which
