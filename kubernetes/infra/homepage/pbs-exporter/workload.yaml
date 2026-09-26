@@ -26,7 +26,7 @@ spec:
         - name: exporter
           # Pinned by digest, as the other workloads are. A retagged
           # 3.13-slim would otherwise replace the runtime with no Git diff.
-          image: python:3.13-slim-bookworm@sha256:3e4eb6a8c8d89e10d322b1eac2b0aefefb13e7d818ddd2a0c3a3196aa01a57a2
+          image: python:3.13-slim-bookworm@sha256:2325bb286ec344af3e5898cc224b5844e2707ac6e26b1632516fd3edc84a5e26
           command: ["python3", "-B", "/app/exporter.py"]
           ports:
             - name: metrics
